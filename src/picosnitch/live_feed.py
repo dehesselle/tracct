@@ -10,6 +10,7 @@ events in real time without polling the database.
 import grp
 import json
 import os
+import select
 import socket
 import threading
 
@@ -17,21 +18,47 @@ from picosnitch.constants import RUN_DIR
 
 EVENTS_SOCKET_PATH = RUN_DIR / "events.sock"
 MAX_SUBSCRIBERS = 32
+# per-subscriber backlog held in userspace once the kernel send buffer is full; a
+# drain burst (one event per active connection, each carrying three cmdlines) can
+# exceed the default ~208 KB socket buffer by far before a reader gets scheduled
+MAX_PENDING_BYTES = 8 * 1024 * 1024
+
+
+def feed_closed_reason() -> str:
+    """Why a subscriber saw EOF: the daemon removes the socket on shutdown, so a
+    socket that is still there means this subscriber was dropped (or the daemon restarted)."""
+    if EVENTS_SOCKET_PATH.exists():
+        return f"the daemon dropped this viewer after it fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind (or the daemon restarted)"
+    return "the picosnitch daemon stopped"
+
+
+class _Subscriber:
+    __slots__ = ("conn", "out")
+
+    def __init__(self, conn: socket.socket) -> None:
+        self.conn = conn
+        self.out = bytearray()
 
 
 class LiveFeedPublisher:
     """Single-publisher, many-subscribers UNIX socket broadcaster.
 
-    Runs an accept thread and drops subscribers whose nonblocking send cannot complete.
+    Runs an accept thread and a writer thread. Publishing only queues output per
+    subscriber; the writer thread sends it whenever a socket has room, so delivery
+    is not limited to one kernel buffer per publish call. A subscriber is dropped
+    only once its queue exceeds MAX_PENDING_BYTES.
     """
 
     def __init__(self, group: str | None = None) -> None:
         self._group = group
         self._sock: socket.socket | None = None
-        self._subscribers: list[socket.socket] = []
+        self._subscribers: list[_Subscriber] = []
         self._lock = threading.Lock()
         self._stopped = threading.Event()
         self._accept_thread: threading.Thread | None = None
+        self._writer_thread: threading.Thread | None = None
+        self._wake_r = self._wake_w = -1
+        self.dropped = 0  # subscribers dropped for falling too far behind
 
     def start(self) -> None:
         try:
@@ -50,8 +77,11 @@ class LiveFeedPublisher:
                 except (KeyError, PermissionError):
                     pass
             self._sock.listen(8)
+            self._wake_r, self._wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
             self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
             self._accept_thread.start()
+            self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+            self._writer_thread.start()
         except Exception:
             self._sock = None
 
@@ -68,7 +98,7 @@ class LiveFeedPublisher:
                 if self._stopped.is_set() or len(self._subscribers) >= MAX_SUBSCRIBERS:
                     conn.close()
                 else:
-                    self._subscribers.append(conn)
+                    self._subscribers.append(_Subscriber(conn))
 
     def has_subscribers(self) -> bool:
         """True if anyone is listening, so callers can skip serializing an event no
@@ -76,32 +106,82 @@ class LiveFeedPublisher:
         return self._sock is not None and bool(self._subscribers)
 
     def publish(self, event: dict) -> None:
-        if self._sock is None or not self._subscribers:
+        self.publish_many([event])
+
+    def publish_many(self, events: list[dict]) -> None:
+        """Serialize events once and queue them for every subscriber; the writer thread sends them."""
+        if not events or self._sock is None or not self._subscribers:
             return
-        payload = (json.dumps(event, default=str) + "\n").encode("utf-8", "replace")
-        dropped: list[socket.socket] = []
+        payload = "".join(json.dumps(event, default=str) + "\n" for event in events).encode("utf-8", "replace")
         with self._lock:
-            for conn in self._subscribers:
-                try:
-                    conn.sendall(payload)
-                except (OSError, socket.timeout):
-                    dropped.append(conn)
-            for conn in dropped:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
-                self._subscribers.remove(conn)
+            overflowed = []
+            for sub in self._subscribers:
+                sub.out += payload
+                if len(sub.out) > MAX_PENDING_BYTES:
+                    overflowed.append(sub)
+            self.dropped += len(overflowed)
+            self._remove(overflowed)
+        self._wake()
+
+    def _wake(self) -> None:
+        try:
+            os.write(self._wake_w, b"\0")
+        except OSError:
+            pass  # pipe full: a wakeup is already pending
+
+    def _writer_loop(self) -> None:
+        while not self._stopped.is_set():
+            poller = select.poll()
+            poller.register(self._wake_r, select.POLLIN)
+            with self._lock:
+                for sub in self._subscribers:
+                    if sub.out:
+                        poller.register(sub.conn, select.POLLOUT)
+            poller.poll(1000)
+            try:
+                os.read(self._wake_r, 4096)
+            except BlockingIOError:
+                pass
+            with self._lock:
+                self._remove([sub for sub in self._subscribers if not self._flush(sub)])
+
+    def _remove(self, subs: list[_Subscriber]) -> None:
+        """Close and forget subscribers; the caller holds the lock."""
+        for sub in subs:
+            try:
+                sub.conn.close()
+            except OSError:
+                pass
+            self._subscribers.remove(sub)
+
+    @staticmethod
+    def _flush(sub: _Subscriber) -> bool:
+        """Send as much of the backlog as the socket takes; False if the peer is gone.
+
+        Uses send rather than sendall, which can write part of the data and then raise,
+        losing track of how much went out and breaking the line framing."""
+        while sub.out:
+            try:
+                sent = sub.conn.send(sub.out)
+            except BlockingIOError:
+                return True
+            except OSError:
+                return False
+            del sub.out[:sent]
+        return True
 
     def stop(self) -> None:
         self._stopped.set()
+        if self._writer_thread is not None:
+            self._wake()
+            self._writer_thread.join(timeout=2)
+            self._writer_thread = None
         with self._lock:
-            for conn in self._subscribers:
-                try:
-                    conn.close()
-                except OSError:
-                    pass
-            self._subscribers.clear()
+            self._remove(list(self._subscribers))
+        for fd in (self._wake_r, self._wake_w):
+            if fd >= 0:
+                os.close(fd)
+        self._wake_r = self._wake_w = -1
         if self._sock is not None:
             try:
                 self._sock.close()

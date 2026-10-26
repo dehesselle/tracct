@@ -12,7 +12,7 @@ import threading
 import time
 
 from picosnitch.config import Config
-from picosnitch.live_feed import LiveFeedPublisher
+from picosnitch.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
 from picosnitch.types import BpfEvent, State
 from picosnitch.utils import flush_logs, save_state
 
@@ -84,6 +84,7 @@ def run_primary(
     assert parent_process is not None
     live_feed = LiveFeedPublisher(group=config.data.group)
     live_feed.start()
+    live_feed_dropped = 0
     state_record = pickle.dumps(
         [state["Executables"], state["Names"], state["Parent Executables"], state["Parent Names"], state["Grandparent Executables"], state["Grandparent Names"], state["SHA256"]]
     )
@@ -165,13 +166,16 @@ def run_primary(
             listen.set()
             # process the list and update state, send new process/connection data to secondary subprocess if ready
             handle_new_processes(state, new_processes, q_notify, q_error)
-            # serializing with no subscriber backs the pipeline up at high connection cardinality
+            # serializing with no subscriber backs the pipeline up at high connection cardinality;
+            # with one, the batch is serialized once and the publisher's writer thread delivers it
             if live_feed.has_subscribers():
-                for proc in new_processes:
-                    try:
-                        live_feed.publish(proc)
-                    except Exception:
-                        pass
+                try:
+                    live_feed.publish_many(new_processes)
+                except Exception:
+                    pass
+            if live_feed.dropped > live_feed_dropped:
+                q_error.put(f"live feed: dropped {live_feed.dropped - live_feed_dropped} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind")
+                live_feed_dropped = live_feed.dropped
             processes_to_send += new_processes
             while not q_in.empty():
                 msg: dict = pickle.loads(q_in.get())

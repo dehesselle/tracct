@@ -41,7 +41,8 @@ def test_publish_and_subscribe():
         pub.stop()
 
 
-def test_slow_subscriber_dropped():
+def test_slow_subscriber_dropped(monkeypatch):
+    monkeypatch.setattr(live_feed, "MAX_PENDING_BYTES", 64 * 1024)
     pub = live_feed.LiveFeedPublisher(group=None)
     pub.start()
     try:
@@ -49,15 +50,59 @@ def test_slow_subscriber_dropped():
         sub_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sub_sock.connect(str(live_feed.EVENTS_SOCKET_PATH))
         time.sleep(0.05)
-        # Flood; some sends will eventually time out and the subscriber will be dropped.
+        # Flood past the kernel buffer and the backlog limit; the subscriber gets dropped.
         started = time.monotonic()
         for i in range(2000):
             pub.publish({"i": i, "blob": "x" * 1024})
         assert time.monotonic() - started < 2
         assert not pub._subscribers
+        assert pub.dropped == 1
         # Publisher should still be functional
         pub.publish({"final": True})
         sub_sock.close()
+    finally:
+        pub.stop()
+
+
+def test_burst_survives_slow_reader():
+    pub = live_feed.LiveFeedPublisher(group=None)
+    pub.start()
+    try:
+        sub = live_feed.LiveFeedSubscriber(timeout=2.0)
+        sub.connect()
+        try:
+            time.sleep(0.05)
+            # ~5 MB in one burst, far beyond the kernel socket buffer, while the reader is idle
+            pub.publish_many([{"i": i, "blob": "x" * 1024} for i in range(5000)])
+            time.sleep(0.2)
+            assert len(pub._subscribers) == 1
+            assert pub._subscribers[0].out, "burst should leave a backlog in userspace"
+            # the writer thread delivers the whole backlog without further publish calls
+            received = [next(sub) for _ in range(5000)]
+            assert [e["i"] for e in received] == list(range(5000))
+            assert all(e["blob"] == "x" * 1024 for e in received)
+            assert pub.dropped == 0
+        finally:
+            sub.close()
+    finally:
+        pub.stop()
+
+
+def test_closed_subscriber_removed():
+    pub = live_feed.LiveFeedPublisher(group=None)
+    pub.start()
+    try:
+        sub_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sub_sock.connect(str(live_feed.EVENTS_SOCKET_PATH))
+        time.sleep(0.05)
+        sub_sock.close()
+        pub.publish({"name": "curl"})
+        deadline = time.monotonic() + 2
+        while pub._subscribers and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not pub._subscribers
+        # a reader that went away is not counted as one that fell behind
+        assert pub.dropped == 0
     finally:
         pub.stop()
 
