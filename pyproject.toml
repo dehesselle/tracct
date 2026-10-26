@@ -53,8 +53,6 @@ extend-select = ["I"]  # import sorting
 
 [dependency-groups]
 dev = [
-    "pillow==13.0.0",
-    "pyan3==2.3.1",
     "pytest==9.1.1",
     "ruff==0.15.20",
     "tach==0.35.0",
