@@ -18,9 +18,10 @@ import pytest
 class _StubSub:
     """Mimic just enough of LiveFeedSubscriber for _top_loop."""
 
-    def __init__(self, events: list[dict]) -> None:
+    def __init__(self, events: list[dict], eof: bool = False) -> None:
         self._events = list(events)
         self._yielded = 0
+        self._eof = eof
 
     def settimeout(self, _t: float) -> None: ...
 
@@ -32,10 +33,12 @@ class _StubSub:
             ev = self._events[self._yielded]
             self._yielded += 1
             return ev
+        if self._eof:
+            raise StopIteration
         raise BlockingIOError
 
 
-def _run_top_in_pty(events: list[dict], keystrokes: bytes, deadline_s: float) -> int:
+def _run_top_in_pty(events: list[dict], keystrokes: bytes, deadline_s: float, eof: bool = False) -> int:
     """Run _top_loop under curses.wrapper inside a child pty, feed
     keystrokes, return the exit status."""
     pid, fd = pty.fork()
@@ -47,7 +50,7 @@ def _run_top_in_pty(events: list[dict], keystrokes: bytes, deadline_s: float) ->
 
             from picosnitch.ui.top import _top_loop
 
-            sub = _StubSub(events)
+            sub = _StubSub(events, eof)
             rc = curses.wrapper(_top_loop, sub)  # ty: ignore[invalid-argument-type]
             os._exit(0 if rc == 0 else 1)
         except SystemExit:
@@ -62,6 +65,7 @@ def _run_top_in_pty(events: list[dict], keystrokes: bytes, deadline_s: float) ->
     except OSError:
         pass
     deadline = time.time() + deadline_s
+    reaped = None
     while time.time() < deadline:
         try:
             chunk = os.read(fd, 4096)
@@ -69,15 +73,20 @@ def _run_top_in_pty(events: list[dict], keystrokes: bytes, deadline_s: float) ->
             break
         if not chunk:
             break
-        # Drain output until child exits.
+        # Drain output until child exits; keep the status if this reaps it.
         try:
-            os.waitpid(pid, os.WNOHANG)
+            waited, status = os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
+            break
+        if waited == pid:
+            reaped = status
             break
     try:
         os.close(fd)
     except OSError:
         pass
+    if reaped is not None:
+        return reaped
     _waited, status = os.waitpid(pid, 0)
     return status
 
@@ -95,6 +104,17 @@ def test_top_loop_renders_and_quits() -> None:
         pytest.skip(f"pty not available: {e}")
     assert os.WIFEXITED(status), f"child did not exit cleanly (status={status})"
     assert os.WEXITSTATUS(status) == 0, f"child exit status = {os.WEXITSTATUS(status)}"
+
+
+def test_top_loop_reports_feed_closed() -> None:
+    # the daemon closing the feed must not look like a normal quit
+    events: list[dict] = [{"name": "curl", "exe": "/usr/bin/curl", "send": 1, "recv": 1}]
+    try:
+        status = _run_top_in_pty(events, b"", deadline_s=5.0, eof=True)
+    except OSError as e:
+        pytest.skip(f"pty not available: {e}")
+    assert os.WIFEXITED(status)
+    assert os.WEXITSTATUS(status) == 1
 
 
 def test_top_loop_quits_on_esc() -> None:

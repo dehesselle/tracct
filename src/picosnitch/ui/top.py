@@ -25,9 +25,12 @@ import sys
 import time
 
 from picosnitch.constants import LOG_DIR, RUN_DIR, VERSION
-from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber
+from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
 from picosnitch.utils import relaunch_argv, safe_log_open
+
+# _top_loop return value when the daemon closed the feed (vs. 0 when the user quit)
+_FEED_CLOSED = 1
 
 
 def _format_bytes(n: int) -> str:
@@ -170,7 +173,7 @@ def _top_loop(stdscr, sub: LiveFeedSubscriber) -> int:
                 except (BlockingIOError, socket.timeout):
                     break
                 except StopIteration:
-                    return 0
+                    return _FEED_CLOSED
                 if not event or not isinstance(event, dict):
                     continue
                 total_events_seen += 1
@@ -496,15 +499,18 @@ def top_init() -> int:
     os.dup2(log_fd, 2)
     os.close(log_fd)
     try:
-        return curses.wrapper(_top_loop, sub)
+        rc = curses.wrapper(_top_loop, sub)
     except KeyboardInterrupt:
-        return 0
+        rc = 0
     finally:
         os.dup2(saved_stderr_fd, 2)
         os.close(saved_stderr_fd)
         sub.close()
         if spawned is not None:
             _stop_spawned(spawned)
+    if rc == _FEED_CLOSED:
+        logging.error(f"Live feed closed: {feed_closed_reason()}")
+    return rc
 
 
 if __name__ == "__main__":

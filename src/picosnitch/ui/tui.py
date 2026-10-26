@@ -15,6 +15,7 @@ import queue
 import random
 import sqlite3
 import sys
+import textwrap
 import threading
 import time
 import urllib.error
@@ -23,7 +24,7 @@ import urllib.request
 
 from picosnitch.config import load_config
 from picosnitch.constants import CACHE_DIR, DATA_DIR, DB_VERSION, RUN_DIR, VERSION
-from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber
+from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
 from picosnitch.utils import connect_db_readonly
 
@@ -327,7 +328,14 @@ def _live_tab_loop(stdscr: "curses.window") -> str:
                     except (BlockingIOError, TimeoutError):
                         break
                     except StopIteration:
-                        return "quit"
+                        # stay in the TUI and say why rather than exiting silently
+                        return _live_tab_unavailable(
+                            stdscr,
+                            [
+                                "The live feed was closed:",
+                                *textwrap.wrap(feed_closed_reason() + ".", 58),
+                            ],
+                        )
                     if not isinstance(event, dict) or not event:
                         continue
                     event["_t"] = time.time()
