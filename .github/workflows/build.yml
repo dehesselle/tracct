@@ -5,7 +5,7 @@ name: Build (reusable)
 #   sdist                        -> dist/*.tar.gz
 #   wheel-manylinux_2_34_x86_64  -> dist/*.whl
 #   wheel-manylinux_2_34_aarch64 -> dist/*.whl
-# Callers (ci.yml, pypi.yml) consume these via actions/download-artifact.
+# ci.yml consumes these via actions/download-artifact.
 
 on:
   workflow_call:
