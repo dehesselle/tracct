@@ -2,10 +2,8 @@
 # Copyright (C) 2020 Eric Lesiuta
 from __future__ import annotations
 
-import ctypes
 import logging
 import multiprocessing
-import os
 import queue
 import signal
 import sys
@@ -13,30 +11,15 @@ import threading
 import time
 
 from picosnitch.config import Config
-from picosnitch.constants import FD_CACHE
 from picosnitch.process_manager import ProcessManager
 from picosnitch.subprocesses.monitor import run_monitor
 from picosnitch.subprocesses.primary import run_primary
 from picosnitch.subprocesses.secondary import run_secondary
-from picosnitch.types import State
 from picosnitch.utils import sd_notify
 
 
-def run_main_loop(config: Config, state: State) -> int:
+def run_main_loop(config: Config) -> int:
     """coordinates all picosnitch subprocesses"""
-    # init fanotify; CDLL(None) binds fanotify_* from the already-loaded libc, avoiding
-    # find_library's gcc/objdump $PATH fallback (like bpf_wrapper._resolve_library)
-    libc = ctypes.CDLL(None)
-    _FAN_CLOEXEC = 0x1
-    _FAN_CLASS_CONTENT = 0x4
-    _FAN_UNLIMITED_MARKS = 0x20
-    flags = _FAN_CLOEXEC | _FAN_CLASS_CONTENT
-    if FD_CACHE >= 8192:
-        flags |= _FAN_UNLIMITED_MARKS
-    fan_fd = libc.fanotify_init(flags, os.O_RDONLY)
-    if fan_fd < 0:
-        logging.error("fanotify_init() failed")
-        sys.exit(1)
     # start subprocesses
     event_pipes = [multiprocessing.Pipe(duplex=False) for _ in range(5)]
     event_recv_pipes, event_send_pipes = zip(*event_pipes)
@@ -47,7 +30,6 @@ def run_main_loop(config: Config, state: State) -> int:
         target=run_monitor,
         init_args=(
             config,
-            fan_fd,
             event_send_pipes,
             q_error,
         ),
@@ -57,7 +39,6 @@ def run_main_loop(config: Config, state: State) -> int:
         target=run_primary,
         init_args=(
             config,
-            state,
             event_recv_pipes,
             secondary_send_pipe,
             q_error,
@@ -68,8 +49,6 @@ def run_main_loop(config: Config, state: State) -> int:
         target=run_secondary,
         init_args=(
             config,
-            state,
-            fan_fd,
             secondary_recv_pipe,
             p_primary.q_in,
             q_error,

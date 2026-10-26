@@ -221,7 +221,7 @@ def _top_loop(stdscr, sub: LiveFeedSubscriber) -> int:
                 visible_bot = min(len(recent_list), scroll_offset + rec_rows)
                 scroll_indicator = f"  [{visible_top}-{visible_bot} / {len(recent_list)}]"
             rec_marker = "*" if not focus_summary else " "
-            rec_hdr = f"{rec_marker}{'TIME':<8} {'NAME':<16} {'PNAME':<12} {'GPNAME':<12} {'LPORT':>5} {'REMOTE':<25} {'SEND':>7} {'RECV':>7}{scroll_indicator}"
+            rec_hdr = f"{rec_marker}{'TIME':<8} {'NAME':<16} {'PNAME':<12} {'LPORT':>5} {'REMOTE':<38}{'SEND':>7} {'RECV':>7}{scroll_indicator}"
             _chrome._safe_addnstr(stdscr, split, 0, rec_hdr.ljust(max_x), max_x - 1, curses.A_UNDERLINE)
             for i, event in enumerate(recent_list[scroll_offset : scroll_offset + rec_rows]):
                 ts = event.get("_t", 0)
@@ -235,9 +235,8 @@ def _top_loop(stdscr, sub: LiveFeedSubscriber) -> int:
                     f" {t:<8} "
                     f"{(event.get('name') or '')[:16]:<16} "
                     f"{(event.get('pname') or '')[:12]:<12} "
-                    f"{(event.get('gpname') or '')[:12]:<12} "
                     f"{lport_s:>5} "
-                    f"{remote[:25]:<25} "
+                    f"{remote[:38]:<38} "
                     f"{_format_bytes(int(event.get('send', 0) or 0)):>7} "
                     f"{_format_bytes(int(event.get('recv', 0) or 0)):>7}"
                 )

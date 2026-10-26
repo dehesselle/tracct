@@ -2,7 +2,6 @@
 # Copyright (C) 2020 Eric Lesiuta
 from __future__ import annotations
 
-import collections
 import ipaddress
 import logging
 import multiprocessing
@@ -16,15 +15,8 @@ from pathlib import Path
 
 from picosnitch.config import Config
 from picosnitch.constants import DB_PATH, DB_VERSION, RETRY_BUFFER_MAX, VERSION
-from picosnitch.types import BpfEvent, ProcessHashInfo, State
-from picosnitch.utils import (
-    get_fanotify_events,
-    get_sha256_fd,
-    get_sha256_pid,
-    reverse_dns_is_cached,
-    reverse_dns_lookup,
-    sqlite_error_means_corrupt,
-)
+from picosnitch.types import BpfEvent
+from picosnitch.utils import reverse_dns_is_cached, reverse_dns_lookup, sqlite_error_means_corrupt
 
 # new (uncached, blocking) reverse-DNS lookups per write; ~256 * a few ms stays under a second
 REVERSE_DNS_LOOKUPS_PER_WRITE = 256
@@ -58,10 +50,10 @@ def maintain_database(file_path: Path, retention_days: int) -> None:
             logging.error("picosnitch: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no connections deleted")
         cur.execute("DELETE FROM domains WHERE id != 0 AND id NOT IN (SELECT DISTINCT domain_id FROM connections)")
         cur.execute("DELETE FROM addresses WHERE id != 0 AND id NOT IN (SELECT DISTINCT laddr_id FROM connections UNION SELECT DISTINCT raddr_id FROM connections)")
-        # executables interns (exe, name, cmdline, sha256); a new cmdline is a new row, so a high
+        # executables interns (exe, name, cmdline); a new cmdline is a new row, so a high
         # argv cardinality (per-invocation tokens) grows it unbounded without this. purge orphans
         # like domains/addresses above, keeping it consistent with the connection retention window
-        cur.execute("DELETE FROM executables WHERE id != 0 AND id NOT IN (SELECT exe_id FROM connections UNION SELECT pexe_id FROM connections UNION SELECT gpexe_id FROM connections)")
+        cur.execute("DELETE FROM executables WHERE id != 0 AND id NOT IN (SELECT exe_id FROM connections UNION SELECT pexe_id FROM connections)")
         con.commit()
         con.close()
     except sqlite3.DatabaseError as e:
@@ -83,50 +75,9 @@ def maintain_database(file_path: Path, retention_days: int) -> None:
         sys.exit(1)
 
 
-def resolve_hash(
-    state: State,
-    fan_mod_cnt: dict[str, int],
-    proc: ProcessHashInfo,
-    q_out: multiprocessing.Queue[bytes],
-    q_error: multiprocessing.Queue[str],
-) -> str:
-    """get sha256 of executable and report it to the primary subprocess if it is new"""
-    # short-circuit when there is no executable to hash (e.g. kernel grandparent /
-    # init's parent, daemons whose parent walk hits PID 0 / swapper, or events
-    # where /proc readability was lost). returning "" produces a stable
-    # ("", "", "", "") executables row instead of spamming hash-failure
-    # toasts and polluting the DB with garbage sha256 values.
-    if not proc["exe"] or proc["pid"] <= 0:
-        return ""
-    mod_cnt = fan_mod_cnt.get("*", 0) + fan_mod_cnt.get("%d %d" % (proc["dev"], proc["ino"]), 0)
-    sha_fd_error = ""
-    sha256 = get_sha256_fd(proc["fd"], proc["dev"], proc["ino"], mod_cnt)
-    if sha256.startswith("!"):
-        # fallback on trying to read directly (if still alive) if fd_cache fails, probable causes include:
-        # system suspends in the middle of hashing (since cache is reset)
-        # process too short lived to open fd or stat in time (then fallback will fail too)
-        # too many executables on system (raise LimitNOFILE= in the unit)
-        sha_fd_error = sha256
-        sha256 = get_sha256_pid(proc["pid"], proc["dev"], proc["ino"], mod_cnt)
-        if sha256.startswith("!"):
-            # report what went wrong (may be cause for suspicion)
-            q_error.put(sha_fd_error[4:] + " and " + sha256[4:] + " for " + str(proc))
-            sha256 = sha_fd_error + " " + sha256
-        elif proc["exe"] not in state["SHA256"] or sha256 not in state["SHA256"][proc["exe"]]:
-            q_error.put("Fallback to PID hash successful on " + sha_fd_error[4:] + " for " + str(proc))
-    known_hashes = state["SHA256"].setdefault(proc["exe"], {})
-    if sha256 not in known_hashes:
-        known_hashes[sha256] = time.strftime("%Y-%m-%d %H:%M:%S")
-        q_out.put(pickle.dumps({"type": "sha256", "name": proc["name"], "exe": proc["exe"], "sha256": sha256}))
-    return sha256
-
-
 def build_log_entries(
     config: Config,
-    state: State,
-    fan_mod_cnt: dict[str, int],
     new_processes: list[BpfEvent],
-    q_out: multiprocessing.Queue[bytes],
     q_error: multiprocessing.Queue[str],
     ignored_networks: list,
 ) -> list[tuple]:
@@ -149,21 +100,13 @@ def build_log_entries(
         if not isinstance(proc, dict):
             q_error.put("sync error between secondary and primary, received '%s' in middle of transfer" % str(proc))
             continue
-        # get the sha256 of the process executable, parent, and grandparent
-        sha256 = resolve_hash(state, fan_mod_cnt, proc, q_out, q_error)
-        pproc: ProcessHashInfo = {"pid": proc["ppid"], "name": proc["pname"], "exe": proc["pexe"], "fd": proc["pfd"], "dev": proc["pdev"], "ino": proc["pino"]}
-        psha256 = resolve_hash(state, fan_mod_cnt, pproc, q_out, q_error)
-        gpproc: ProcessHashInfo = {"pid": proc["gppid"], "name": proc["gpname"], "exe": proc["gpexe"], "fd": proc["gpfd"], "dev": proc["gpdev"], "ino": proc["gpino"]}
-        gpsha256 = resolve_hash(state, fan_mod_cnt, gpproc, q_out, q_error)
         # join or omit commands from logs
         if config.log.commands:
             proc["cmdline"] = clean_cmdline(proc["cmdline"])
             proc["pcmdline"] = clean_cmdline(proc["pcmdline"])
-            proc["gpcmdline"] = clean_cmdline(proc["gpcmdline"])
         else:
             proc["cmdline"] = ""
             proc["pcmdline"] = ""
-            proc["gpcmdline"] = ""
         # reverse dns lookup or omit with IP from logs
         if config.log.addresses:
             if not proc["domain"] and proc["raddr"]:
@@ -182,8 +125,6 @@ def build_log_entries(
         ignored = False
         if proc["rport"] in config.log.ignore_ports or proc["lport"] in config.log.ignore_ports:
             ignored = True
-        if not ignored and sha256 in config.log.ignore_sha256:
-            ignored = True
         if not ignored:
             for domain_prefix in config.log.ignore_domains:
                 if proc["domain"].startswith(domain_prefix):
@@ -199,13 +140,11 @@ def build_log_entries(
             if any(laddr in network for network in ignored_networks):
                 continue
         # create sql entry (exe info as tuples for normalization, connection-specific fields)
-        exe_key = (proc["exe"], proc["name"], proc["cmdline"], sha256)
-        pexe_key = (proc["pexe"], proc["pname"], proc["pcmdline"], psha256)
-        gpexe_key = (proc["gpexe"], proc["gpname"], proc["gpcmdline"], gpsha256)
+        exe_key = (proc["exe"], proc["name"], proc["cmdline"])
+        pexe_key = (proc["pexe"], proc["pname"], proc["pcmdline"])
         event = (
             exe_key,
             pexe_key,
-            gpexe_key,
             proc["uid"],
             int(proc.get("family", 0) or 0),
             int(proc.get("protocol", 0) or 0),
@@ -227,28 +166,26 @@ def build_log_entries(
 
 def run_secondary(
     config: Config,
-    state: State,
-    fan_fd: int,
     secondary_pipe: multiprocessing.connection.Connection,
     q_primary_in: multiprocessing.Queue[bytes],
     q_error: multiprocessing.Queue[str],
     _q_in: multiprocessing.Queue,
     _q_out: multiprocessing.Queue,
 ) -> int:
-    """second to receive connection data from monitor, less responsive than primary, hashes executables and checks fanotify, writes the connection log and reports new sha256s back to the primary subprocess"""
+    """second to receive connection data from monitor, less responsive than primary, writes the connection log"""
     parent_process = multiprocessing.parent_process()
     assert parent_process is not None
     # init sql
-    # connections columns: contime, send, recv, events, exe_id, pexe_id, gpexe_id, uid,
-    # family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns  (16 cols).
-    # executables: (id, exe, name, cmdline, sha256). domains/addresses: (id, value).
-    sqlite_insert_exe = "INSERT OR IGNORE INTO executables(exe, name, cmdline, sha256) VALUES (?, ?, ?, ?)"
-    sqlite_select_exe = "SELECT id FROM executables WHERE exe = ? AND name = ? AND cmdline = ? AND sha256 = ?"
+    # connections columns: contime, send, recv, events, exe_id, pexe_id, uid,
+    # family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns  (15 cols).
+    # executables: (id, exe, name, cmdline). domains/addresses: (id, value).
+    sqlite_insert_exe = "INSERT OR IGNORE INTO executables(exe, name, cmdline) VALUES (?, ?, ?)"
+    sqlite_select_exe = "SELECT id FROM executables WHERE exe = ? AND name = ? AND cmdline = ?"
     sqlite_insert_dom = "INSERT OR IGNORE INTO domains(domain) VALUES (?)"
     sqlite_select_dom = "SELECT id FROM domains WHERE domain = ?"
     sqlite_insert_addr = "INSERT OR IGNORE INTO addresses(addr) VALUES (?)"
     sqlite_select_addr = "SELECT id FROM addresses WHERE addr = ?"
-    sqlite_insert_conn = "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    sqlite_insert_conn = "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     file_path = DB_PATH
     exe_id_cache: dict[tuple, int] = {}
     domain_id_cache: dict[str, int] = {"": 0}
@@ -259,8 +196,6 @@ def run_secondary(
     pending_cache_keys: list[tuple] = []
     if config.database.enabled:
         maintain_database(file_path, config.database.retention_days)
-    # init fanotify mod counter = {"st_dev st_ino": modify_count}, and traffic counter = {"send|recv pid socket_ino": bytes}
-    fan_mod_cnt = collections.defaultdict(int)
     # get network address and mask for ignored IP subnets
     ignored_networks = [ipaddress.ip_network(ip_subnet, strict=False) for ip_subnet in config.log.ignore_ips]
 
@@ -313,13 +248,11 @@ def run_secondary(
                     q_error.put("sync error between secondary and primary on receive (expected a batch list)")
             else:
                 q_error.put("sync error between secondary and primary on receive (timed out waiting for batch)")
-            # check for modified executables
-            get_fanotify_events(fan_fd, fan_mod_cnt, q_error)
             # process connection data
             # a backward wall-clock jump must not stall writes; contime still uses time.time()
             if time.monotonic() - last_write > config.database.write_limit_seconds and (transaction or new_processes):
                 current_write = time.monotonic()
-                new_entries = build_log_entries(config, state, fan_mod_cnt, new_processes, q_primary_in, q_error, ignored_networks)
+                new_entries = build_log_entries(config, new_processes, q_error, ignored_networks)
                 transaction += new_entries
                 new_processes = []
                 transaction_success = False
@@ -328,14 +261,13 @@ def run_secondary(
                         con = sqlite3.connect(file_path)
                         with con:
                             conn_rows = []
-                            for contime, send, recv, n_events, exe_key, pexe_key, gpexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns in transaction:
+                            for contime, send, recv, n_events, exe_key, pexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns in transaction:
                                 exe_id = resolve_exe_id(con, exe_key)
                                 pexe_id = resolve_exe_id(con, pexe_key)
-                                gpexe_id = resolve_exe_id(con, gpexe_key)
                                 laddr_id = resolve_addr_id(con, laddr)
                                 raddr_id = resolve_addr_id(con, raddr)
                                 domain_id = resolve_domain_id(con, domain)
-                                conn_rows.append((contime, send, recv, n_events, exe_id, pexe_id, gpexe_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns))
+                                conn_rows.append((contime, send, recv, n_events, exe_id, pexe_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns))
                             con.executemany(sqlite_insert_conn, conn_rows)
                         con.close()
                         transaction_success = True

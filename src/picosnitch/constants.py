@@ -2,7 +2,6 @@
 # Copyright (C) 2020 Eric Lesiuta
 
 import os
-import resource
 import tomllib
 import typing
 from pathlib import Path
@@ -27,9 +26,6 @@ STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/
 RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/picosnitch")
 DB_PATH: typing.Final[Path] = STATE_DIR / "picosnitch.db"
 
-# one cached fd per executable; raise the limit with LimitNOFILE= in the unit
-FD_CACHE: typing.Final[int] = max(1, resource.getrlimit(resource.RLIMIT_NOFILE)[0] - 128)
-PID_CACHE: typing.Final[int] = max(8192, 2 * FD_CACHE)
 # bounds the secondary's write-retry buffer near 200 MB (~2 KB/entry) on a persistent outage
 RETRY_BUFFER_MAX: typing.Final[int] = 100000
 # btrfs device numbers differ per subvolume and its inodes aren't unique across subvolumes,
@@ -56,14 +52,13 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 # `family` is AF_INET (2), AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown.
 # `protocol` is an IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown.
 # `netns` is the inode of the socket's network namespace.
-DB_VERSION: typing.Final[int] = 4
+DB_VERSION: typing.Final[int] = 5
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
     name TEXT NOT NULL,
     cmdline TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    UNIQUE(exe, name, cmdline, sha256)"""
+    UNIQUE(exe, name, cmdline)"""
 SCHEMA_DOMAINS: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     domain TEXT NOT NULL UNIQUE"""
@@ -77,7 +72,6 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     events INTEGER NOT NULL,
     exe_id INTEGER NOT NULL REFERENCES executables(id),
     pexe_id INTEGER NOT NULL REFERENCES executables(id),
-    gpexe_id INTEGER NOT NULL REFERENCES executables(id),
     uid INTEGER NOT NULL,
     family INTEGER NOT NULL,
     protocol INTEGER NOT NULL,

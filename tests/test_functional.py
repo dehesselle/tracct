@@ -8,11 +8,9 @@ These tests verify:
 1. Picosnitch daemon starts and stops correctly
 2. Network traffic is captured with correct byte counts
 3. Short-lived processes are detected with exe paths resolved
-4. Executable hashes are computed correctly
-5. Database and log files are populated correctly
+4. Database and log files are populated correctly
 """
 
-import hashlib
 import os
 import shutil
 import signal
@@ -46,18 +44,6 @@ os.environ["RUNTIME_DIRECTORY"] = str(RUN_DIR)
 DB_WRITE_LIMIT = 5  # seconds - we set this in config
 STARTUP_WAIT = 8  # seconds to wait for picosnitch to fully start
 TRAFFIC_WAIT = 3  # seconds to wait after network activity
-
-
-def get_executable_hash(exe_path: str) -> str | None:
-    """Calculate SHA256 hash of an executable file."""
-    sha256 = hashlib.sha256()
-    try:
-        with open(exe_path, "rb") as f:
-            while data := f.read(1048576):
-                sha256.update(data)
-        return sha256.hexdigest()
-    except (FileNotFoundError, PermissionError):
-        return None
 
 
 def find_executable(name: str) -> str | None:
@@ -230,23 +216,6 @@ class TestShortLivedProcesses:
             assert exe != "", f"curl exe should be resolved, got empty for raddr={raddr} rport={rport}"
             assert "curl" in exe, f"curl exe should contain 'curl', got: {exe}"
 
-    def test_curl_sha256_correct(self, picosnitch_session):
-        """Test that curl's SHA256 hash is computed correctly."""
-        curl_exe = find_executable("curl")
-        if not curl_exe:
-            pytest.skip("curl not available")
-
-        expected_hash = get_executable_hash(curl_exe)
-
-        subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
-
-        time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
-
-        results = query_db("SELECT e.sha256 FROM connections c JOIN executables e ON c.exe_id = e.id WHERE e.name LIKE '%curl%' AND e.sha256 NOT LIKE '!%' LIMIT 1")
-        assert len(results) > 0, "Should have a valid SHA256 for curl"
-        sha256 = results[0][0]
-        assert sha256 == expected_hash, f"SHA256 mismatch: got {sha256}, expected {expected_hash}"
-
     def test_wget_exe_resolved(self, picosnitch_session):
         """Test that wget's executable path is resolved."""
         wget_exe = find_executable("wget")
@@ -298,14 +267,6 @@ class TestShortLivedProcesses:
             name, exe, raddr, rport, send, recv, domain = conn
             assert exe != "", "All curl connections should have exe resolved"
 
-    def test_no_read_errors(self, picosnitch_session):
-        """Test that there are no Read Errors in the error log after curl/wget."""
-        error_log = DAEMON_LOG
-        if error_log.exists():
-            content = error_log.read_text()
-            read_errors = [line for line in content.splitlines() if "Read Error" in line and "curl" in line]
-            assert len(read_errors) == 0, f"Should not have Read Errors for curl: {read_errors[:3]}"
-
 
 class TestDatabaseIntegrity:
     """Tests for database integrity."""
@@ -330,6 +291,11 @@ class TestDatabaseIntegrity:
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='executables'")
         tables = cur.fetchall()
         assert len(tables) == 1, "executables table should exist"
+        # identity is by path: no hash column, and process ancestry stops at the parent
+        cur.execute("PRAGMA table_info(executables)")
+        assert [row[1] for row in cur.fetchall()] == ["id", "exe", "name", "cmdline"]
+        cur.execute("PRAGMA table_info(connections)")
+        assert "gpexe_id" not in [row[1] for row in cur.fetchall()]
         con.close()
 
     def test_no_device_mismatch_errors(self, picosnitch_session):
@@ -404,24 +370,11 @@ assert got == total, got
         assert recv_total == total, f"spliced recv bytes {recv_total} != {total} transferred (2x means double counting), rows: {rows}"
 
 
-class TestGrandparentTracking:
-    """Tests for grandparent process tracking."""
+class TestParentTracking:
+    """Tests for parent process tracking."""
 
-    def test_gpexe_id_column_exists(self, picosnitch_session):
-        """Test that connections table has gpexe_id column."""
-        subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
-        time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
-
-        db_path = STATE_DIR / "picosnitch.db"
-        con = sqlite3.connect(str(db_path))
-        cur = con.cursor()
-        cur.execute("PRAGMA table_info(connections)")
-        cols = [row[1] for row in cur.fetchall()]
-        con.close()
-        assert "gpexe_id" in cols, f"connections table should have gpexe_id column, got {cols}"
-
-    def test_shell_curl_grandparent(self, picosnitch_session):
-        """Test that grandparent is captured when a shell script invokes curl."""
+    def test_shell_curl_parent(self, picosnitch_session):
+        """Test that the parent is captured when a shell invokes curl."""
         curl_exe = find_executable("curl")
         if not curl_exe:
             pytest.skip("curl not available")
@@ -451,12 +404,8 @@ class TestGrandparentTracking:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            # Bash exec's the LAST command of any shell/subshell in place to avoid
-            # an extra process. To guarantee a real fork at every level, append a
-            # no-op (`:`) AFTER the inner command at every level so nothing is ever
-            # "last". Chain:
-            #   pytest → bash(outer) → bash(subshell-1) → bash(subshell-2) → curl
-            # so curl's parent = subshell-2, grandparent = subshell-1.
+            # Bash exec's the last command in place to avoid an extra process;
+            # the trailing no-op (`:`) makes it fork curl, so curl's parent is bash.
             #
             # Retry the whole invocation a few times to absorb rare event drops
             # on slow/emulated CI runners.
@@ -464,7 +413,7 @@ class TestGrandparentTracking:
             for _ in range(5):
                 start_time = int(time.time())
                 subprocess.run(
-                    [bash_exe, "-c", f"( ( curl -s http://127.0.0.1:{port}/ -o /dev/null; : ); : ); :"],
+                    [bash_exe, "-c", f"curl -s http://127.0.0.1:{port}/ -o /dev/null; :"],
                     capture_output=True,
                     timeout=30,
                 )
@@ -474,9 +423,9 @@ class TestGrandparentTracking:
                 # server) and contime within the invocation window. This isolates
                 # us from any other curl traffic happening on the box.
                 results = query_db(
-                    "SELECT g.exe, g.name FROM connections c "
+                    "SELECT p.exe, p.name FROM connections c "
                     "JOIN executables e ON c.exe_id = e.id "
-                    "JOIN executables g ON c.gpexe_id = g.id "
+                    "JOIN executables p ON c.pexe_id = p.id "
                     "WHERE e.name LIKE '%curl%' AND c.rport = ? AND c.contime >= ?",
                     (port, start_time),
                 )
@@ -486,64 +435,9 @@ class TestGrandparentTracking:
             server.shutdown()
             server.server_close()
 
-        assert len(results) > 0, f"Should have at least one curl connection with grandparent (rport={port})"
-        gpexes = [row[0] for row in results]
-        assert any("sh" in gpexe or "bash" in gpexe for gpexe in gpexes), f"Grandparent should be a shell, got: {gpexes}"
-
-    def test_kernel_grandparent_no_pollution(self, picosnitch_session):
-        """Test that processes without a grandparent (e.g. parented to init or
-        kernel-reparented daemons) produce a clean empty sentinel row instead
-        of garbage sha256s and 'Read Error' log spam.
-
-        Triggered by double-forking so the curl is reparented to PID 1, making
-        its grandparent the kernel (gppid=0 in BPF)."""
-        curl_exe = find_executable("curl")
-        if not curl_exe:
-            pytest.skip("curl not available")
-
-        # Double-fork: parent forks A, A forks B then exits, so B is reparented
-        # to init. B then execs curl, so curl's parent is init (pid 1) and
-        # curl's grandparent is the kernel (gppid=0).
-        daemon_script = (
-            "import os, sys;\n"
-            "pid = os.fork()\n"
-            "if pid:\n"
-            "    os.waitpid(pid, 0); sys.exit(0)\n"
-            "os.setsid()\n"
-            "pid2 = os.fork()\n"
-            "if pid2:\n"
-            "    sys.exit(0)\n"
-            "os.execvp('curl', ['curl', '-s', 'http://example.com', '-o', '/dev/null'])\n"
-        )
-        start_time = int(time.time())
-        subprocess.run([PYTHON_EXE, "-c", daemon_script], capture_output=True, timeout=30)
-        time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT + 2)
-
-        # No executables row should contain a garbage sha (the old bug wrote
-        # "!!! FD Read Error !!! ..." literal strings into sha256).
-        bad = query_db("SELECT id, name, sha256 FROM executables WHERE sha256 LIKE '%Error%'")
-        assert bad == [], f"Found executables with garbage error-string sha256: {bad}"
-
-        # No connection should reference a grandparent named 'swapper/0' or similar
-        # kernel pseudo-process (the old bug captured these as real grandparents).
-        kernel_gp = query_db("SELECT DISTINCT g.name FROM connections c JOIN executables g ON c.gpexe_id = g.id WHERE g.name LIKE 'swapper%' OR g.name LIKE 'kthread%'")
-        assert kernel_gp == [], f"Kernel pseudo-processes captured as grandparents: {kernel_gp}"
-
-        # The deterministic anti-pollution guarantees are the two asserts above (no garbage
-        # sha, no kernel pseudo-process grandparent) -- those must always hold. The positive
-        # checks below are best-effort: on a host with process subreapers the double-forked
-        # curl reparents to a subreaper (not pid 1) so it is not gppid=0, and both the empty
-        # sentinel and this curl's capture then hinge on incidental timing under full-suite
-        # load. So we don't require them, but any curl we did capture must have a clean
-        # grandparent (the empty sentinel, or a real named executable -- never garbage).
-        results = query_db(
-            "SELECT g.exe, g.name, g.sha256 FROM connections c JOIN executables e ON c.exe_id = e.id JOIN executables g ON c.gpexe_id = g.id WHERE e.name LIKE '%curl%' AND c.contime >= ?",
-            (start_time,),
-        )
-        for gexe, gname, gsha in results:
-            is_sentinel = (gexe, gname, gsha) == ("", "", "")
-            is_clean_real = bool(gname) and "Error" not in gsha and not gsha.startswith("!")
-            assert is_sentinel or is_clean_real, f"curl grandparent is neither empty sentinel nor cleanly resolved: {(gexe, gname, gsha)}"
+        assert len(results) > 0, f"Should have at least one curl connection with a parent (rport={port})"
+        pexes = [row[0] for row in results]
+        assert any("bash" in pexe for pexe in pexes), f"Parent should be bash, got: {pexes}"
 
 
 if __name__ == "__main__":

@@ -3,26 +3,14 @@
 from __future__ import annotations
 
 import collections
-import ctypes
-import fcntl
-import functools
-import hashlib
 import ipaddress
-import json
-import logging
-import multiprocessing
 import os
 import socket
 import sqlite3
 import stat
-import tempfile
-import termios
 import unicodedata
 import urllib.parse
 from pathlib import Path
-
-from picosnitch.constants import PID_CACHE, ST_DEV_MASK, STATE_DIR
-from picosnitch.types import FanotifyEventMetadata, State
 
 
 def sd_notify(message: str) -> None:
@@ -84,99 +72,9 @@ def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Co
     raise sqlite3.OperationalError(f"could not open {db_path} for reading: {last_err}")
 
 
-def load_state() -> State:
-    """read data for the state dictionary from state.json or init new if not found"""
-    data: State = {
-        "Error Log": [],
-        "Exe Log": [],
-        "Executables": {},
-        "Names": {},
-        "Parent Executables": {},
-        "Parent Names": {},
-        "Grandparent Executables": {},
-        "Grandparent Names": {},
-        "SHA256": {},
-    }
-    state_path = STATE_DIR / "state.json"
-    keys = ["Executables", "Names", "Parent Executables", "Parent Names", "Grandparent Executables", "Grandparent Names", "SHA256"]
-    if state_path.exists() or state_path.is_symlink():
-        try:
-            state_fd = os.open(state_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            state_stat = os.fstat(state_fd)
-            if not stat.S_ISREG(state_stat.st_mode) or state_stat.st_nlink != 1:
-                os.close(state_fd)
-                raise OSError("state.json is not a regular, singly linked file")
-            if state_stat.st_size > 256 * 1024 * 1024:
-                os.close(state_fd)
-                raise OSError("state.json exceeds 256 MiB")
-            os.set_blocking(state_fd, True)
-            with os.fdopen(state_fd, "r", encoding="utf-8", errors="surrogateescape") as json_file:
-                state_record = json.load(json_file)
-            if not isinstance(state_record, dict):
-                raise ValueError("state.json is not a JSON object")
-            for key in keys:
-                if key in state_record:
-                    value = state_record[key]
-                    if not isinstance(value, dict):
-                        raise ValueError(f"state.json[{key!r}] is not an object")
-                    # validate the inner shape too: SHA256 maps exe -> {sha256: result}, the rest
-                    # map exe -> [name history]. a wrong-typed entry (e.g. a str/int) breaks the
-                    # secondary's hash bookkeeping on every write cycle
-                    inner_type = dict if key == "SHA256" else list
-                    if not all(isinstance(v, inner_type) for v in value.values()):
-                        raise ValueError(f"state.json[{key!r}] has a non-{inner_type.__name__} entry")
-                    data[key] = value  # ty: ignore[invalid-key]
-        except (OSError, ValueError) as e:
-            # corrupt/unreadable state must not crash-loop the daemon (JSONDecodeError is a
-            # ValueError): quarantine the bad file and start fresh instead of sys.exit(1)
-            logging.error(f"invalid state.json, starting with empty state: {e}")
-            try:
-                state_path.rename(state_path.with_name("state.json.bad"))
-            except OSError:
-                pass
-            for key in keys:
-                data[key] = {}  # ty: ignore[invalid-key]
-    return data
-
-
 def sanitize_log_line(line: str) -> str:
     """Remove control characters from a log line to prevent terminal-escape / log injection."""
     return "".join(c for c in line if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"))
-
-
-def flush_logs(state: State) -> None:
-    """log pending error and new-executable entries to stderr (the journal under systemd), then clear the lists"""
-    for line in state["Error Log"]:
-        logging.getLogger("picosnitch.error").warning(sanitize_log_line(line))
-    state["Error Log"] = []
-    for line in state["Exe Log"]:
-        logging.getLogger("picosnitch.exe").info(sanitize_log_line(line))
-    state["Exe Log"] = []
-
-
-def save_state(state: State, write_record: bool = True) -> None:
-    """flush logs then atomically write state.json via tempfile + os.replace"""
-    flush_logs(state)
-    try:
-        if write_record:
-            state_path = STATE_DIR / "state.json"
-            state_data = {k: state[k] for k in ("Executables", "Names", "Parent Executables", "Parent Names", "Grandparent Executables", "Grandparent Names", "SHA256")}
-            fd = tempfile.NamedTemporaryFile(dir=STATE_DIR, mode="w", prefix=".state.", suffix=".tmp", delete=False, encoding="utf-8", errors="surrogateescape")
-            try:
-                json.dump(state_data, fd, indent=2, separators=(",", ": "), sort_keys=True, ensure_ascii=False)
-                fd.flush()
-                os.fsync(fd.fileno())
-                fd.close()
-                os.replace(fd.name, state_path)
-            except BaseException:
-                fd.close()
-                try:
-                    os.unlink(fd.name)
-                except OSError:
-                    pass
-                raise
-    except Exception as e:
-        logging.error(f"picosnitch write error (state.json): {type(e).__name__}{e.args}")
 
 
 # reverse-DNS results keyed by ip; getnameinfo blocks, so callers probe reverse_dns_is_cached() first
@@ -212,73 +110,3 @@ def reverse_dns_lookup(ip: str) -> str:
     if len(_reverse_dns_cache) > _REVERSE_DNS_CACHE_MAX:
         _reverse_dns_cache.popitem(last=False)
     return result
-
-
-@functools.lru_cache(maxsize=PID_CACHE)
-def get_sha256_fd(path: str, st_dev: int, st_ino: int, _mod_cnt: int) -> str:
-    """get sha256 of process executable from /proc/monitor_pid/fd/proc_exe_fd"""
-    try:
-        sha256 = hashlib.sha256()
-        with open(path, "rb") as f:
-            if not st_ino:
-                return "!!! FD Stat Error"
-            if (st_dev, st_ino) != get_fstat(f.fileno()):
-                return "!!! FD Cache Error"
-            while data := f.read(1048576):
-                sha256.update(data)
-        return sha256.hexdigest()
-    except Exception:
-        return "!!! FD Read Error"
-
-
-@functools.lru_cache(maxsize=PID_CACHE)
-def get_sha256_pid(pid: int, st_dev: int, st_ino: int, _mod_cnt: int = 0) -> str:
-    """get sha256 of process executable from /proc/pid/exe"""
-    try:
-        sha256 = hashlib.sha256()
-        with open(f"/proc/{pid}/exe", "rb") as f:
-            if (st_dev, st_ino) != get_fstat(f.fileno()):
-                return "!!! PID Recycled Error"
-            while data := f.read(1048576):
-                sha256.update(data)
-        return sha256.hexdigest()
-    except Exception:
-        return "!!! PID Read Error"
-
-
-def get_fstat(fd: int) -> tuple[int, int]:
-    """get (st_dev, st_ino) or (0, 0) if fails"""
-    try:
-        stat = os.fstat(fd)
-        return stat.st_dev & ST_DEV_MASK, stat.st_ino
-    except Exception:
-        return 0, 0
-
-
-def get_fanotify_events(fan_fd: int, fan_mod_cnt: dict[str, int], q_error: multiprocessing.Queue[str]) -> None:
-    """check if any watched executables were modified and increase count to trigger rehash"""
-    sizeof_event = ctypes.sizeof(FanotifyEventMetadata)
-    bytes_avail = ctypes.c_int()
-    fcntl.ioctl(fan_fd, termios.FIONREAD, bytes_avail)
-    for _ in range(0, bytes_avail.value, sizeof_event):
-        event_fd = -1
-        try:
-            fanotify_event_metadata = FanotifyEventMetadata()
-            buf = os.read(fan_fd, sizeof_event)
-            if len(buf) != sizeof_event:
-                raise OSError(f"short fanotify event: {len(buf)}/{sizeof_event}")
-            ctypes.memmove(ctypes.addressof(fanotify_event_metadata), buf, sizeof_event)
-            event_fd = fanotify_event_metadata.fd
-            if fanotify_event_metadata.mask & 0x4000:  # FAN_Q_OVERFLOW
-                fan_mod_cnt["*"] = fan_mod_cnt.get("*", 0) + 1
-                q_error.put("fanotify queue overflowed; invalidating all cached executable hashes")
-                continue
-            if event_fd < 0:
-                raise OSError(f"fanotify event has invalid fd {event_fd}")
-            st_dev, st_ino = get_fstat(event_fd)
-            fan_mod_cnt[f"{st_dev} {st_ino}"] += 1
-        except Exception as e:
-            q_error.put("Fanotify Event %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
-        finally:
-            if event_fd >= 0:
-                os.close(event_fd)

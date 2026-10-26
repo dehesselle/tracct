@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import collections
-import ctypes
 import ipaddress
 import multiprocessing
 import os
@@ -19,11 +18,12 @@ import typing
 
 from picosnitch.bpf_wrapper import BPF, ConnKey4, ConnKey6, ConnKeyPacket, ConnVal, check_bpf_requirements, find_bpf_object, kernel_symbol_addrs
 from picosnitch.config import Config
-from picosnitch.constants import FD_CACHE, ST_DEV_MASK
-from picosnitch.utils import get_fstat
+from picosnitch.constants import ST_DEV_MASK
 
 # entries per drain handoff: a send per event stalls the drain, one per drain lands a burst at once
 CONN_DRAIN_CHUNK: typing.Final[int] = 2048
+# bound of each exe resolution cache and of the dns answer cache
+LOOKUP_CACHE_MAX: typing.Final[int] = 8192
 
 
 def _read_proc_comm(pid: int) -> str:
@@ -76,27 +76,143 @@ def _read_proc_status_uid(pid: int) -> int:
     return 0
 
 
-def _close_unlinked_fds(fd_dict: collections.OrderedDict[str, tuple], used: set[str], remove_mark: typing.Callable[[int], object]) -> None:
-    """close cached fds whose executable has been deleted (st_nlink == 0), since the fd
-    and its fanotify mark are all that keep the kernel from freeing the file's disk space.
+def _cache_get(cache: collections.OrderedDict[str, str], key: str) -> str:
+    try:
+        cache.move_to_end(key)
+        return cache[key]
+    except KeyError:
+        return ""
 
-    fds used since the last sweep stay open: a live process from a deleted binary keeps its
-    fd instead of being reopened (and rehashed) every sweep, and the secondary subprocess
-    gets at least one sweep interval to hash a binary that was deleted right after it ran."""
-    for sig, entry in list(fd_dict.items()):
-        fd = entry[0]
-        if not fd or sig in used:
-            continue
+
+def _cache_put(cache: collections.OrderedDict[str, str], key: str, value: str) -> str:
+    """store value and return the key evicted to keep the cache bounded, or ''"""
+    cache[key] = value
+    cache.move_to_end(key)
+    if len(cache) > LOOKUP_CACHE_MAX:
+        return cache.popitem(last=False)[0]
+    return ""
+
+
+def _find_exe_by_inode(comm: str, st_dev: int, st_ino: int) -> str:
+    """Try to find the executable file on disk by comm name and inode match."""
+    if not comm:
+        return ""
+    # Try shutil.which first (uses PATH)
+    candidate = shutil.which(comm)
+    if candidate:
         try:
-            if os.fstat(fd).st_nlink:
-                continue
-        except OSError:
+            stat = os.stat(candidate)
+            if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
+                return os.path.realpath(candidate)
+        except Exception:
+            pass
+    # Try common system directories
+    for prefix in ("/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/libexec"):
+        candidate = os.path.join(prefix, comm)
+        try:
+            stat = os.stat(candidate)
+            if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
+                return os.path.realpath(candidate)
+        except Exception:
             continue
-        remove_mark(fd)
-        os.close(fd)
-        # fd 0 keeps the cache slot and sends the next lookup of sig down get_fd's reopen path
-        fd_dict[sig] = (0, "", entry[2])
-    used.clear()
+    return ""
+
+
+class ExeResolver:
+    """resolves the executable path of an event's process, checked against the (dev, ino)
+    BPF recorded at event time. reads /proc and stats paths only: no binary is opened and no
+    fd is kept, so the kernel frees a deleted executable's disk space as usual."""
+
+    def __init__(self, report: typing.Callable[[str], object]) -> None:
+        self.report = report
+        # cache of resolved (dev, ino, comm) -> exe path, used as a fallback for
+        # when /proc/PID/exe is no longer readable (short-lived processes).
+        # Keyed by comm in addition to (dev, ino) because multi-call binaries
+        # (e.g. uutils-coreutils) hardlink many symlinks (head, sleep, cat, ...)
+        # to a single inode; the kernel distinguishes them per-process via
+        # /proc/PID/exe but the inode alone is ambiguous.
+        self.ino_path_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
+        # last-resort fallback keyed only by (dev, ino), used when the live
+        # readlink and the (dev, ino, comm) lookup both miss (e.g. BPF reports a
+        # worker-thread comm like `tokio-rt-worker` matching no binary). value is
+        # classified once by _classify_inode_fallback(): a canonical path, or a
+        # '<multi-call:dev,ino>' sentinel for hardlink multi-call binaries.
+        self.dev_ino_fallback: collections.OrderedDict[str, str] = collections.OrderedDict()
+        # last exe resolved per (dev, ino), for when the fallback above holds a sentinel
+        self.last_exe: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self.multi_call_reported: set[str] = set()
+
+    def _record_inode_fallback(self, sig: str, st_dev: int, st_ino: int, exe: str) -> None:
+        """classify and memoize the (dev, ino) fallback name the first time an inode
+        is resolved (O(1), so multi-call binaries with many names don't trigger
+        rescans). reports once per hardlink multi-call inode when first seen."""
+        if not exe or exe.startswith("<multi-call:") or sig in self.dev_ino_fallback:
+            return
+        label = _classify_inode_fallback(st_dev, st_ino, exe)
+        evicted = _cache_put(self.dev_ino_fallback, sig, label)
+        self.multi_call_reported.discard(evicted)
+        if label.startswith("<multi-call:") and sig not in self.multi_call_reported:
+            self.multi_call_reported.add(sig)
+            self.report(f"monitor: hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone")
+
+    def _resolve_when_proc_gone(self, sig: str, st_dev: int, st_ino: int, pid: int, comm: str) -> str:
+        """best-effort exe resolution when the /proc/PID/exe readlink failed.
+
+        comm only locates a candidate; _find_exe_by_inode verifies its
+        (dev, ino) against the event inode, so at worst comm names another
+        hardlink of the same inode (same bytes).
+        with no comm match, fall back to dev_ino_fallback (sentinel for
+        hardlink multi-call inodes)."""
+        candidate = _cache_get(self.ino_path_cache, f"{sig} {comm}")
+        if not candidate and comm:
+            candidate = _find_exe_by_inode(comm, st_dev, st_ino)
+        if not candidate:
+            # BPF reports the comm of the current task, which for worker threads is the
+            # thread name (prctl PR_SET_NAME, e.g. `tokio-rt-worker`); the thread group
+            # leader's comm usually matches the binary's basename
+            leader_comm = _read_proc_comm(pid)
+            if leader_comm and leader_comm != comm:
+                candidate = _find_exe_by_inode(leader_comm, st_dev, st_ino)
+        # an inode-verified candidate names a hardlink of the exact event
+        # inode, trust it; otherwise use the comm-less fallback
+        return candidate or _cache_get(self.dev_ino_fallback, sig)
+
+    def resolve(self, st_dev: int, st_ino: int, pid: int, comm: str = "") -> tuple[int, int, str]:
+        """return (dev, ino, exe) for pid; dev and ino come from the live process when the
+        event had none, exe is '' when it can't be attributed"""
+        st_dev = st_dev & ST_DEV_MASK
+        # Resolve the exe path for THIS process via /proc/PID/exe whenever
+        # possible. The kernel records the specific symlink each process was
+        # exec'd from, even when many symlinks share an inode (multi-call
+        # binaries like uutils-coreutils), which the (dev, ino) keyed caches
+        # below can't tell apart (e.g. report `head` as `sleep`).
+        proc_exe = ""
+        try:
+            proc_exe = os.readlink(f"/proc/{pid}/exe")
+            pstat = os.stat(f"/proc/{pid}/exe")
+            live = (pstat.st_dev & ST_DEV_MASK, pstat.st_ino)
+            if not st_ino:
+                # the event had no inode: readlink is the only signal, keep it
+                st_dev, st_ino = live
+            elif live != (st_dev, st_ino):
+                # events carry (dev, ino) from event time; if the pid exec'd another binary
+                # since (readlink now names it), don't attribute it or poison the caches
+                proc_exe = ""
+        except OSError:
+            pass
+        if not st_ino:
+            # nothing to verify a cached path against
+            return st_dev, st_ino, proc_exe
+        sig = f"{st_dev} {st_ino}"
+        exe = proc_exe or self._resolve_when_proc_gone(sig, st_dev, st_ino, pid, comm) or _cache_get(self.last_exe, sig)
+        # only cache non-empty, non-sentinel resolutions; an empty value
+        # would poison ino_path_cache for a (dev, ino, comm) tuple whose
+        # first event was a dead process, masking later live lookups
+        if exe and not exe.startswith("<multi-call:"):
+            _cache_put(self.ino_path_cache, f"{sig} {comm}", exe)
+            _cache_put(self.last_exe, sig, exe)
+            self._record_inode_fallback(sig, st_dev, st_ino, exe)
+        return st_dev, st_ino, exe
 
 
 def _parse_proc_net_addr(hex_addr: str) -> str:
@@ -265,7 +381,7 @@ def initial_poll() -> list:
     return initial_processes
 
 
-def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multiprocessing.Queue[str], q_in: multiprocessing.Queue[str], q_out: multiprocessing.Queue) -> int:
+def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Queue[str], q_in: multiprocessing.Queue[str], q_out: multiprocessing.Queue) -> int:
     """runs a bpf program to monitor the system for new connections and puts info into a pipe for run_primary"""
     # initialization of subprocess
     try:
@@ -283,232 +399,8 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
     event_pipe_0, event_pipe_1, event_pipe_2, event_pipe_3, event_pipe_4 = event_pipes
     EVERY_EXE: typing.Final[bool] = config.monitoring.every_exe
     CONN_MAP_MAX: typing.Final[int] = config.monitoring.conn_map_max_entries
-    # fanotify (for watching executables for modification); CDLL(None) binds from the
-    # already-loaded libc, avoiding find_library's gcc/objdump $PATH fallback
-    libc = ctypes.CDLL(None, use_errno=True)
-    _FAN_MARK_ADD = 0x1
-    _FAN_MARK_REMOVE = 0x2
-    _FAN_MARK_FLUSH = 0x80
-    _FAN_MODIFY = 0x2
-    libc.fanotify_mark.argtypes = [ctypes.c_int, ctypes.c_uint, ctypes.c_uint64, ctypes.c_int, ctypes.c_char_p]
-    libc.fanotify_mark.restype = ctypes.c_int
-    if libc.fanotify_mark(fan_fd, _FAN_MARK_FLUSH, _FAN_MODIFY, -1, None) != 0:
-        q_error.put(f"fanotify mark flush failed: {os.strerror(ctypes.get_errno())}")
-    fan_mark_errors: set[tuple[int, int]] = set()
-
-    def add_fanotify_mark(fd: int, st_dev: int, exe: str) -> None:
-        if libc.fanotify_mark(fan_fd, _FAN_MARK_ADD, _FAN_MODIFY, fd, None) == 0:
-            return
-        err = ctypes.get_errno()
-        key = (st_dev, err)
-        if key not in fan_mark_errors:
-            fan_mark_errors.add(key)
-            q_error.put(f"fanotify cannot watch {exe or 'executable'}: {os.strerror(err)}; in-place changes may not trigger a rehash")
-
-    def remove_fanotify_mark(fd: int) -> None:
-        libc.fanotify_mark(fan_fd, _FAN_MARK_REMOVE, _FAN_MODIFY, fd, None)
-
-    lookup_cache_max = max(8192, min(FD_CACHE, 131072))
-
-    def cache_get(cache: collections.OrderedDict, key: str) -> str:
-        try:
-            cache.move_to_end(key)
-            return cache[key]
-        except KeyError:
-            return ""
-
-    def cache_put(cache: collections.OrderedDict, key: str, value: str) -> str:
-        cache[key] = value
-        cache.move_to_end(key)
-        if len(cache) > lookup_cache_max:
-            return cache.popitem(last=False)[0]
-        return ""
-
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
-    fd_dict = collections.OrderedDict()
-    for cache_idx in range(FD_CACHE):
-        fd_dict[f"tmp{cache_idx}"] = (0,)
-    fd_used_since_sweep: set[str] = set()
-    self_pid = os.getpid()
-    # cache of resolved (dev, ino, comm) -> exe path, used as a fallback for
-    # when /proc/PID/exe is no longer readable (short-lived processes).
-    # Keyed by comm in addition to (dev, ino) because multi-call binaries
-    # (e.g. uutils-coreutils) hardlink many symlinks (head, sleep, cat, ...)
-    # to a single inode; the kernel distinguishes them per-process via
-    # /proc/PID/exe but the inode alone is ambiguous.
-    ino_path_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
-    # last-resort fallback keyed only by (dev, ino), used when the live
-    # readlink and the (dev, ino, comm) lookup both miss (e.g. BPF reports a
-    # worker-thread comm like `tokio-rt-worker` matching no binary). value is
-    # classified once by _classify_inode_fallback(): a canonical path, or a
-    # '<multi-call:dev,ino>' sentinel for hardlink multi-call binaries.
-    dev_ino_fallback: collections.OrderedDict[str, str] = collections.OrderedDict()
-    multi_call_reported: set[str] = set()
-
-    def _record_inode_fallback(sig: str, st_dev: int, st_ino: int, exe: str) -> None:
-        """classify and memoize the (dev, ino) fallback name the first time an inode
-        is resolved (O(1), so multi-call binaries with many names don't trigger
-        rescans). emits one q_error per hardlink multi-call inode when first seen."""
-        if not exe or exe.startswith("<multi-call:") or sig in dev_ino_fallback:
-            return
-        label = _classify_inode_fallback(st_dev, st_ino, exe)
-        evicted = cache_put(dev_ino_fallback, sig, label)
-        multi_call_reported.discard(evicted)
-        if label.startswith("<multi-call:") and sig not in multi_call_reported:
-            multi_call_reported.add(sig)
-            q_error.put(f"monitor.get_fd: hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone")
-
-    # helper to find executable by comm name and inode when /proc/PID/exe is unavailable
-    def _find_exe_by_inode(comm: str, st_dev: int, st_ino: int) -> str:
-        """Try to find the executable file on disk by comm name and inode match."""
-        if not comm:
-            return ""
-        # Try shutil.which first (uses PATH)
-        candidate = shutil.which(comm)
-        if candidate:
-            try:
-                stat = os.stat(candidate)
-                if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
-                    return os.path.realpath(candidate)
-            except Exception:
-                pass
-        # Try common system directories
-        for prefix in ("/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/libexec"):
-            candidate = os.path.join(prefix, comm)
-            try:
-                stat = os.stat(candidate)
-                if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
-                    return os.path.realpath(candidate)
-            except Exception:
-                continue
-        return ""
-
-    def _read_tgid_comm(pid: int) -> str:
-        """Return the thread group leader's comm from /proc/<pid>/comm.
-
-        BPF reports task->comm of the *current task*, which for worker
-        threads is the thread name set via prctl(PR_SET_NAME) (e.g.
-        `tokio-rt-worker`, `libuv-worker`, `sshd-session`) rather than
-        the binary name. Reading /proc/<tgid>/comm gives us the leader's
-        comm, which usually matches the binary's basename and lets
-        _find_exe_by_inode() resolve it on disk."""
-        try:
-            with open(f"/proc/{pid}/comm", "r", errors="replace") as f:
-                return f.read().strip()
-        except OSError:
-            return ""
-
-    # function for getting an existing or opening a new file descriptor based on st_dev and st_ino
-    def get_fd(st_dev: int, st_ino: int, pid: int, comm: str = "") -> tuple[int, int, int, str, str]:
-        st_dev = st_dev & ST_DEV_MASK
-        sig = f"{st_dev} {st_ino}"
-        # Resolve the exe path for THIS process via /proc/PID/exe whenever
-        # possible. The kernel records the specific symlink each process was
-        # exec'd from, even when many symlinks share an inode (multi-call
-        # binaries like uutils-coreutils). The fd cache is keyed only by
-        # (dev, ino), so without this per-PID lookup a cached entry could
-        # return the wrong exe path (e.g. report `head` as `sleep`).
-        proc_exe = ""
-        try:
-            proc_exe = os.readlink(f"/proc/{pid}/exe")
-            # events carry (dev, ino) from event time; if the pid exec'd another binary
-            # since (readlink now names it), don't attribute it or poison the caches.
-            # st_ino == 0 means the event had no inode: readlink is the only signal, keep it
-            pstat = os.stat(f"/proc/{pid}/exe")
-            if st_ino and ((pstat.st_dev & ST_DEV_MASK), pstat.st_ino) != (st_dev, st_ino):
-                proc_exe = ""
-        except Exception:
-            pass
-        # per-(dev, ino, comm) fallback key for when /proc is gone
-        comm_sig = f"{sig} {comm}"
-
-        def _resolve_when_proc_gone() -> str:
-            """best-effort exe resolution when the /proc/PID/exe readlink failed.
-
-            comm only locates a candidate; _find_exe_by_inode verifies its
-            (dev, ino) against the event inode, so at worst comm names another
-            hardlink of the same inode (same bytes, same hash).
-            with no comm match, fall back to dev_ino_fallback (sentinel for
-            hardlink multi-call inodes)."""
-            candidate = cache_get(ino_path_cache, comm_sig)
-            if not candidate and comm:
-                candidate = _find_exe_by_inode(comm, st_dev, st_ino)
-            if not candidate:
-                leader_comm = _read_tgid_comm(pid)
-                if leader_comm and leader_comm != comm:
-                    candidate = _find_exe_by_inode(leader_comm, st_dev, st_ino)
-            # an inode-verified candidate names a hardlink of the exact event
-            # inode, trust it; otherwise use the comm-less fallback
-            return candidate or cache_get(dev_ino_fallback, sig)
-
-        try:
-            if not st_ino:
-                raise KeyError(sig)
-            # check if it is in the cache and move it to the most recent position
-            fd_dict.move_to_end(sig)
-            fd, fd_path, cached_exe = fd_dict[sig]
-            if not fd:
-                # sig is in cache but fd is 0, try again to open it
-                # add a dummy value to the oldest postition to be popped off on retry so cache size is maintained
-                # since sig is already in cache, value will just be updated without increasing cache size
-                fd_dict[f"tmp{sig}"] = (0,)
-                fd_dict.move_to_end(f"tmp{sig}", last=False)
-                raise Exception("previous attempt failed, probably due to process terminating too quickly, try again")
-            # cache hit: prefer the per-PID exe (kernel-authoritative for
-            # multi-call binaries), then the staged fallback chain, finally
-            # the fd_dict's last-seen exe.
-            exe = proc_exe or _resolve_when_proc_gone() or cached_exe
-            # only cache non-empty, non-sentinel resolutions; an empty value
-            # would poison ino_path_cache for a (dev, ino, comm) tuple whose
-            # first event was a dead process, masking later live lookups
-            if exe and not exe.startswith("<multi-call:"):
-                cache_put(ino_path_cache, comm_sig, exe)
-                _record_inode_fallback(sig, st_dev, st_ino, exe)
-        except Exception:
-            # open a new file descriptor and pop off the oldest one
-            # watch it with fanotify, and also cache the apparent executable path with it
-            try:
-                fd = os.open(f"/proc/{pid}/exe", os.O_RDONLY)
-                actual = get_fstat(fd)
-                if st_ino and actual != (st_dev, st_ino):
-                    os.close(fd)
-                    fd, fd_path = 0, ""
-                else:
-                    if not st_ino:
-                        st_dev, st_ino = actual
-                        sig = f"{st_dev} {st_ino}"
-                        comm_sig = f"{sig} {comm}"
-                    add_fanotify_mark(fd, st_dev, proc_exe)
-                    fd_path = f"/proc/{self_pid}/fd/{fd}"
-            except Exception:
-                fd, fd_path = 0, ""
-            exe = proc_exe or _resolve_when_proc_gone()
-            if not fd and exe and not exe.startswith("<multi-call:"):
-                try:
-                    fd = os.open(exe, os.O_RDONLY)
-                    # verify the inode still matches before caching
-                    if (st_dev, st_ino) == get_fstat(fd):
-                        add_fanotify_mark(fd, st_dev, exe)
-                        fd_path = f"/proc/{self_pid}/fd/{fd}"
-                    else:
-                        os.close(fd)
-                        fd, fd_path = 0, ""
-                except Exception:
-                    fd, fd_path = 0, ""
-            # cache resolved exe for future lookups (skip empty and sentinel,
-            # see cache-hit branch above)
-            if exe and not exe.startswith("<multi-call:"):
-                cache_put(ino_path_cache, comm_sig, exe)
-                _record_inode_fallback(sig, st_dev, st_ino, exe)
-            fd_dict[sig] = (fd, fd_path, exe)
-            try:
-                if fd_old := fd_dict.popitem(last=False)[1][0]:
-                    remove_fanotify_mark(fd_old)
-                    os.close(fd_old)
-            except Exception:
-                pass
-        fd_used_since_sweep.add(sig)
-        return (st_dev, st_ino, pid, fd_path, exe)
+    resolver = ExeResolver(q_error.put)
 
     # PID-only caching survives execve and PID reuse, so read the current value.
     def get_cmdline(pid: int) -> str:
@@ -535,48 +427,23 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
             pstat = os.stat(f"/proc/{proc['ppid']}/exe")
             cmd = get_cmdline(proc["pid"])
             pcmd = get_cmdline(proc["ppid"])
-            st_dev, st_ino, pid, fd, exe = get_fd(stat.st_dev, stat.st_ino, proc["pid"], proc["name"])
-            pst_dev, pst_ino, ppid, pfd, pexe = get_fd(pstat.st_dev, pstat.st_ino, proc["ppid"], proc["pname"])
-            # grandparent: read ppid of ppid via /proc, best-effort
-            gppid = 0
-            gpname = ""
-            gpst_dev, gpst_ino, gpfd, gpexe = 0, 0, "", ""
-            gpcmd = ""
-            try:
-                with open(f"/proc/{proc['ppid']}/stat", "r", errors="replace") as f:
-                    stat_fields = f.read().rsplit(")", 1)[-1].split()
-                gppid = int(stat_fields[1])
-                if gppid > 0:
-                    gpname = _read_proc_comm(gppid)
-                    gstat = os.stat(f"/proc/{gppid}/exe")
-                    gpcmd = get_cmdline(gppid)
-                    gpst_dev, gpst_ino, _, gpfd, gpexe = get_fd(gstat.st_dev, gstat.st_ino, gppid, gpname)
-            except Exception:
-                pass
+            st_dev, st_ino, exe = resolver.resolve(stat.st_dev, stat.st_ino, proc["pid"], proc["name"])
+            pst_dev, pst_ino, pexe = resolver.resolve(pstat.st_dev, pstat.st_ino, proc["ppid"], proc["pname"])
             if EVERY_EXE or proc["rport"] != -1:
                 initial_batch.append(
                     {
-                        "pid": pid,
+                        "pid": proc["pid"],
                         "name": proc["name"],
-                        "fd": fd,
                         "dev": st_dev,
                         "ino": st_ino,
                         "exe": exe,
                         "cmdline": cmd,
-                        "ppid": ppid,
+                        "ppid": proc["ppid"],
                         "pname": proc["pname"],
-                        "pfd": pfd,
                         "pdev": pst_dev,
                         "pino": pst_ino,
                         "pexe": pexe,
                         "pcmdline": pcmd,
-                        "gppid": gppid,
-                        "gpname": gpname,
-                        "gpfd": gpfd,
-                        "gpdev": gpst_dev,
-                        "gpino": gpst_ino,
-                        "gpexe": gpexe,
-                        "gpcmdline": gpcmd,
                         "uid": proc["uid"],
                         "send": 0,
                         "recv": 0,
@@ -586,8 +453,8 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
                         "rport": proc["rport"],
                         "laddr": proc["laddr"],
                         "raddr": proc["raddr"],
-                        "domain": cache_get(domain_dict, proc["raddr"]),
-                        "netns": _read_netns_inode(pid),
+                        "domain": _cache_get(domain_dict, proc["raddr"]),
+                        "netns": _read_netns_inode(proc["pid"]),
                     }
                 )
         except Exception:
@@ -717,22 +584,6 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
             q_error.put(f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded")
 
     # callbacks for bpf events, read event and put into a pipe for run_primary
-    def resolve_grandparent(event, cmdline_cache: dict[int, str] | None = None) -> tuple[int, int, int, str, str, str, str]:
-        """resolve grandparent proc info, returning all-empty/zero values when
-        gppid <= 0 (BPF reports tgid=0 for the kernel/swapper). this happens
-        whenever the parent walk hits init or any process whose parent is the
-        kernel idle task, e.g. detached daemons, kernel-thread-spawned procs,
-        or systemd's direct children. without this guard get_fd() and the
-        downstream resolve_hash() would emit "Read Error" toasts and store
-        garbage rows in the executables table."""
-        if event.gppid <= 0:
-            return 0, 0, 0, "", "", "", ""
-        gpcomm = event.gpcomm.decode(errors="replace")
-        gpst_dev, gpst_ino, gppid, gpfd, gpexe = get_fd(event.gpdev, event.gpino, event.gppid, gpcomm)
-        # cache-aware from the drain (per-entry) path; uncached is fine for the per-exec caller
-        gpcmd = get_cmdline_cached(event.gppid, cmdline_cache) if cmdline_cache is not None else get_cmdline(event.gppid)
-        return gpst_dev, gpst_ino, gppid, gpfd, gpexe, gpcmd, gpcomm
-
     # maps already warned as near-capacity, so the warning fires once per episode, not every drain
     near_capacity_maps: set[str] = set()
 
@@ -769,9 +620,8 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
             cmdline_cache: dict[int, str] = {}
             for key, val in entries:
                 try:
-                    st_dev, st_ino, pid, fd, exe = get_fd(val.dev, val.ino, key.pid, val.comm.decode(errors="replace"))
-                    pst_dev, pst_ino, ppid, pfd, pexe = get_fd(val.pdev, val.pino, val.ppid, val.pcomm.decode(errors="replace"))
-                    gpst_dev, gpst_ino, gppid, gpfd, gpexe, gpcmd, gpcomm = resolve_grandparent(val, cmdline_cache)
+                    st_dev, st_ino, exe = resolver.resolve(val.dev, val.ino, key.pid, val.comm.decode(errors="replace"))
+                    pst_dev, pst_ino, pexe = resolver.resolve(val.pdev, val.pino, val.ppid, val.pcomm.decode(errors="replace"))
                     cmd = get_cmdline_cached(key.pid, cmdline_cache)
                     pcmd = get_cmdline_cached(val.ppid, cmdline_cache)
                     if family == socket.AF_INET:
@@ -788,27 +638,18 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
                         lport = rport = protocol = 0
                     outgoing.append(
                         {
-                            "pid": pid,
+                            "pid": key.pid,
                             "name": val.comm.decode(errors="replace"),
-                            "fd": fd,
                             "dev": st_dev,
                             "ino": st_ino,
                             "exe": exe,
                             "cmdline": cmd,
-                            "ppid": ppid,
+                            "ppid": val.ppid,
                             "pname": val.pcomm.decode(errors="replace"),
-                            "pfd": pfd,
                             "pdev": pst_dev,
                             "pino": pst_ino,
                             "pexe": pexe,
                             "pcmdline": pcmd,
-                            "gppid": gppid,
-                            "gpname": gpcomm,
-                            "gpfd": gpfd,
-                            "gpdev": gpst_dev,
-                            "gpino": gpst_ino,
-                            "gpexe": gpexe,
-                            "gpcmdline": gpcmd,
                             "uid": val.uid,
                             "send": int(val.send_bytes),
                             "recv": int(val.recv_bytes),
@@ -819,7 +660,7 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
                             "rport": rport,
                             "laddr": laddr,
                             "raddr": raddr,
-                            "domain": cache_get(domain_dict, raddr),
+                            "domain": _cache_get(domain_dict, raddr),
                             "netns": int(key.netns),
                         }
                     )
@@ -833,38 +674,28 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
 
     def queue_exec_event(ctx, data, size):
         event = b["exec_events"].event(data)
-        st_dev, st_ino, pid, fd, exe = get_fd(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
-        pst_dev, pst_ino, ppid, pfd, pexe = get_fd(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
-        gpst_dev, gpst_ino, gppid, gpfd, gpexe, gpcmd, gpcomm = resolve_grandparent(event)
-        cmd = get_cmdline(event.pid)
-        pcmd = get_cmdline(event.ppid)
+        # resolve while the process is young even without every_exe: it fills the caches its
+        # connections fall back on once a short-lived process has exited
+        st_dev, st_ino, exe = resolver.resolve(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
+        pst_dev, pst_ino, pexe = resolver.resolve(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
         if EVERY_EXE:
             # wrap in a list: every event-pipe message is a batch, the contract the reader extends from
             event_pipe_4.send_bytes(
                 pickle.dumps(
                     [
                         {
-                            "pid": pid,
+                            "pid": event.pid,
                             "name": event.comm.decode(errors="replace"),
-                            "fd": fd,
                             "dev": st_dev,
                             "ino": st_ino,
                             "exe": exe,
-                            "cmdline": cmd,
-                            "ppid": ppid,
+                            "cmdline": get_cmdline(event.pid),
+                            "ppid": event.ppid,
                             "pname": event.pcomm.decode(errors="replace"),
-                            "pfd": pfd,
                             "pdev": pst_dev,
                             "pino": pst_ino,
                             "pexe": pexe,
-                            "pcmdline": pcmd,
-                            "gppid": gppid,
-                            "gpname": gpcomm,
-                            "gpfd": gpfd,
-                            "gpdev": gpst_dev,
-                            "gpino": gpst_ino,
-                            "gpexe": gpexe,
-                            "gpcmdline": gpcmd,
+                            "pcmdline": get_cmdline(event.ppid),
                             "uid": event.uid,
                             "send": 0,
                             "recv": 0,
@@ -888,7 +719,7 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
         try:
             ipaddress.ip_address(domain)
         except ValueError:
-            cache_put(domain_dict, ip, ".".join(reversed(domain.split("."))))
+            _cache_put(domain_dict, ip, ".".join(reversed(domain.split("."))))
 
     b["exec_events"].open_ring_buffer(queue_exec_event)
     if use_getaddrinfo_uprobe:
@@ -918,8 +749,6 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
 
     drain_interval = 1.0
     next_drain = time.monotonic() + drain_interval
-    fd_sweep_interval = 60.0
-    next_fd_sweep = time.monotonic() + fd_sweep_interval
     while True:
         if not parent_process.is_alive() or not q_in.empty():
             drain_conn_maps()
@@ -931,8 +760,5 @@ def run_monitor(config: Config, fan_fd: int, event_pipes: tuple, q_error: multip
                 drain_conn_maps()
                 report_ring_drops()
                 next_drain = now + drain_interval
-            if now >= next_fd_sweep:
-                _close_unlinked_fds(fd_dict, fd_used_since_sweep, remove_fanotify_mark)
-                next_fd_sweep = now + fd_sweep_interval
         except Exception as e:
             q_error.put("BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))

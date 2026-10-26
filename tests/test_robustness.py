@@ -2,10 +2,9 @@
 # Copyright (C) 2020 Eric Lesiuta
 
 """Regression tests for robustness against corrupt inputs: a malformed config.toml or
-state.json must never crash-loop the daemon. All pure-Python, no root/BPF."""
+database must never crash-loop the daemon. All pure-Python, no root/BPF."""
 
 import ctypes
-import json
 import os
 import socket
 import struct
@@ -18,7 +17,6 @@ import pytest
 import picosnitch.utils as utils
 from picosnitch.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
 from picosnitch.config import Config, load_config
-from picosnitch.types import FanotifyEventMetadata
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -143,12 +141,10 @@ def test_config_ignore_domains_validated(tmp_path):
         "example.com".startswith(prefix)
 
 
-def test_config_ignore_ports_and_hashes_validated(tmp_path):
-    digest = "A" * 64
-    (tmp_path / "config.toml").write_text(f'[log]\nignore_ports = [true, -2, -1, 443, 65536]\nignore_sha256 = [5, "bad", "{digest}"]\n')
+def test_config_ignore_ports_validated(tmp_path):
+    (tmp_path / "config.toml").write_text("[log]\nignore_ports = [true, -2, -1, 443, 65536]\n")
     config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_ports == [-1, 443]
-    assert config.log.ignore_sha256 == [digest.lower()]
 
 
 def test_maintain_database_quarantines_corrupt(tmp_path):
@@ -168,7 +164,7 @@ def test_maintain_database_quarantines_corrupt(tmp_path):
     def fresh(version=DB_VERSION):
         db.unlink(missing_ok=True)
         con = sqlite3.connect(db)
-        con.execute("CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER, exe_id INTEGER, pexe_id INTEGER, gpexe_id INTEGER)")
+        con.execute("CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER, exe_id INTEGER, pexe_id INTEGER)")
         con.execute("CREATE TABLE domains (id INTEGER)")
         con.execute("CREATE TABLE addresses (id INTEGER)")
         con.execute("CREATE TABLE executables (id INTEGER)")
@@ -229,17 +225,17 @@ def test_maintain_database_purges_orphans(tmp_path):
     con.execute(f"CREATE TABLE addresses ({SCHEMA_ADDRESSES}) STRICT")
     con.execute(f"CREATE TABLE connections ({SCHEMA_CONNECTIONS}) STRICT")
     for t in ("executables", "domains", "addresses"):
-        col = "exe, name, cmdline, sha256" if t == "executables" else ("domain" if t == "domains" else "addr")
-        vals = "'', '', '', ''" if t == "executables" else "''"
+        col = "exe, name, cmdline" if t == "executables" else ("domain" if t == "domains" else "addr")
+        vals = "'', '', ''" if t == "executables" else "''"
         con.execute(f"INSERT INTO {t}(id, {col}) VALUES (0, {vals})")  # sentinel
     # id 1 = referenced by a live connection; id 2 = orphan (no connection points at it)
-    con.execute("INSERT INTO executables(id, exe, name, cmdline, sha256) VALUES (1, '/bin/live', 'live', 'live', 'a')")
-    con.execute("INSERT INTO executables(id, exe, name, cmdline, sha256) VALUES (2, '/bin/orphan', 'orphan', 'orphan --token-999', 'b')")
+    con.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (1, '/bin/live', 'live', 'live')")
+    con.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (2, '/bin/orphan', 'orphan', 'orphan --token-999')")
     con.execute("INSERT INTO domains(id, domain) VALUES (1, 'live.example'), (2, 'orphan.example')")
     con.execute("INSERT INTO addresses(id, addr) VALUES (1, '10.0.0.1'), (2, '10.0.0.2')")
     now = int(time.time())
     # one live connection referencing exe 1 / domain 1 / addr 1 (as laddr AND raddr)
-    con.execute(f"INSERT INTO connections VALUES ({now}, 0, 0, 1, 1, 1, 1, 0, 2, 6, 0, 443, 1, 1, 1, 0)")
+    con.execute(f"INSERT INTO connections VALUES ({now}, 0, 0, 1, 1, 1, 0, 2, 6, 0, 443, 1, 1, 1, 0)")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
     con.close()
@@ -268,7 +264,7 @@ def test_db_is_corrupt(tmp_path):
             con.execute(f"CREATE TABLE connections ({connections_cols})")
             con.execute("CREATE TABLE domains (id INTEGER)")
             con.execute("CREATE TABLE addresses (id INTEGER)")
-            con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT, sha256 TEXT)")
+            con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT)")
         con.execute(f"PRAGMA user_version = {version}")
         con.commit()
         con.close()
@@ -307,7 +303,7 @@ def test_db_is_corrupt_ignores_transient_errors(tmp_path, monkeypatch):
     con.execute("CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER)")
     con.execute("CREATE TABLE domains (id INTEGER)")
     con.execute("CREATE TABLE addresses (id INTEGER)")
-    con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT, sha256 TEXT)")
+    con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT)")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
     con.execute("BEGIN EXCLUSIVE")  # hold a write lock, as the live secondary would
@@ -364,60 +360,6 @@ def test_resolve_tool_prefers_trusted_dirs(tmp_path, monkeypatch):
         bpf_wrapper._resolve_tool("picosnitch-no-such-build-tool-xyz")
 
 
-def test_corrupt_state_json_quarantined(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
-    (tmp_path / "state.json").write_text("{ not valid json ")
-    state = utils.load_state()  # must not raise SystemExit
-    assert state["Executables"] == {} and state["SHA256"] == {}
-    assert (tmp_path / "state.json.bad").exists()
-    assert not (tmp_path / "state.json").exists()
-
-
-def test_state_json_non_dict_value_reset(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
-    (tmp_path / "state.json").write_text('{"Executables": [1, 2, 3]}')
-    state = utils.load_state()
-    assert state["Executables"] == {}
-    assert (tmp_path / "state.json.bad").exists()
-
-
-def test_state_json_nested_non_dict_value_reset(tmp_path, monkeypatch):
-    """A state.json whose top-level keys are dicts but whose INNER values are the wrong shape
-    (SHA256 exe -> str, or a name-history exe -> non-list) must be quarantined, not accepted --
-    else the secondary's hash bookkeeping breaks on every write cycle."""
-    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
-    (tmp_path / "state.json").write_text('{"SHA256": {"/bin/x": "corrupt"}}')  # inner must be a dict
-    state = utils.load_state()
-    assert state["SHA256"] == {}
-    assert (tmp_path / "state.json.bad").exists()
-    (tmp_path / "state.json").write_text('{"Executables": {"/bin/x": 5}}')  # inner must be a list
-    state = utils.load_state()
-    assert state["Executables"] == {}
-
-
-def test_valid_state_json_loads(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
-    (tmp_path / "state.json").write_text(json.dumps({"Executables": {"/bin/x": ["abc"]}, "SHA256": {}}))
-    state = utils.load_state()
-    assert state["Executables"] == {"/bin/x": ["abc"]}
-    assert not (tmp_path / "state.json.bad").exists()
-
-
-def test_state_json_rejects_hardlinks_and_oversize(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
-    target = tmp_path / "target"
-    target.write_text("{}")
-    os.link(target, tmp_path / "state.json")
-    assert utils.load_state()["Executables"] == {}
-    assert (tmp_path / "state.json.bad").exists()
-    (tmp_path / "state.json.bad").unlink()
-    oversized = tmp_path / "state.json"
-    with open(oversized, "wb") as f:
-        f.truncate(256 * 1024 * 1024 + 1)
-    assert utils.load_state()["Executables"] == {}
-    assert (tmp_path / "state.json.bad").exists()
-
-
 def test_dns_event_family_demux():
     """dns_event_t <-> DNSEvent must stay byte-synced, and the family field must tell a
     v4 0.0.0.0 answer from a v6 :: answer (regression: 0.0.0.0 was demuxed as IPv6
@@ -447,32 +389,6 @@ def test_conn_structs_byte_synced_with_bpf():
     assert ctypes.sizeof(ConnVal) == 128  # 48 + 56 + 24, no internal or trailing padding
     assert (ConnVal.send_bytes.offset, ConnVal.recv_bytes.offset) == (72, 80)
     assert (ConnVal.send_pkts.offset, ConnVal.recv_pkts.offset) == (88, 96)
-
-
-def test_fanotify_overflow_invalidates_all_hashes():
-    class Errors:
-        def __init__(self):
-            self.items = []
-
-        def put(self, item):
-            self.items.append(item)
-
-    event = FanotifyEventMetadata()
-    event.event_len = ctypes.sizeof(event)
-    event.metadata_len = ctypes.sizeof(event)
-    event.mask = 0x4000  # FAN_Q_OVERFLOW
-    event.fd = -1
-    read_fd, write_fd = os.pipe()
-    try:
-        os.write(write_fd, bytes(event))
-        counts = {}
-        errors = Errors()
-        utils.get_fanotify_events(read_fd, counts, errors)  # ty: ignore[invalid-argument-type]
-        assert counts == {"*": 1}
-        assert errors.items == ["fanotify queue overflowed; invalidating all cached executable hashes"]
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
 
 
 def test_proc_reads_survive_non_utf8_comm():

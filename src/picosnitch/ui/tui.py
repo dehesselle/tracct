@@ -30,7 +30,6 @@ _SIDEBAR_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("Executable", "e.exe"),
             ("Name", "e.name"),
             ("Command", "e.cmdline"),
-            ("SHA256", "e.sha256"),
         ],
     ),
     (
@@ -39,16 +38,6 @@ _SIDEBAR_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
             ("Executable", "p.exe"),
             ("Name", "p.name"),
             ("Command", "p.cmdline"),
-            ("SHA256", "p.sha256"),
-        ],
-    ),
-    (
-        "Grandparent",
-        [
-            ("Executable", "g.exe"),
-            ("Name", "g.name"),
-            ("Command", "g.cmdline"),
-            ("SHA256", "g.sha256"),
         ],
     ),
     (
@@ -261,7 +250,7 @@ def _live_tab_loop(stdscr: "curses.window") -> str:
                 hint=_tui_status_hint(),
                 paused=paused,
             )
-            hdr = f" {'TIME':<8} {'NAME':<16} {'PNAME':<14} {'GPNAME':<14} {'REMOTE':<28} {'SEND':>7} {'RECV':>7}"
+            hdr = f" {'TIME':<8} {'NAME':<16} {'PNAME':<14} {'REMOTE':<43} {'SEND':>7} {'RECV':>7}"
             _chrome._safe_addnstr(
                 stdscr,
                 1,
@@ -286,8 +275,7 @@ def _live_tab_loop(stdscr: "curses.window") -> str:
                     f" {t:<8} "
                     f"{(event.get('name') or '')[:16]:<16} "
                     f"{(event.get('pname') or '')[:14]:<14} "
-                    f"{(event.get('gpname') or '')[:14]:<14} "
-                    f"{remote[:28]:<28} "
+                    f"{remote[:43]:<43} "
                     f"{_format_bytes_short(int(event.get('send', 0) or 0)):>7} "
                     f"{_format_bytes_short(int(event.get('recv', 0) or 0)):>7}"
                 )
@@ -624,7 +612,6 @@ def tui_loop(stdscr: curses.window) -> int:
         "connections c"
         " JOIN executables e ON c.exe_id = e.id"
         " JOIN executables p ON c.pexe_id = p.id"
-        " JOIN executables g ON c.gpexe_id = g.id"
         " JOIN addresses la ON c.laddr_id = la.id"
         " JOIN addresses ra ON c.raddr_id = ra.id"
         " JOIN domains dom ON c.domain_id = dom.id"

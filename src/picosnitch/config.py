@@ -26,7 +26,6 @@ class LogConfig:
     ignore_ports: list[int] = dataclasses.field(default_factory=list)
     ignore_domains: list[str] = dataclasses.field(default_factory=list)
     ignore_ips: list[str] = dataclasses.field(default_factory=list)
-    ignore_sha256: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -152,5 +151,4 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         valid_ignore_domains.append(domain_prefix)
     config.log.ignore_domains = valid_ignore_domains
     config.log.ignore_ports = [port for port in config.log.ignore_ports if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535]
-    config.log.ignore_sha256 = [digest.lower() for digest in config.log.ignore_sha256 if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdefABCDEF" for c in digest)]
     return config

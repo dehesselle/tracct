@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2020 Eric Lesiuta
 
-"""Unit tests for monitor exe-resolution and fd cache helpers."""
+"""Unit tests for monitor exe-resolution helpers."""
 
-import collections
 import os
+import subprocess
+import sys
 
 import pytest
 
 from picosnitch.constants import ST_DEV_MASK
-from picosnitch.subprocesses.monitor import _classify_inode_fallback, _close_unlinked_fds
+from picosnitch.subprocesses.monitor import ExeResolver, _classify_inode_fallback
 
 
 def _dev_ino(path: str) -> tuple[int, int]:
@@ -64,63 +65,55 @@ def test_empty_and_sentinel_pass_through():
     assert _classify_inode_fallback(1, 2, "<multi-call:dev=1,ino=2>") == "<multi-call:dev=1,ino=2>"
 
 
-def _is_open(fd: int) -> bool:
-    try:
-        os.fstat(fd)
-        return True
-    except OSError:
-        return False
-
-
 @pytest.fixture
-def exe_fd(tmp_path):
-    """an fd cached the way get_fd caches it, closed at teardown if the sweep left it open"""
-    exe = tmp_path / "binary"
-    exe.write_bytes(b"ELF\n")
-    fd = os.open(exe, os.O_RDONLY)
-    yield exe, fd
-    if _is_open(fd):
-        os.close(fd)
+def child():
+    """a running process with a plain (not multi-call) executable, killed at teardown"""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    yield p
+    p.kill()
+    p.wait()
 
 
-def test_sweep_closes_fd_of_deleted_exe(exe_fd):
-    exe, fd = exe_fd
-    fd_dict: collections.OrderedDict[str, tuple] = collections.OrderedDict()
-    fd_dict["tmp0"] = (0,)
-    fd_dict["1 2"] = (fd, f"/proc/self/fd/{fd}", str(exe))
-    used = {"3 4"}
-    unmarked: list[int] = []
-    exe.unlink()
-    _close_unlinked_fds(fd_dict, used, unmarked.append)
-    assert not _is_open(fd)
-    assert unmarked == [fd]
-    # the slot stays so the cache keeps its size, and the next lookup reopens
-    assert list(fd_dict) == ["tmp0", "1 2"]
-    assert fd_dict["1 2"] == (0, "", str(exe))
-    assert used == set()
+def _resolver() -> ExeResolver:
+    return ExeResolver(lambda message: None)
 
 
-def test_sweep_keeps_fd_of_existing_exe(exe_fd):
-    exe, fd = exe_fd
-    fd_dict: collections.OrderedDict[str, tuple] = collections.OrderedDict({"1 2": (fd, f"/proc/self/fd/{fd}", str(exe))})
-    unmarked: list[int] = []
-    _close_unlinked_fds(fd_dict, set(), unmarked.append)
-    assert _is_open(fd)
-    assert unmarked == []
-    assert fd_dict["1 2"] == (fd, f"/proc/self/fd/{fd}", str(exe))
+def test_resolver_returns_live_path(child):
+    dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
+    assert _resolver().resolve(dev, ino, child.pid, "python") == (dev, ino, os.readlink(f"/proc/{child.pid}/exe"))
 
 
-def test_sweep_keeps_deleted_exe_used_since_last_sweep(exe_fd):
-    # a live process running from a deleted binary, or one not hashed yet
-    exe, fd = exe_fd
-    fd_dict: collections.OrderedDict[str, tuple] = collections.OrderedDict({"1 2": (fd, f"/proc/self/fd/{fd}", str(exe))})
-    used = {"1 2"}
-    unmarked: list[int] = []
-    exe.unlink()
-    _close_unlinked_fds(fd_dict, used, unmarked.append)
-    assert _is_open(fd)
-    assert unmarked == []
-    # unused by the next sweep, so it is closed then
-    _close_unlinked_fds(fd_dict, used, unmarked.append)
-    assert not _is_open(fd)
-    assert unmarked == [fd]
+def test_resolver_takes_inode_from_live_process(child):
+    # an event without an inode gets the live process's (dev, ino)
+    dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
+    assert _resolver().resolve(0, 0, child.pid, "python") == (dev, ino, os.readlink(f"/proc/{child.pid}/exe"))
+
+
+def test_resolver_rejects_exec_since_event(child):
+    # the pid runs another binary than the event recorded: its live path must not be attributed
+    dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
+    assert _resolver().resolve(dev, ino + 1, child.pid, "python")[2] == ""
+
+
+def test_resolver_remembers_exited_process(child):
+    dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
+    exe = os.readlink(f"/proc/{child.pid}/exe")
+    resolver = _resolver()
+    # a worker-thread comm that names no binary on disk
+    assert resolver.resolve(dev, ino, child.pid, "worker-1")[2] == exe
+    child.kill()
+    child.wait()
+    assert resolver.resolve(dev, ino, child.pid, "worker-1")[2] == exe
+
+
+def test_resolver_keeps_no_fds(child):
+    """identity is by path: resolving must neither open the binary for later nor leak fds"""
+    resolver = _resolver()
+    before = set(os.listdir("/proc/self/fd"))
+    for pid in (os.getpid(), os.getppid(), child.pid):
+        dev, ino = _dev_ino(f"/proc/{pid}/exe")
+        resolver.resolve(dev, ino, pid, "python")
+    child.kill()
+    child.wait()
+    resolver.resolve(dev, ino, child.pid, "python")
+    assert set(os.listdir("/proc/self/fd")) == before

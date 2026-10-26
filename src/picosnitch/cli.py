@@ -16,13 +16,14 @@ from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, RUN_DIR, SCHE
 from picosnitch.main_loop import run_main_loop
 from picosnitch.ui.top import top_init
 from picosnitch.ui.tui import tui_init
-from picosnitch.utils import connect_db_readonly, load_state, sqlite_error_means_corrupt
+from picosnitch.utils import connect_db_readonly, sqlite_error_means_corrupt
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
 REQUIRED_CAPABILITIES: dict[str, int] = {
-    "CAP_DAC_READ_SEARCH": 2,  # read any executable to hash it
-    "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe of other users' processes
-    "CAP_SYS_ADMIN": 21,  # fanotify, to rehash executables modified in place
+    "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe and list /proc/<pid>/fd of other users' processes
+    # attach the getaddrinfo uprobe: its perf event is refused without, at any perf_event_paranoid
+    # (checked on Ubuntu's kernel 7.0); without the uprobe, domains come from reverse DNS only
+    "CAP_SYS_ADMIN": 21,
     "CAP_PERFMON": 38,  # attach kprobes, uprobes and fexit programs
     "CAP_BPF": 39,  # load BPF programs and maps
 }
@@ -122,7 +123,7 @@ def _db_is_corrupt(db_path: Path) -> bool:
             cur.execute("SELECT contime, domain_id, laddr_id, raddr_id FROM connections LIMIT 0")
             cur.execute("SELECT id FROM domains LIMIT 0")
             cur.execute("SELECT id FROM addresses LIMIT 0")
-            cur.execute("SELECT id, exe, name, cmdline, sha256 FROM executables LIMIT 0")
+            cur.execute("SELECT id, exe, name, cmdline FROM executables LIMIT 0")
             return False
         finally:
             con.close()
@@ -152,13 +153,12 @@ def init_database() -> None:
         cur.execute(f"CREATE TABLE domains ({SCHEMA_DOMAINS}) STRICT")
         cur.execute(f"CREATE TABLE addresses ({SCHEMA_ADDRESSES}) STRICT")
         cur.execute(f"CREATE TABLE connections ({SCHEMA_CONNECTIONS}) STRICT")
-        cur.execute("INSERT INTO executables(id, exe, name, cmdline, sha256) VALUES (0, '', '', '', '')")
+        cur.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (0, '', '', '')")
         cur.execute("INSERT INTO domains(id, domain) VALUES (0, '')")
         cur.execute("INSERT INTO addresses(id, addr) VALUES (0, '')")
         cur.execute("CREATE INDEX idx_contime ON connections(contime)")
         cur.execute("CREATE INDEX idx_exe_id_contime ON connections(exe_id, contime)")
         cur.execute("CREATE INDEX idx_pexe_id_contime ON connections(pexe_id, contime)")
-        cur.execute("CREATE INDEX idx_gpexe_id_contime ON connections(gpexe_id, contime)")
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute(f"PRAGMA user_version = {DB_VERSION}")
         con.commit()
@@ -181,13 +181,12 @@ def main() -> int:
     init_database()
     if err := check_database():
         return err
-    # master copy of config and state, all subprocesses only receive a static copy from this point in time
+    # master copy of config, all subprocesses only receive a static copy from this point in time
     config = load_config()
-    state = load_state()
     logging.info(f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}")
     logging.info(f"state: {STATE_DIR}")
     logging.info(f"run: {RUN_DIR}")
-    return run_main_loop(config, state)
+    return run_main_loop(config)
 
 
 def start_picosnitch() -> int:
@@ -202,8 +201,8 @@ def start_picosnitch() -> int:
     multiprocessing.set_start_method("fork", force=True)
     readme = textwrap.dedent(
         f"""
-        Monitor your system for applications that make network connections, track their
-        bandwidth and verify hashes.
+        Monitor your system for applications that make network connections and track
+        their bandwidth.
 
         Picosnitch comes with ABSOLUTELY NO WARRANTY. This is free software, and you
         are welcome to redistribute it under certain conditions. See version 3 of the
