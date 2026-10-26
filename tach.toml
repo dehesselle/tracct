@@ -37,7 +37,7 @@ depends_on = ["picosnitch.constants"]
 
 [[modules]]
 path = "picosnitch.utils"
-depends_on = ["picosnitch.config", "picosnitch.types", "picosnitch.constants"]
+depends_on = ["picosnitch.types", "picosnitch.constants"]
 
 [[modules]]
 path = "picosnitch.live_feed"

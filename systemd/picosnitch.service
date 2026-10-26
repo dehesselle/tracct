@@ -1,0 +1,46 @@
+[Unit]
+Description=picosnitch network monitor
+# the retention purge compares against the wall clock; it skips the purge rather than
+# wiping the db when the clock is behind, but a synced clock lets it run
+Wants=time-sync.target
+After=time-sync.target
+
+[Service]
+# READY=1 is sent once the BPF probes are attached, so ordering waits for capture
+Type=notify
+ExecStart=/opt/picosnitch/bin/picosnitch run
+Restart=always
+RestartSec=5
+
+# an unprivileged dynamic user holding only the capabilities `picosnitch run` checks for,
+# plus CAP_SYSLOG to read kernel symbol addresses (else io_uring zero-copy receives go uncounted)
+DynamicUser=yes
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SYSLOG
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SYSLOG
+NoNewPrivileges=yes
+# lets the daemon hand its sockets to the static group from picosnitch.sysusers; set
+# [viewer] group = "picosnitch-viewer" in config.toml and add viewers to the group; it can't
+# be named picosnitch, DynamicUser= takes that name for the dynamic user and group
+SupplementaryGroups=picosnitch-viewer
+
+# exported as $CONFIGURATION_DIRECTORY, $STATE_DIRECTORY and $RUNTIME_DIRECTORY;
+# the state directory is private to the dynamic user (/var/lib/private/picosnitch)
+ConfigurationDirectory=opt/picosnitch
+StateDirectory=picosnitch
+RuntimeDirectory=picosnitch
+
+# libbpf locks the BPF maps and ring buffers past the default 8 MiB
+LimitMEMLOCK=infinity
+# one fd is cached per executable seen; raise for hosts with many distinct executables
+#LimitNOFILE=8192
+# replaces the old built-in 4 GB watchdog: systemd restarts the daemon past this
+#MemoryMax=512M
+
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

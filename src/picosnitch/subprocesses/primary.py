@@ -18,8 +18,7 @@ from picosnitch.utils import flush_logs, save_state
 
 
 def handle_new_processes(state: State, new_processes: list[BpfEvent]) -> None:
-    """iterate over the list of process/connection data to update the state dictionary and log new entries to exe.log"""
-    datetime_now = time.strftime("%Y-%m-%d %H:%M:%S")
+    """iterate over the list of process/connection data to update the state dictionary and log new entries"""
     for proc in new_processes:
         levels = (
             (proc["name"], proc["exe"], state["Names"], state["Executables"], ""),
@@ -49,7 +48,7 @@ def handle_new_processes(state: State, new_processes: list[BpfEvent]) -> None:
                 if proc_exe not in state["SHA256"]:
                     state["SHA256"][proc_exe] = {}
             if notification:
-                state["Exe Log"].append(f"{datetime_now} {proc_name:<16.16} {proc_exe} (new {', '.join(notification)}){parent}")
+                state["Exe Log"].append(f"{proc_name:<16.16} {proc_exe} (new {', '.join(notification)}){parent}")
 
 
 def run_primary(
@@ -61,7 +60,7 @@ def run_primary(
     q_in: multiprocessing.Queue[bytes],
     _q_out: multiprocessing.Queue,
 ) -> None:
-    """first to receive connection data from monitor, more responsive than secondary, publishes the live feed and writes exe.log, error.log, and state.json"""
+    """first to receive connection data from monitor, more responsive than secondary, publishes the live feed, logs errors and new executables, and writes state.json"""
     try:
         os.nice(-20)
     except Exception:
@@ -69,7 +68,7 @@ def run_primary(
     # init variables for loop
     parent_process = multiprocessing.parent_process()
     assert parent_process is not None
-    live_feed = LiveFeedPublisher(group=config.data.group)
+    live_feed = LiveFeedPublisher(group=config.viewer.group)
     live_feed.start()
     live_feed_dropped = 0
     state_record = pickle.dumps(
@@ -84,11 +83,11 @@ def run_primary(
 
     def _drain_errors(state: State, q_error: multiprocessing.Queue) -> None:
         while not q_error.empty():
-            state["Error Log"].append(time.strftime("%Y-%m-%d %H:%M:%S") + " " + q_error.get())
+            state["Error Log"].append(q_error.get())
 
     def save_state_and_exit(state: State, q_error: multiprocessing.Queue, event_pipes: tuple) -> None:
         _drain_errors(state, q_error)
-        save_state(state, config=config)
+        save_state(state)
         live_feed.stop()
         for event_pipe in event_pipes:
             event_pipe.close()
@@ -168,11 +167,11 @@ def run_primary(
                     if msg["exe"] in state["SHA256"]:
                         if msg["sha256"] not in state["SHA256"][msg["exe"]]:
                             state["SHA256"][msg["exe"]][msg["sha256"]] = first_seen
-                            state["Exe Log"].append(f"{first_seen} {msg['sha256']:<16.16} {msg['exe']} (new hash)")
+                            state["Exe Log"].append(f"{msg['sha256']:<16.16} {msg['exe']} (new hash)")
                     else:
                         state["SHA256"][msg["exe"]] = {msg["sha256"]: first_seen}
             # flush logs every iteration (cheap appends), write state.json only when changed or every 30s
-            flush_logs(state, config)
+            flush_logs(state)
             # monotonic interval: a wall-clock jump must not stall state.json persistence
             if time.monotonic() - last_write > 30:
                 new_record = pickle.dumps(
@@ -182,7 +181,7 @@ def run_primary(
                     state_record = new_record
                     write_record = True
                 if write_record:
-                    save_state(state, write_record=True, config=config)
+                    save_state(state, write_record=True)
                     write_record = False
                 last_write = time.monotonic()
         except Exception as e:

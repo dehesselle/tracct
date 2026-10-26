@@ -17,13 +17,13 @@ import pytest
 
 import picosnitch.utils as utils
 from picosnitch.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
-from picosnitch.config import Config, load_config, write_default_config
-from picosnitch.types import FanotifyEventMetadata, State
+from picosnitch.config import Config, load_config
+from picosnitch.types import FanotifyEventMetadata
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
     (tmp_path / "config.toml").write_text("this is [not valid toml @@@\nx=")
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert isinstance(config, Config)
     assert config.database.enabled is True  # defaults intact, no exception raised
 
@@ -31,7 +31,7 @@ def test_corrupt_config_falls_back_to_defaults(tmp_path):
 def test_non_utf8_config_falls_back_to_defaults(tmp_path):
     # non-UTF-8 config.toml raises UnicodeDecodeError (not TOMLDecodeError); must still fall back
     (tmp_path / "config.toml").write_bytes(b'owner = "caf\xe9"\n')  # latin-1 e-acute, invalid UTF-8
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert isinstance(config, Config)
     assert config.database.enabled is True  # defaults intact, no exception raised
 
@@ -40,10 +40,9 @@ def test_config_numeric_clamps(tmp_path):
     (tmp_path / "config.toml").write_text(
         "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nretention_days = -1\nwrite_limit_seconds = -1\n"
     )
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 256  # non-power-of-two clamped to default
     assert config.monitoring.conn_map_max_entries == 65536  # < 1 clamped to default
-    assert config.monitoring.rlimit_nofile is None
     assert config.monitoring.st_dev_mask is None
     assert config.database.retention_days == 30
     assert config.database.write_limit_seconds == 10
@@ -51,16 +50,16 @@ def test_config_numeric_clamps(tmp_path):
 
 def test_config_valid_values_preserved(tmp_path):
     (tmp_path / "config.toml").write_text("[monitoring]\nexec_ring_buffer_pages = 512\nconn_map_max_entries = 1024\n")
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 512
     assert config.monitoring.conn_map_max_entries == 1024
 
 
 def test_config_renamed_key_warns_and_is_ignored(tmp_path, caplog):
     (tmp_path / "config.toml").write_text("[monitoring]\nperf_ring_buffer_pages = 512\n")
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 256  # old name no longer applies
-    assert "exec_ring_buffer_pages" in caplog.text
+    assert "config.monitoring.perf_ring_buffer_pages: unknown option" in caplog.text
 
 
 def test_config_scalar_for_list_field_skipped(tmp_path):
@@ -68,7 +67,7 @@ def test_config_scalar_for_list_field_skipped(tmp_path):
     it would TypeError in the secondary's filters every write cycle, halting connection
     logging and growing new_processes unboundedly."""
     (tmp_path / "config.toml").write_text('[log]\nignore_ports = 443\nignore_domains = "example.com"\nignore_ips = "10.0.0.1"\n')
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_ports == []
     assert config.log.ignore_domains == []
     assert config.log.ignore_ips == []
@@ -78,31 +77,45 @@ def test_config_numeric_upper_clamps(tmp_path):
     """Absurd but positive / power-of-two BPF sizes must be clamped to defaults, not handed to
     the perf mmap or BPF map alloc where they crash-loop the daemon (conn also wraps a c_uint32)."""
     (tmp_path / "config.toml").write_text("[monitoring]\nexec_ring_buffer_pages = 1073741824\nconn_map_max_entries = 8589934592\n")
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 256  # 2^30 is a power of two but over max
     assert config.monitoring.conn_map_max_entries == 65536  # 2^33 over max (and would wrap c_uint32)
 
 
-def test_config_unresolvable_owner_group_reset(tmp_path):
-    """owner/group that don't resolve to a real uid/gid, or a non-octal mode, must reset to
-    defaults -- else apply_data_permissions raises an uncaught KeyError/ValueError at boot and
-    crash-loops the daemon."""
-    (tmp_path / "config.toml").write_text('[data]\nowner = "no_such_user_xyz123"\ngroup = "no_such_group_xyz123"\nmode = "garbage"\n')
-    config = load_config(tmp_path)
-    assert config.data.owner == "root" and config.data.group == "root" and config.data.mode == "0644"
+def test_config_viewer_group_reset_when_missing(tmp_path):
+    """a group that doesn't exist can't be handed the sockets; reset it instead of failing later."""
+    (tmp_path / "config.toml").write_text('[viewer]\ngroup = "no_such_group_xyz123"\n')
+    assert load_config(tmp_path / "config.toml").viewer.group == ""
+    (tmp_path / "config.toml").write_text('[viewer]\ngroup = "root"\n')
+    assert load_config(tmp_path / "config.toml").viewer.group == "root"
 
 
-def test_config_valid_owner_preserved(tmp_path):
-    """a resolvable name and a numeric uid/gid must be kept, not falsely reset."""
-    (tmp_path / "config.toml").write_text('[data]\nowner = "root"\ngroup = "0"\nmode = "0600"\n')
-    config = load_config(tmp_path)
-    assert config.data.owner == "root" and config.data.group == "0" and config.data.mode == "0600"
+def test_config_unknown_options_warn(tmp_path, caplog):
+    """removed sections and typos must be reported, not silently ignored."""
+    (tmp_path / "config.toml").write_text('[virustotal]\napi_key = "x"\n[database]\nretention_dayz = 7\n')
+    config = load_config(tmp_path / "config.toml")
+    assert config.database.retention_days == 30
+    assert "config.virustotal: unknown section" in caplog.text
+    assert "config.database.retention_dayz: unknown option" in caplog.text
 
 
-def test_default_config_is_private(tmp_path):
-    config_path = tmp_path / "config.toml"
-    write_default_config(config_path)
-    assert config_path.stat().st_mode & 0o777 == 0o600
+def test_missing_config_uses_defaults(tmp_path):
+    assert load_config(tmp_path / "config.toml") == Config()
+
+
+def test_paths_follow_systemd_directories(tmp_path):
+    """the daemon finds its directories where the unit put them; the first entry wins when a
+    unit lists several, and a missing variable falls back to the default."""
+    code = "from picosnitch import constants as c; print(c.CONFIG_PATH, c.STATE_DIR, c.RUN_DIR, c.DB_PATH)"
+    env = {k: v for k, v in os.environ.items() if k not in ("PICOSNITCH_CONFIG", "CONFIGURATION_DIRECTORY", "STATE_DIRECTORY", "RUNTIME_DIRECTORY")}
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
+    assert out == ["/etc/opt/picosnitch/config.toml", "/var/lib/picosnitch", "/run/picosnitch", "/var/lib/picosnitch/picosnitch.db"]
+    env.update(CONFIGURATION_DIRECTORY=f"{tmp_path}/etc", STATE_DIRECTORY=f"{tmp_path}/state:{tmp_path}/other", RUNTIME_DIRECTORY=f"{tmp_path}/run")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
+    assert out == [f"{tmp_path}/etc/config.toml", f"{tmp_path}/state", f"{tmp_path}/run", f"{tmp_path}/state/picosnitch.db"]
+    env["PICOSNITCH_CONFIG"] = f"{tmp_path}/custom.toml"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
+    assert out[0] == f"{tmp_path}/custom.toml"
 
 
 def test_config_ignore_ips_validated(tmp_path):
@@ -112,11 +125,11 @@ def test_config_ignore_ips_validated(tmp_path):
     import ipaddress
 
     (tmp_path / "config.toml").write_text('[log]\nignore_ips = ["not-an-ip", "192.168.1.5/24", "10.0.0.0/8"]\n')
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_ips == ["192.168.1.5/24", "10.0.0.0/8"]  # invalid dropped, valid kept
     [ipaddress.ip_network(x, strict=False) for x in config.log.ignore_ips]  # consumer must not raise
     (tmp_path / "config.toml").write_text('[log]\nignore_ips = "1.2.3.4"\n')  # not a list
-    assert load_config(tmp_path).log.ignore_ips == []
+    assert load_config(tmp_path / "config.toml").log.ignore_ips == []
 
 
 def test_config_ignore_domains_validated(tmp_path):
@@ -124,7 +137,7 @@ def test_config_ignore_domains_validated(tmp_path):
     secondary's startswith() filter every write cycle (halting all logging), an empty string matches
     every domain (silently dropping all connections) -- both outside the subprocess try/except."""
     (tmp_path / "config.toml").write_text('[log]\nignore_domains = ["ads.", "", "telemetry."]\n')
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_domains == ["ads.", "telemetry."]  # empty string dropped
     for prefix in config.log.ignore_domains:  # consumer must not raise
         "example.com".startswith(prefix)
@@ -133,7 +146,7 @@ def test_config_ignore_domains_validated(tmp_path):
 def test_config_ignore_ports_and_hashes_validated(tmp_path):
     digest = "A" * 64
     (tmp_path / "config.toml").write_text(f'[log]\nignore_ports = [true, -2, -1, 443, 65536]\nignore_sha256 = [5, "bad", "{digest}"]\n')
-    config = load_config(tmp_path)
+    config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_ports == [-1, 443]
     assert config.log.ignore_sha256 == [digest.lower()]
 
@@ -316,7 +329,7 @@ def test_check_database_handles_corrupt(tmp_path, monkeypatch):
     OperationalError) on a corrupt db, so the boot path doesn't crash-loop before init quarantines it."""
     import picosnitch.cli as cli
 
-    monkeypatch.setattr(cli, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cli, "DB_PATH", tmp_path / "picosnitch.db")
     (tmp_path / "picosnitch.db").write_bytes(b"not a sqlite database" * 8)
     assert cli.check_database() == 1
 
@@ -326,7 +339,7 @@ def test_config_scalar_section_falls_back(tmp_path):
     ignored, not crash the daemon (regression: `field.name in section_data` raised
     TypeError on an int/bool/float section and crash-looped under systemd Restart=always)."""
     (tmp_path / "config.toml").write_text("monitoring = 5\ndatabase = true\n")
-    config = load_config(tmp_path)  # must not raise TypeError
+    config = load_config(tmp_path / "config.toml")  # must not raise TypeError
     assert isinstance(config, Config)
     assert config.database.enabled is True  # defaults intact
     assert config.monitoring.exec_ring_buffer_pages == 256
@@ -352,7 +365,7 @@ def test_resolve_tool_prefers_trusted_dirs(tmp_path, monkeypatch):
 
 
 def test_corrupt_state_json_quarantined(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
     (tmp_path / "state.json").write_text("{ not valid json ")
     state = utils.load_state()  # must not raise SystemExit
     assert state["Executables"] == {} and state["SHA256"] == {}
@@ -361,7 +374,7 @@ def test_corrupt_state_json_quarantined(tmp_path, monkeypatch):
 
 
 def test_state_json_non_dict_value_reset(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
     (tmp_path / "state.json").write_text('{"Executables": [1, 2, 3]}')
     state = utils.load_state()
     assert state["Executables"] == {}
@@ -372,7 +385,7 @@ def test_state_json_nested_non_dict_value_reset(tmp_path, monkeypatch):
     """A state.json whose top-level keys are dicts but whose INNER values are the wrong shape
     (SHA256 exe -> str, or a name-history exe -> non-list) must be quarantined, not accepted --
     else the secondary's hash bookkeeping breaks on every write cycle."""
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
     (tmp_path / "state.json").write_text('{"SHA256": {"/bin/x": "corrupt"}}')  # inner must be a dict
     state = utils.load_state()
     assert state["SHA256"] == {}
@@ -383,7 +396,7 @@ def test_state_json_nested_non_dict_value_reset(tmp_path, monkeypatch):
 
 
 def test_valid_state_json_loads(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
     (tmp_path / "state.json").write_text(json.dumps({"Executables": {"/bin/x": ["abc"]}, "SHA256": {}}))
     state = utils.load_state()
     assert state["Executables"] == {"/bin/x": ["abc"]}
@@ -391,7 +404,7 @@ def test_valid_state_json_loads(tmp_path, monkeypatch):
 
 
 def test_state_json_rejects_hardlinks_and_oversize(tmp_path, monkeypatch):
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(utils, "STATE_DIR", tmp_path)
     target = tmp_path / "target"
     target.write_text("{}")
     os.link(target, tmp_path / "state.json")
@@ -481,64 +494,6 @@ def test_proc_reads_survive_non_utf8_comm():
         p.wait()
 
 
-def test_apply_data_permissions_keeps_dirs_root_owned(tmp_path):
-    """[data].owner may be a non-root account (to read/restrict the logs); the data/log/cache
-    DIRECTORIES must stay root-owned and non-group/other-writable so that account can't swap a
-    file for a symlink/FIFO and attack the root daemon. Only the FILES take the configured owner."""
-    if os.geteuid() != 0:
-        pytest.skip("requires root to chown to another account")
-    import pwd
-
-    try:
-        nobody = pwd.getpwnam("nobody").pw_uid
-    except KeyError:
-        pytest.skip("no 'nobody' account")
-    etc, data, log, cache = (tmp_path / d for d in ("etc", "data", "log", "cache"))
-    for d in (etc, data, log, cache):
-        d.mkdir()
-    (etc / "config.toml").write_text('[data]\nowner = "nobody"\n')
-    (data / "picosnitch.db").write_text("x")
-    utils.apply_data_permissions(etc, data, log, cache)
-    assert (etc / "config.toml").stat().st_uid == 0
-    assert (etc / "config.toml").stat().st_mode & 0o777 == 0o600
-    assert data.stat().st_uid == 0  # dir stays root-owned -> no symlink/FIFO swap by [data].owner
-    assert not (data.stat().st_mode & 0o022)  # never group/other-writable
-    assert (data / "picosnitch.db").stat().st_uid == nobody  # the file takes [data].owner (readable)
-
-
-def test_save_state_preserves_configured_owner(tmp_path, monkeypatch):
-    if os.geteuid() != 0:
-        pytest.skip("requires root to chown to another account")
-    import pwd
-
-    try:
-        nobody = pwd.getpwnam("nobody").pw_uid
-    except KeyError:
-        pytest.skip("no 'nobody' account")
-    monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
-    config = Config()
-    config.data.owner = str(nobody)
-    config.data.group = str(nobody)
-    config.data.mode = "0640"
-    state: State = {
-        "Error Log": [],
-        "Exe Log": [],
-        "Executables": {},
-        "Names": {},
-        "Parent Executables": {},
-        "Parent Names": {},
-        "Grandparent Executables": {},
-        "Grandparent Names": {},
-        "SHA256": {},
-    }
-    utils.save_state(state, config=config)
-    state_path = tmp_path / "state.json"
-    assert (state_path.stat().st_uid, state_path.stat().st_gid) == (nobody, nobody)
-    assert state_path.stat().st_mode & 0o777 == 0o640
-    utils.save_state(state, config=config)
-    assert (state_path.stat().st_uid, state_path.stat().st_gid) == (nobody, nobody)
-
-
 def test_sanitize_log_line_neutralizes_control_chars():
     """attacker-influenced fields (comm/cmdline/domain) reach error.log/exe.log; every
     C0 (except tab), DEL, and C1 (e.g. U+009B CSI) must be stripped so a viewed log can't be
@@ -550,56 +505,3 @@ def test_sanitize_log_line_neutralizes_control_chars():
     assert "\ttab" in clean  # tab kept (harmless in a log, not cursor movement here)
     assert "\u202e" not in clean
     assert "\udc9b" not in clean
-
-
-def test_safe_log_open_rejects_fifo_and_symlink(tmp_path):
-    """LOG_DIR may be owned by [data].owner, who could swap a log for a FIFO (hang the root daemon
-    on open) or a symlink (redirect its writes); safe_log_open must reject both, not block."""
-    import signal
-
-    fifo = tmp_path / "error.log"
-    os.mkfifo(fifo)
-
-    def _alarm(*_):
-        raise TimeoutError("safe_log_open hung on a FIFO")
-
-    signal.signal(signal.SIGALRM, _alarm)
-    signal.alarm(5)
-    try:
-        with pytest.raises(OSError):  # ENXIO (no reader) or the S_ISREG reject -- never a hang
-            utils.safe_log_open(fifo)
-    finally:
-        signal.alarm(0)
-    fifo.unlink()
-    target = tmp_path / "root_secret"
-    target.write_text("secret")
-    link = tmp_path / "error.log"
-    link.symlink_to(target)
-    with pytest.raises(OSError):  # O_NOFOLLOW -> ELOOP
-        utils.safe_log_open(link)
-    assert target.read_text() == "secret"  # untouched
-    hardlink = tmp_path / "hardlink.log"
-    os.link(target, hardlink)
-    with pytest.raises(OSError):
-        utils.safe_log_open(hardlink)
-    # a real regular file still opens and appends
-    reg = tmp_path / "ok.log"
-    with utils.safe_log_open(reg) as f:
-        f.write("hi\n")
-    assert reg.read_text() == "hi\n"
-
-
-def test_safe_log_open_applies_configured_permissions(tmp_path):
-    if os.geteuid() != 0:
-        pytest.skip("requires root to chown")
-    import pwd
-
-    nobody = pwd.getpwnam("nobody")
-    config = Config()
-    config.data.owner = str(nobody.pw_uid)
-    config.data.group = str(nobody.pw_gid)
-    config.data.mode = "0640"
-    path = tmp_path / "new.log"
-    with utils.safe_log_open(path, config=config) as f:
-        f.write("x")
-    assert (path.stat().st_uid, path.stat().st_gid, path.stat().st_mode & 0o777) == (nobody.pw_uid, nobody.pw_gid, 0o640)

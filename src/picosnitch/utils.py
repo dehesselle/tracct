@@ -6,14 +6,12 @@ import collections
 import ctypes
 import fcntl
 import functools
-import grp
 import hashlib
 import ipaddress
 import json
 import logging
 import multiprocessing
 import os
-import pwd
 import socket
 import sqlite3
 import stat
@@ -23,8 +21,7 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
-from picosnitch.config import Config, load_config
-from picosnitch.constants import DATA_DIR, LOG_DIR, PID_CACHE, ST_DEV_MASK
+from picosnitch.constants import PID_CACHE, ST_DEV_MASK, STATE_DIR
 from picosnitch.types import FanotifyEventMetadata, State
 
 
@@ -50,22 +47,6 @@ def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
     would destroy a healthy database. Shared by the cli boot check and the secondary purge."""
     msg = str(e).lower()
     return any(s in msg for s in ("malformed", "not a database", "no such table", "no such column", "encrypted"))
-
-
-def resolve_owner(owner: str) -> int:
-    """Resolve a username or numeric string to a UID."""
-    try:
-        return int(owner)
-    except ValueError:
-        return pwd.getpwnam(owner).pw_uid
-
-
-def resolve_group(group: str) -> int:
-    """Resolve a group name or numeric string to a GID."""
-    try:
-        return int(group)
-    except ValueError:
-        return grp.getgrnam(group).gr_gid
 
 
 def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Connection:
@@ -103,87 +84,6 @@ def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Co
     raise sqlite3.OperationalError(f"could not open {db_path} for reading: {last_err}")
 
 
-def safe_log_open(path: Path | str, binary: bool = False, config: Config | None = None):
-    """Open a log file for appending without following a symlink or blocking on a FIFO.
-
-    `LOG_DIR` may be chown'd to a non-root account when `[data].owner` is
-    overridden in config.toml, so that user could swap a log file for a
-    symlink (redirect the root daemon's writes to an arbitrary path) or a
-    FIFO (block the daemon forever on open). `O_NOFOLLOW` fails with ELOOP
-    on a symlink; `O_NONBLOCK` plus an `S_ISREG` check rejects a FIFO/device
-    instead of hanging. The file is still created if it does not exist.
-    """
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
-    fd = os.open(str(path), flags, 0o644)
-    try:
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
-            raise OSError(f"refusing non-regular or hardlinked log file: {path}")
-        if config is not None:
-            os.fchown(fd, resolve_owner(config.data.owner), resolve_group(config.data.group))
-            os.fchmod(fd, int(config.data.mode, 8))
-        os.set_blocking(fd, True)
-    except BaseException:
-        os.close(fd)
-        raise
-    if binary:
-        return os.fdopen(fd, "ab", buffering=0)
-    return os.fdopen(fd, "a", encoding="utf-8", errors="surrogateescape")
-
-
-def apply_data_permissions(config_dir: Path, data_dir: Path, log_dir: Path, cache_dir: Path) -> None:
-    """Apply the configured ownership and mode to the data, log, and cache FILES.
-
-    The directories are kept root-owned and never group/other-writable. [data].owner may be a
-    non-root account (to read or restrict access to the logs); a directory owned by that account
-    would let it swap a file for a symlink or FIFO and attack the root daemon (chown/open/sqlite
-    all target these paths). Only the FILES take [data].owner:group and the configured mode -- the
-    daemon (root) writes them, and readers reach the db read-only (WAL immutable if they can't
-    write the sidecars, as non-root readers already do). Live data comes from the events socket,
-    not the db, so this does not affect live monitoring."""
-    config_dir.chmod(0o755)
-    os.chown(config_dir, 0, 0)
-    config_path = config_dir / "config.toml"
-    try:
-        config_fd = os.open(config_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except FileNotFoundError:
-        return
-    try:
-        config_stat = os.fstat(config_fd)
-        if not stat.S_ISREG(config_stat.st_mode) or config_stat.st_nlink != 1:
-            raise OSError(f"refusing non-regular or hardlinked config: {config_path}")
-        os.fchown(config_fd, 0, 0)
-        os.fchmod(config_fd, 0o600)
-    finally:
-        os.close(config_fd)
-    config = load_config(config_dir)
-    uid = resolve_owner(config.data.owner)
-    gid = resolve_group(config.data.group)
-    mode = int(config.data.mode, 8)
-    dir_mode = (mode | 0o111) & ~0o022  # traversable, but writable only by root (never group/other)
-    for d in [data_dir, log_dir, cache_dir]:
-        d.chmod(dir_mode)
-        os.chown(d, 0, gid)  # root-owned dir (with [data].group for traversal), not [data].owner
-        for entry in d.iterdir():
-            # fd-based with O_NOFOLLOW: [data].owner may own these dirs, so a symlink swapped
-            # in after a path check could redirect the root chown/chmod to an arbitrary file
-            # (e.g. /etc/sudoers); O_NONBLOCK so a planted fifo can't block the open
-            try:
-                fd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-            except OSError:
-                continue
-            try:
-                st = os.fstat(fd)
-                # nlink==1: O_NOFOLLOW stops a symlink swap but not a hardlink from the (untrusted)
-                # [data].owner to a root-owned file, which fchown would hand them (LPE where
-                # fs.protected_hardlinks=0); picosnitch's own data files are never hardlinked
-                if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
-                    os.fchmod(fd, mode)
-                    os.fchown(fd, uid, gid)
-            finally:
-                os.close(fd)
-
-
 def load_state() -> State:
     """read data for the state dictionary from state.json or init new if not found"""
     data: State = {
@@ -197,7 +97,7 @@ def load_state() -> State:
         "Grandparent Names": {},
         "SHA256": {},
     }
-    state_path = DATA_DIR / "state.json"
+    state_path = STATE_DIR / "state.json"
     keys = ["Executables", "Names", "Parent Executables", "Parent Names", "Grandparent Executables", "Grandparent Names", "SHA256"]
     if state_path.exists() or state_path.is_symlink():
         try:
@@ -244,49 +144,28 @@ def sanitize_log_line(line: str) -> str:
     return "".join(c for c in line if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"))
 
 
-def flush_logs(state: State, config: Config | None = None) -> None:
-    """append pending error.log and exe.log entries, then clear the lists"""
-    exe_log_path = LOG_DIR / "exe.log"
-    error_log_path = LOG_DIR / "error.log"
-    try:
-        if state["Error Log"]:
-            with safe_log_open(error_log_path, config=config) as f:
-                f.write("\n".join(sanitize_log_line(line) for line in state["Error Log"]) + "\n")
-            state["Error Log"] = []
-    except Exception as e:
-        logging.error(f"picosnitch write error (error.log): {type(e).__name__}{e.args}")
-    try:
-        if state["Exe Log"]:
-            with safe_log_open(exe_log_path, config=config) as f:
-                f.write("\n".join(sanitize_log_line(line) for line in state["Exe Log"]) + "\n")
-            state["Exe Log"] = []
-    except Exception as e:
-        logging.error(f"picosnitch write error (exe.log): {type(e).__name__}{e.args}")
+def flush_logs(state: State) -> None:
+    """log pending error and new-executable entries to stderr (the journal under systemd), then clear the lists"""
+    for line in state["Error Log"]:
+        logging.getLogger("picosnitch.error").warning(sanitize_log_line(line))
+    state["Error Log"] = []
+    for line in state["Exe Log"]:
+        logging.getLogger("picosnitch.exe").info(sanitize_log_line(line))
+    state["Exe Log"] = []
 
 
-def save_state(state: State, write_record: bool = True, config: Config | None = None) -> None:
+def save_state(state: State, write_record: bool = True) -> None:
     """flush logs then atomically write state.json via tempfile + os.replace"""
-    flush_logs(state, config)
+    flush_logs(state)
     try:
         if write_record:
-            state_path = DATA_DIR / "state.json"
+            state_path = STATE_DIR / "state.json"
             state_data = {k: state[k] for k in ("Executables", "Names", "Parent Executables", "Parent Names", "Grandparent Executables", "Grandparent Names", "SHA256")}
-            # Preserve ownership and mode across atomic replacement.
-            try:
-                existing = state_path.lstat()
-                attrs = (existing.st_uid, existing.st_gid, existing.st_mode & 0o777) if stat.S_ISREG(existing.st_mode) and existing.st_nlink == 1 else None
-            except FileNotFoundError:
-                attrs = None
-            if attrs is None and config is not None:
-                attrs = (resolve_owner(config.data.owner), resolve_group(config.data.group), int(config.data.mode, 8))
-            fd = tempfile.NamedTemporaryFile(dir=DATA_DIR, mode="w", prefix=".state.", suffix=".tmp", delete=False, encoding="utf-8", errors="surrogateescape")
+            fd = tempfile.NamedTemporaryFile(dir=STATE_DIR, mode="w", prefix=".state.", suffix=".tmp", delete=False, encoding="utf-8", errors="surrogateescape")
             try:
                 json.dump(state_data, fd, indent=2, separators=(",", ": "), sort_keys=True, ensure_ascii=False)
                 fd.flush()
                 os.fsync(fd.fileno())
-                if attrs is not None:
-                    os.fchown(fd.fileno(), attrs[0], attrs[1])
-                    os.fchmod(fd.fileno(), attrs[2])
                 fd.close()
                 os.replace(fd.name, state_path)
             except BaseException:

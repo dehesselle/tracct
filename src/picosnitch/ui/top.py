@@ -17,7 +17,7 @@ import socket
 import sys
 import time
 
-from picosnitch.constants import LOG_DIR, VERSION
+from picosnitch.constants import VERSION
 from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
 
@@ -380,16 +380,11 @@ def top_init() -> int:
     except OSError as e:
         logging.error(f"Could not connect to picosnitch live feed: {e}")
         return 1
-    # While curses owns the tty, redirect stderr to a log file so any
-    # in-process logging (LiveFeedSubscriber warnings, exceptions, etc.)
-    # does not corrupt the screen. Save the original fd to restore on exit.
+    # While curses owns the tty, silence stderr so any in-process logging
+    # (LiveFeedSubscriber warnings, exceptions, etc.) does not corrupt the
+    # screen. Save the original fd to restore on exit.
     saved_stderr_fd = os.dup(2)
-    log_path = LOG_DIR / "picosnitch-top.log"
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
-    except OSError:
-        log_fd = os.open(os.devnull, os.O_WRONLY)
+    log_fd = os.open(os.devnull, os.O_WRONLY)
     os.dup2(log_fd, 2)
     os.close(log_fd)
     try:

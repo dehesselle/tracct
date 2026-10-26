@@ -5,12 +5,10 @@ import dataclasses
 import grp
 import ipaddress
 import logging
-import os
-import pwd
 import tomllib
 from pathlib import Path
 
-from picosnitch.constants import CONFIG_DIR
+from picosnitch.constants import CONFIG_PATH
 
 
 @dataclasses.dataclass
@@ -18,13 +16,6 @@ class DatabaseConfig:
     enabled: bool = True
     retention_days: int = 30
     write_limit_seconds: int = 10
-
-
-@dataclasses.dataclass
-class DataConfig:
-    owner: str = "root"
-    group: str = "root"
-    mode: str = "0644"
 
 
 @dataclasses.dataclass
@@ -45,67 +36,25 @@ class MonitoringConfig:
     mmap_ring_rx: bool = False
     exec_ring_buffer_pages: int = 256
     conn_map_max_entries: int = 65536
-    rlimit_nofile: int | None = None
     st_dev_mask: int | None = None
+
+
+@dataclasses.dataclass
+class ViewerConfig:
+    # group whose members may connect to the daemon's sockets (top, tui); empty keeps the daemon's own group
+    group: str = ""
 
 
 @dataclasses.dataclass
 class Config:
     database: DatabaseConfig = dataclasses.field(default_factory=DatabaseConfig)
-    data: DataConfig = dataclasses.field(default_factory=DataConfig)
     log: LogConfig = dataclasses.field(default_factory=LogConfig)
     monitoring: MonitoringConfig = dataclasses.field(default_factory=MonitoringConfig)
+    viewer: ViewerConfig = dataclasses.field(default_factory=ViewerConfig)
 
 
-def _dump_toml(config: Config) -> str:
-    """Serialize a Config dataclass to a TOML string."""
-    lines: list[str] = []
-
-    def _format_value(value: bool | int | str | list) -> str:
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, int):
-            return str(value)
-        if isinstance(value, str):
-            # escape backslashes and quotes
-            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-            return f'"{escaped}"'
-        if isinstance(value, list):
-            if not value:
-                return "[]"
-            items = ", ".join(_format_value(v) for v in value)
-            return f"[{items}]"
-        raise TypeError(f"Unsupported TOML value type: {type(value)}")
-
-    def _write_section(section_name: str, obj) -> None:
-        lines.append(f"[{section_name}]")
-        sub_sections: list[tuple[str, dict]] = []
-        for field in dataclasses.fields(obj):
-            value = getattr(obj, field.name)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                sub_sections.append((field.name, value))
-                continue
-            lines.append(f"{field.name} = {_format_value(value)}")
-        lines.append("")
-        for sub_name, sub_dict in sub_sections:
-            full_name = f"{section_name}.{sub_name}"
-            if sub_dict:
-                lines.append(f"[{full_name}]")
-                for k, v in sub_dict.items():
-                    lines.append(f"{k} = {_format_value(v)}")
-                lines.append("")
-
-    for field in dataclasses.fields(config):
-        _write_section(field.name, getattr(config, field.name))
-
-    return "\n".join(lines)
-
-
-def load_config(config_dir: Path = CONFIG_DIR) -> Config:
-    """Load config from config.toml, merging with defaults."""
-    config_path = config_dir / "config.toml"
+def load_config(config_path: Path = CONFIG_PATH) -> Config:
+    """Load config.toml, merging with defaults. A missing file means all defaults."""
     config = Config()
     if config_path.exists():
         try:
@@ -115,6 +64,10 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
             # never crash-loop the daemon on a malformed config; fall back to defaults
             logging.error(f"failed to read {config_path}, using defaults: {e}")
             raw = {}
+        section_names = {section_field.name for section_field in dataclasses.fields(config)}
+        for section_name in raw:
+            if section_name not in section_names:
+                logging.warning(f"config.{section_name}: unknown section, ignoring")
         for section_field in dataclasses.fields(config):
             section_name = section_field.name
             if section_name not in raw:
@@ -125,10 +78,11 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
                 # skip so `field.name in section_data` can't raise and crash-loop the daemon
                 logging.warning(f"config.{section_name}: expected a table, got {type(section_data).__name__}, ignoring")
                 continue
-            # removed config options
-            if section_name == "monitoring" and "perf_ring_buffer_pages" in section_data:
-                logging.warning("monitoring.perf_ring_buffer_pages is now monitoring.exec_ring_buffer_pages, ignoring the old name")
             section_obj = getattr(config, section_name)
+            field_names = {field.name for field in dataclasses.fields(section_obj)}
+            for key in section_data:
+                if key not in field_names:
+                    logging.warning(f"config.{section_name}.{key}: unknown option, ignoring")
             for field in dataclasses.fields(section_obj):
                 if field.name in section_data:
                     value = section_data[field.name]
@@ -156,10 +110,6 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     if entries < 1 or entries > 1048576:
         logging.warning(f"monitoring.conn_map_max_entries must be in [1, 1048576], got {entries}, using 65536")
         config.monitoring.conn_map_max_entries = 65536
-    nofile = config.monitoring.rlimit_nofile
-    if nofile is not None and (isinstance(nofile, bool) or not isinstance(nofile, int) or nofile < 256):
-        logging.warning(f"monitoring.rlimit_nofile must be an integer >= 256, got {nofile!r}, ignoring")
-        config.monitoring.rlimit_nofile = None
     dev_mask = config.monitoring.st_dev_mask
     if dev_mask is not None and (isinstance(dev_mask, bool) or not isinstance(dev_mask, int) or not 0 <= dev_mask <= 0xFFFFFFFF):
         logging.warning(f"monitoring.st_dev_mask must be in [0, 4294967295], got {dev_mask!r}, ignoring")
@@ -173,36 +123,13 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     if write_limit < 0:
         logging.warning(f"database.write_limit_seconds must not be negative, got {write_limit}, using 10")
         config.database.write_limit_seconds = 10
-
-    # reset owner/group/mode that don't resolve to a real uid/gid/octal mode; otherwise a
-    # typo'd name crash-loops the daemon at boot (apply_data_permissions resolves these
-    # outside any try/except). resolved inline with pwd/grp (mirroring
-    # utils.resolve_owner/resolve_group) to avoid a config<->utils import cycle
-    def _resolves(value, lookup) -> bool:
+    # reset a group that doesn't resolve, else the daemon can't hand the sockets to it
+    if config.viewer.group:
         try:
-            numeric = int(value)
-            return 0 <= numeric < 2**32 - 1
-        except (ValueError, TypeError):
-            pass
-        try:
-            lookup(value)
-            return True
-        except (KeyError, TypeError):
-            return False
-
-    if not _resolves(config.data.owner, pwd.getpwnam):
-        logging.warning(f"config.data.owner: {config.data.owner!r} does not resolve, using 'root'")
-        config.data.owner = "root"
-    if not _resolves(config.data.group, grp.getgrnam):
-        logging.warning(f"config.data.group: {config.data.group!r} does not resolve, using 'root'")
-        config.data.group = "root"
-    try:
-        mode = int(config.data.mode, 8)
-        if not 0 <= mode <= 0o7777:
-            raise ValueError
-    except ValueError:
-        logging.warning(f"config.data.mode: {config.data.mode!r} is not an octal mode, using '0644'")
-        config.data.mode = "0644"
+            grp.getgrnam(config.viewer.group)
+        except KeyError:
+            logging.warning(f"config.viewer.group: {config.viewer.group!r} does not exist, ignoring")
+            config.viewer.group = ""
     # drop log.ignore_ips entries that aren't valid networks (strict=False accepts a host-bit CIDR);
     # otherwise secondary crashes building ignored_networks at boot outside its try/except
     valid_ignore_ips = []
@@ -227,12 +154,3 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     config.log.ignore_ports = [port for port in config.log.ignore_ports if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535]
     config.log.ignore_sha256 = [digest.lower() for digest in config.log.ignore_sha256 if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdefABCDEF" for c in digest)]
     return config
-
-
-def write_default_config(config_path: Path) -> None:
-    """Write the default config to a TOML file."""
-    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(_dump_toml(Config()))
-    logging.info(f"wrote default config to {config_path}")

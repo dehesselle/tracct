@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2020 Eric Lesiuta
 
-import logging
 import os
 import resource
 import tomllib
@@ -13,39 +12,28 @@ from picosnitch import __version__
 # picosnitch version
 VERSION: typing.Final[str] = __version__
 
-# FHS standard paths (PICOSNITCH_TEST enables /tmp/picosnitch prefix for testing)
-_root: str = "/tmp/picosnitch" if os.getenv("PICOSNITCH_TEST") else ""
-CONFIG_DIR: typing.Final[Path] = Path(f"{_root}/etc/picosnitch")
-DATA_DIR: typing.Final[Path] = Path(f"{_root}/var/lib/picosnitch")
-LOG_DIR: typing.Final[Path] = Path(f"{_root}/var/log/picosnitch")
-RUN_DIR: typing.Final[Path] = Path(f"{_root}/run/picosnitch")
-if _root or os.getuid() == 0:
-    _cache_dir = Path(f"{_root}/var/cache/picosnitch")
-else:
-    _xdg_cache = os.getenv("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    _cache_dir = Path(f"{_xdg_cache}/picosnitch")
-CACHE_DIR: typing.Final[Path] = _cache_dir
 
-# set RLIMIT_NOFILE if configured
-try:
-    file_path = CONFIG_DIR / "config.toml"
-    with open(file_path, "rb") as toml_file:
-        nofile = tomllib.load(toml_file).get("monitoring", {}).get("rlimit_nofile")
-    if isinstance(nofile, int) and not isinstance(nofile, bool) and nofile >= 256:
-        try:
-            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-            if nofile > soft:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, hard))
-                logging.info(f"set RLIMIT_NOFILE to {nofile}")
-        except Exception as e:
-            logging.error(f"{type(e).__name__}{e.args}")
-            logging.error("monitoring.rlimit_nofile was found in config.toml but it could not be set")
-except Exception:
-    pass
+def _systemd_directory(variable: str, default: str) -> Path:
+    """the directory systemd passes for a *Directory= setting (first entry when the unit lists
+    several, colon-separated), else the default for running outside a unit"""
+    value = os.getenv(variable, "").split(":")[0]
+    return Path(value) if value else Path(default)
+
+
+# paths come from the environment so a unit (or a test) can place them; the variables are the
+# ones systemd sets for ConfigurationDirectory=, StateDirectory= and RuntimeDirectory=
+CONFIG_PATH: typing.Final[Path] = Path(os.getenv("PICOSNITCH_CONFIG") or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/picosnitch") / "config.toml")
+STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/picosnitch")
+RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/picosnitch")
+DB_PATH: typing.Final[Path] = STATE_DIR / "picosnitch.db"
+
+# one cached fd per executable; raise the limit with LimitNOFILE= in the unit
 FD_CACHE: typing.Final[int] = max(1, resource.getrlimit(resource.RLIMIT_NOFILE)[0] - 128)
 PID_CACHE: typing.Final[int] = max(8192, 2 * FD_CACHE)
 # bounds the secondary's write-retry buffer near 200 MB (~2 KB/entry) on a persistent outage
 RETRY_BUFFER_MAX: typing.Final[int] = 100000
+# btrfs device numbers differ per subvolume and its inodes aren't unique across subvolumes,
+# so (dev, ino) checks are disabled there unless [monitoring].st_dev_mask overrides it
 st_dev_mask = 0xFFFFFFFF
 try:
     # parse /proc/mounts to detect btrfs filesystems (replaces psutil.disk_partitions)
@@ -54,14 +42,8 @@ try:
             _parts = _line.split()
             if len(_parts) >= 3 and _parts[2] == "btrfs":
                 st_dev_mask = 0
-                if not (CONFIG_DIR / "config.toml").exists():
-                    logging.warning(
-                        "running picosnitch on btrfs weakens exe name resolution due to per-subvolume device numbers and inodes that aren't unique across subvolumes "
-                        "(this is still fine for most use cases)"
-                    )
                 break
-    file_path = CONFIG_DIR / "config.toml"
-    with open(file_path, "rb") as toml_file:
+    with open(CONFIG_PATH, "rb") as toml_file:
         set_mask = tomllib.load(toml_file).get("monitoring", {}).get("st_dev_mask")
     if isinstance(set_mask, int) and not isinstance(set_mask, bool) and 0 <= set_mask <= 0xFFFFFFFF:
         st_dev_mask = set_mask

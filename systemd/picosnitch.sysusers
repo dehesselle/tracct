@@ -1,0 +1,3 @@
+# install as /etc/sysusers.d/picosnitch.conf (or /usr/lib/sysusers.d/), then run systemd-sysusers
+# members of this group may use the daemon's sockets (picosnitch top, tui)
+g picosnitch-viewer -

@@ -9,6 +9,7 @@ events in real time without polling the database.
 
 import grp
 import json
+import logging
 import os
 import select
 import socket
@@ -71,11 +72,13 @@ class LiveFeedPublisher:
             self._sock.bind(str(EVENTS_SOCKET_PATH))
             os.chmod(EVENTS_SOCKET_PATH, 0o660)
             if self._group:
+                # unprivileged, this only works for a group the daemon is a member of
+                # (SupplementaryGroups= in the unit)
                 try:
                     gid = grp.getgrnam(self._group).gr_gid
                     os.chown(EVENTS_SOCKET_PATH, -1, gid)
-                except (KeyError, PermissionError):
-                    pass
+                except (KeyError, PermissionError) as e:
+                    logging.warning(f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}")
             self._sock.listen(8)
             self._wake_r, self._wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
             self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)

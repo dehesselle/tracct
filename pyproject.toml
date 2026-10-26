@@ -33,7 +33,7 @@ include = [
     "/hatch_build.py",
     "/README.md",
     "/LICENSE",
-    "/debian/picosnitch.service",
+    "/systemd/",
 ]
 
 [tool.hatch.build.targets.wheel]

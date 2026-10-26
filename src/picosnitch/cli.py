@@ -11,29 +11,56 @@ import sys
 import textwrap
 from pathlib import Path
 
-from picosnitch.config import load_config, write_default_config
-from picosnitch.constants import CACHE_DIR, CONFIG_DIR, DATA_DIR, DB_VERSION, LOG_DIR, RUN_DIR, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES, VERSION
+from picosnitch.config import load_config
+from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, RUN_DIR, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES, STATE_DIR, VERSION
 from picosnitch.main_loop import run_main_loop
 from picosnitch.ui.top import top_init
 from picosnitch.ui.tui import tui_init
-from picosnitch.utils import apply_data_permissions, connect_db_readonly, load_state, sqlite_error_means_corrupt
+from picosnitch.utils import connect_db_readonly, load_state, sqlite_error_means_corrupt
+
+# what the daemon needs, as root or as an unprivileged user with ambient capabilities
+REQUIRED_CAPABILITIES: dict[str, int] = {
+    "CAP_DAC_READ_SEARCH": 2,  # read any executable to hash it
+    "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe of other users' processes
+    "CAP_SYS_ADMIN": 21,  # fanotify, to rehash executables modified in place
+    "CAP_PERFMON": 38,  # attach kprobes, uprobes and fexit programs
+    "CAP_BPF": 39,  # load BPF programs and maps
+}
 
 
-def check_root() -> int:
-    """check for root privileges, return exit code on failure"""
-    if os.getuid() != 0:
-        logging.error("This command requires root")
-        return 1
-    return 0
+class _JournalFormatter(logging.Formatter):
+    """prefix each record with its sd-daemon(3) priority so journald keeps the level"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.levelno >= logging.ERROR:
+            priority = 3
+        elif record.levelno >= logging.WARNING:
+            priority = 4
+        elif record.levelno >= logging.INFO:
+            priority = 6
+        else:
+            priority = 7
+        return f"<{priority}>{super().format(record)}"
 
 
-def check_bpf() -> int:
-    """check BPF capabilities and requirements, return exit code on failure"""
+def configure_logging() -> None:
+    """journald adds its own timestamps; anywhere else they come with the message"""
+    if os.getenv("JOURNAL_STREAM"):
+        formatter: logging.Formatter = _JournalFormatter("%(name)s: %(message)s")
+    else:
+        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    for handler in logging.getLogger().handlers:
+        handler.setFormatter(formatter)
+
+
+def check_capabilities() -> int:
+    """check the effective capabilities and BPF requirements, return exit code on failure"""
     with open("/proc/self/status", "r") as f:
         proc_status = f.read()
     capeff = int(proc_status[proc_status.find("CapEff:") + 8 :].splitlines()[0].strip(), base=16)
-    if not (capeff & (1 << 21)):
-        logging.error("Missing capability CAP_SYS_ADMIN")
+    missing = [name for name, bit in REQUIRED_CAPABILITIES.items() if not capeff & (1 << bit)]
+    if missing:
+        logging.error(f"Missing capabilities: {' '.join(missing)} (run as root or grant them with AmbientCapabilities=)")
         return 1
     from .bpf_wrapper import check_bpf_requirements
 
@@ -47,21 +74,20 @@ def check_bpf() -> int:
 
 def check_database() -> int:
     """check database exists and has correct version, return exit code on failure"""
-    db_path = DATA_DIR / "picosnitch.db"
-    if not db_path.exists():
-        logging.error(f"Database not found: {db_path}")
+    if not DB_PATH.exists():
+        logging.error(f"Database not found: {DB_PATH}")
         logging.error("Start the picosnitch service to create it (systemctl start picosnitch)")
         return 1
     con = None
     try:
-        con = connect_db_readonly(db_path)
+        con = connect_db_readonly(DB_PATH)
         cur = con.cursor()
         cur.execute("PRAGMA user_version")
         user_version = cur.fetchone()[0]
     except sqlite3.Error as e:
         # sqlite3.Error (not just OperationalError) so a corrupt db -> DatabaseError returns 1
-        # instead of crashing the boot path (init_dirs_and_config quarantines it beforehand)
-        logging.error(f"Could not open database {db_path}: {e}")
+        # instead of crashing the boot path (init_database quarantines it beforehand)
+        logging.error(f"Could not open database {DB_PATH}: {e}")
         return 1
     finally:
         if con is not None:
@@ -103,23 +129,14 @@ def _db_is_corrupt(db_path: Path) -> bool:
     except sqlite3.DatabaseError as e:
         # not a database / malformed header / missing table or column -> corrupt; a transient
         # error (locked by the live daemon or a user's sqlite session, busy, disk I/O) must
-        # NOT quarantine a healthy db (`start` runs this before the already-running check)
+        # NOT quarantine a healthy db (e.g. one a `tui` session has open)
         return sqlite_error_means_corrupt(e)
 
 
-def init_dirs_and_config() -> None:
-    """create FHS directories, write default config, and create database if missing"""
-    for d in [CONFIG_DIR, DATA_DIR, LOG_DIR, RUN_DIR, CACHE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
-    for d in (CONFIG_DIR, RUN_DIR):
-        d.chmod(0o755)
-        os.chown(d, 0, 0)
-    config_path = CONFIG_DIR / "config.toml"
-    if not config_path.exists():
-        write_default_config(config_path)
-    # Secure upgrade-created directories before opening any existing data path.
-    apply_data_permissions(CONFIG_DIR, DATA_DIR, LOG_DIR, CACHE_DIR)
-    db_path = DATA_DIR / "picosnitch.db"
+def init_database() -> None:
+    """create the state directory and database if missing (systemd creates the directory for a unit)"""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    db_path = DB_PATH
     if (db_path.exists() or db_path.is_symlink()) and _db_is_corrupt(db_path):
         # quarantine a corrupt db and recreate it below, so check_database / the secondary boot
         # purge don't crash-loop the daemon (data is kept in picosnitch.db.bad)
@@ -146,7 +163,6 @@ def init_dirs_and_config() -> None:
         cur.execute(f"PRAGMA user_version = {DB_VERSION}")
         con.commit()
         con.close()
-    apply_data_permissions(CONFIG_DIR, DATA_DIR, LOG_DIR, CACHE_DIR)
 
 
 def main() -> int:
@@ -162,12 +178,15 @@ def main() -> int:
     except BlockingIOError:
         logging.error(f"picosnitch is already running (lock held on {RUN_DIR / 'picosnitch.lock'})")
         return 1
+    init_database()
+    if err := check_database():
+        return err
     # master copy of config and state, all subprocesses only receive a static copy from this point in time
     config = load_config()
     state = load_state()
-    logging.info(f"config: {CONFIG_DIR}")
-    logging.info(f"data: {DATA_DIR}")
-    logging.info(f"logs: {LOG_DIR}")
+    logging.info(f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}")
+    logging.info(f"state: {STATE_DIR}")
+    logging.info(f"run: {RUN_DIR}")
     return run_main_loop(config, state)
 
 
@@ -179,6 +198,7 @@ def start_picosnitch() -> int:
     if not sys.platform.startswith("linux"):
         logging.error("Did not detect a supported operating system")
         return 1
+    configure_logging()
     multiprocessing.set_start_method("fork", force=True)
     readme = textwrap.dedent(
         f"""
@@ -191,9 +211,8 @@ def start_picosnitch() -> int:
 
         version: {VERSION}
         entrypoint: {Path(sys.argv[0]).resolve()}
-        config: {CONFIG_DIR}
-        data: {DATA_DIR}
-        logs: {LOG_DIR}
+        config: {CONFIG_PATH}
+        state: {STATE_DIR}
         run: {RUN_DIR}
 
         usage:
@@ -205,6 +224,9 @@ def start_picosnitch() -> int:
                         |--> run the daemon in the foreground (used by picosnitch.service)
 
             systemctl enable|disable|start|stop|restart|status picosnitch
+
+        paths follow $PICOSNITCH_CONFIG (a file), else $CONFIGURATION_DIRECTORY,
+        $STATE_DIRECTORY and $RUNTIME_DIRECTORY as set by systemd
         """.lstrip("\n")
     )
     if len(sys.argv) != 2:
@@ -218,12 +240,7 @@ def start_picosnitch() -> int:
         print(f"version: {VERSION}")
         return 0
     elif cmd == "run":
-        if err := check_root():
-            return err
-        if err := check_bpf():
-            return err
-        init_dirs_and_config()
-        if err := check_database():
+        if err := check_capabilities():
             return err
         return main()
     elif cmd == "tui":

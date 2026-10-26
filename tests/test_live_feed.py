@@ -12,7 +12,7 @@ import pytest
 
 # Force RUN_DIR to a tempdir before importing live_feed so the socket lands somewhere we can write.
 _TMP_RUN = tempfile.mkdtemp(prefix="picosnitch-test-")
-os.environ["PICOSNITCH_TEST"] = _TMP_RUN
+os.environ["RUNTIME_DIRECTORY"] = _TMP_RUN
 
 from picosnitch import live_feed  # noqa: E402
 

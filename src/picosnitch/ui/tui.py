@@ -14,7 +14,7 @@ import textwrap
 import threading
 import time
 
-from picosnitch.constants import DATA_DIR, DB_VERSION, VERSION
+from picosnitch.constants import DB_PATH, DB_VERSION, VERSION
 from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
 from picosnitch.utils import connect_db_readonly
@@ -547,7 +547,7 @@ def tui_loop(stdscr: curses.window) -> int:
         row max_y-1     filter breadcrumb / footer
     """
     # ── thread for querying the database ──────────────────────────
-    file_path = DATA_DIR / "picosnitch.db"
+    file_path = DB_PATH
     q_query_results: queue.Queue = queue.Queue()
     kill_thread_query = threading.Event()
 
@@ -1023,7 +1023,7 @@ def tui_loop(stdscr: curses.window) -> int:
 def tui_init() -> int:
     """init curses ui"""
     # init sql connection
-    file_path = DATA_DIR / "picosnitch.db"
+    file_path = DB_PATH
     con = connect_db_readonly(file_path, timeout=15)
     # check for table
     cur = con.cursor()

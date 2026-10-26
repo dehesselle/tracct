@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from picosnitch.config import Config
-from picosnitch.constants import DATA_DIR, DB_VERSION, RETRY_BUFFER_MAX, VERSION
+from picosnitch.constants import DB_PATH, DB_VERSION, RETRY_BUFFER_MAX, VERSION
 from picosnitch.types import BpfEvent, ProcessHashInfo, State
 from picosnitch.utils import (
     get_fanotify_events,
@@ -105,7 +105,7 @@ def resolve_hash(
         # fallback on trying to read directly (if still alive) if fd_cache fails, probable causes include:
         # system suspends in the middle of hashing (since cache is reset)
         # process too short lived to open fd or stat in time (then fallback will fail too)
-        # too many executables on system (see [monitoring].rlimit_nofile)
+        # too many executables on system (raise LimitNOFILE= in the unit)
         sha_fd_error = sha256
         sha256 = get_sha256_pid(proc["pid"], proc["dev"], proc["ino"], mod_cnt)
         if sha256.startswith("!"):
@@ -249,7 +249,7 @@ def run_secondary(
     sqlite_insert_addr = "INSERT OR IGNORE INTO addresses(addr) VALUES (?)"
     sqlite_select_addr = "SELECT id FROM addresses WHERE addr = ?"
     sqlite_insert_conn = "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    file_path = DATA_DIR / "picosnitch.db"
+    file_path = DB_PATH
     exe_id_cache: dict[tuple, int] = {}
     domain_id_cache: dict[str, int] = {"": 0}
     addr_id_cache: dict[str, int] = {"": 0}

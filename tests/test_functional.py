@@ -32,14 +32,15 @@ PYTHON_EXE = sys.executable
 
 # Use a test prefix so tests don't touch the real picosnitch directories
 TEST_ROOT = "/tmp/picosnitch"
-os.environ["PICOSNITCH_TEST"] = "1"
-
-# FHS standard paths (under test root)
-CONFIG_DIR = Path(f"{TEST_ROOT}/etc/picosnitch")
-DATA_DIR = Path(f"{TEST_ROOT}/var/lib/picosnitch")
-LOG_DIR = Path(f"{TEST_ROOT}/var/log/picosnitch")
-RUN_DIR = Path(f"{TEST_ROOT}/run/picosnitch")
-CACHE_DIR = Path(f"{TEST_ROOT}/var/cache/picosnitch")
+# point the daemon at the test root through the variables systemd would set
+CONFIG_PATH = Path(f"{TEST_ROOT}/etc/config.toml")
+STATE_DIR = Path(f"{TEST_ROOT}/state")
+RUN_DIR = Path(f"{TEST_ROOT}/run")
+# the daemon logs to stderr; a file, not an unread pipe that would block it once full
+DAEMON_LOG = Path(f"{TEST_ROOT}/daemon.log")
+os.environ["PICOSNITCH_CONFIG"] = str(CONFIG_PATH)
+os.environ["STATE_DIRECTORY"] = str(STATE_DIR)
+os.environ["RUNTIME_DIRECTORY"] = str(RUN_DIR)
 
 # Test configuration
 DB_WRITE_LIMIT = 5  # seconds - we set this in config
@@ -72,7 +73,7 @@ def clean_test_dirs():
     test_root = Path(TEST_ROOT)
     if test_root.exists():
         shutil.rmtree(test_root)
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def start_picosnitch(extra_config_toml: str = "") -> subprocess.Popen:
@@ -89,11 +90,6 @@ enabled = true
 retention_days = 1
 write_limit_seconds = {DB_WRITE_LIMIT}
 
-[data]
-owner = "root"
-group = "root"
-mode = "0644"
-
 [log]
 addresses = true
 commands = true
@@ -106,22 +102,21 @@ exec_ring_buffer_pages = 256
     if extra_config_toml:
         config_toml += "\n" + extra_config_toml
 
-    config_file = CONFIG_DIR / "config.toml"
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_file = CONFIG_PATH
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(config_file, "w") as f:
         f.write(config_toml)
 
-    proc = subprocess.Popen([PYTHON_EXE, "-m", "picosnitch", "run"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert proc.stdout is not None and proc.stderr is not None
+    with open(DAEMON_LOG, "wb") as daemon_log:
+        proc = subprocess.Popen([PYTHON_EXE, "-m", "picosnitch", "run"], stdout=daemon_log, stderr=subprocess.STDOUT)
 
     # wait for the events socket to appear -- means primary subprocess is listening
     events_sock = RUN_DIR / "events.sock"
     deadline = time.time() + STARTUP_WAIT + 10
     while time.time() < deadline:
         if proc.poll() is not None:
-            stdout = proc.stdout.read().decode()
-            stderr = proc.stderr.read().decode()
-            raise RuntimeError(f"picosnitch exited early: stdout={stdout}, stderr={stderr}")
+            output = DAEMON_LOG.read_text()
+            raise RuntimeError(f"picosnitch exited early: {output}")
         if events_sock.exists():
             break
         time.sleep(0.2)
@@ -141,18 +136,16 @@ exec_ring_buffer_pages = 256
         for _ in range(int((DB_WRITE_LIMIT + 4) * 2)):
             time.sleep(0.5)
             if proc.poll() is not None:
-                stdout = proc.stdout.read().decode()
-                stderr = proc.stderr.read().decode()
-                raise RuntimeError(f"picosnitch exited during warmup: stdout={stdout}, stderr={stderr}")
+                output = DAEMON_LOG.read_text()
+                raise RuntimeError(f"picosnitch exited during warmup: {output}")
             rows = get_connections_for_process("curl")
             if rows:
                 warmup_seen = True
                 break
 
     if proc.poll() is not None:
-        stdout = proc.stdout.read().decode()
-        stderr = proc.stderr.read().decode()
-        raise RuntimeError(f"picosnitch exited early: stdout={stdout}, stderr={stderr}")
+        output = DAEMON_LOG.read_text()
+        raise RuntimeError(f"picosnitch exited early: {output}")
 
     return proc
 
@@ -171,7 +164,7 @@ def stop_picosnitch(proc: subprocess.Popen):
 
 def query_db(query: str, params: tuple = ()) -> list:
     """Execute a query on the picosnitch database."""
-    db_path = DATA_DIR / "picosnitch.db"
+    db_path = STATE_DIR / "picosnitch.db"
     if not db_path.exists():
         return []
     con = sqlite3.connect(str(db_path))
@@ -307,7 +300,7 @@ class TestShortLivedProcesses:
 
     def test_no_read_errors(self, picosnitch_session):
         """Test that there are no Read Errors in the error log after curl/wget."""
-        error_log = LOG_DIR / "error.log"
+        error_log = DAEMON_LOG
         if error_log.exists():
             content = error_log.read_text()
             read_errors = [line for line in content.splitlines() if "Read Error" in line and "curl" in line]
@@ -322,7 +315,7 @@ class TestDatabaseIntegrity:
         subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
-        db_path = DATA_DIR / "picosnitch.db"
+        db_path = STATE_DIR / "picosnitch.db"
         assert db_path.exists(), "Database should exist"
 
         con = sqlite3.connect(str(db_path))
@@ -344,7 +337,7 @@ class TestDatabaseIntegrity:
         subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
-        error_log = LOG_DIR / "error.log"
+        error_log = DAEMON_LOG
         if error_log.exists():
             content = error_log.read_text()
             assert content.count("Exe inode changed") == 0, "Should not have inode changed errors"
@@ -419,7 +412,7 @@ class TestGrandparentTracking:
         subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
-        db_path = DATA_DIR / "picosnitch.db"
+        db_path = STATE_DIR / "picosnitch.db"
         con = sqlite3.connect(str(db_path))
         cur = con.cursor()
         cur.execute("PRAGMA table_info(connections)")
