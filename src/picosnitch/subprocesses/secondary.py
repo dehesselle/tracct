@@ -15,20 +15,15 @@ import time
 from pathlib import Path
 
 from picosnitch.config import Config
-from picosnitch.constants import DATA_DIR, DB_VERSION, LOG_DIR, RETRY_BUFFER_MAX, VERSION
-from picosnitch.process_manager import ProcessManager
+from picosnitch.constants import DATA_DIR, DB_VERSION, RETRY_BUFFER_MAX, VERSION
 from picosnitch.types import BpfEvent, ProcessHashInfo, State
 from picosnitch.utils import (
     get_fanotify_events,
     get_sha256_fd,
-    get_sha256_fuse,
     get_sha256_pid,
     reverse_dns_is_cached,
     reverse_dns_lookup,
-    safe_log_open,
-    sanitize_log_line,
     sqlite_error_means_corrupt,
-    sync_vt_results,
 )
 
 # new (uncached, blocking) reverse-DNS lookups per write; ~256 * a few ms stays under a second
@@ -92,12 +87,10 @@ def resolve_hash(
     state: State,
     fan_mod_cnt: dict[str, int],
     proc: ProcessHashInfo,
-    p_fuse: ProcessManager,
-    q_vt: multiprocessing.Queue[bytes],
     q_out: multiprocessing.Queue[bytes],
     q_error: multiprocessing.Queue[str],
 ) -> str:
-    """get sha256 of executable and submit to primary or virustotal subprocess if necessary"""
+    """get sha256 of executable and report it to the primary subprocess if it is new"""
     # short-circuit when there is no executable to hash (e.g. kernel grandparent /
     # init's parent, daemons whose parent walk hits PID 0 / swapper, or events
     # where /proc readability was lost). returning "" produces a stable
@@ -107,7 +100,6 @@ def resolve_hash(
         return ""
     mod_cnt = fan_mod_cnt.get("*", 0) + fan_mod_cnt.get("%d %d" % (proc["dev"], proc["ino"]), 0)
     sha_fd_error = ""
-    sha_pid_error = ""
     sha256 = get_sha256_fd(proc["fd"], proc["dev"], proc["ino"], mod_cnt)
     if sha256.startswith("!"):
         # fallback on trying to read directly (if still alive) if fd_cache fails, probable causes include:
@@ -117,31 +109,14 @@ def resolve_hash(
         sha_fd_error = sha256
         sha256 = get_sha256_pid(proc["pid"], proc["dev"], proc["ino"], mod_cnt)
         if sha256.startswith("!"):
-            # fallback to trying to read from fuse mount
-            # this is meant for appimages that are run as the same user as the one running picosnitch, since they are not readable as root
-            sha_pid_error = sha256
-            sha256 = get_sha256_fuse(p_fuse.q_in, p_fuse.q_out, proc["fd"], proc["pid"], proc["dev"], proc["ino"], mod_cnt)
-            if sha256.startswith("!"):
-                # notify user with what went wrong (may be cause for suspicion)
-                sha256_error = sha_fd_error[4:] + " and " + sha_pid_error[4:] + " and " + sha256[4:]
-                sha256 = sha_fd_error + " " + sha_pid_error + " " + sha256
-                q_error.put(sha256_error + " for " + str(proc))
-            elif proc["exe"] not in state["SHA256"] or sha256 not in state["SHA256"][proc["exe"]]:
-                q_error.put("Fallback to FUSE hash successful on " + sha_fd_error[4:] + " and " + sha_pid_error[4:] + " for " + str(proc))
+            # report what went wrong (may be cause for suspicion)
+            q_error.put(sha_fd_error[4:] + " and " + sha256[4:] + " for " + str(proc))
+            sha256 = sha_fd_error + " " + sha256
         elif proc["exe"] not in state["SHA256"] or sha256 not in state["SHA256"][proc["exe"]]:
             q_error.put("Fallback to PID hash successful on " + sha_fd_error[4:] + " for " + str(proc))
-    if proc["exe"] in state["SHA256"]:
-        if sha256 not in state["SHA256"][proc["exe"]]:
-            state["SHA256"][proc["exe"]][sha256] = "SUBMITTED"
-            q_vt.put(pickle.dumps((proc, sha256)))
-            q_out.put(pickle.dumps({"type": "sha256", "name": proc["name"], "exe": proc["exe"], "sha256": sha256}))
-        elif state["SHA256"][proc["exe"]][sha256] == "Failed to read process for upload" or str(state["SHA256"][proc["exe"]][sha256]).startswith("VT lookup error"):
-            # retry a prior upload-read failure or a transient/auth VT lookup error (429/timeout/401)
-            state["SHA256"][proc["exe"]][sha256] = "RETRY"
-            q_vt.put(pickle.dumps((proc, sha256)))
-    else:
-        state["SHA256"][proc["exe"]] = {sha256: "SUBMITTED"}
-        q_vt.put(pickle.dumps((proc, sha256)))
+    known_hashes = state["SHA256"].setdefault(proc["exe"], {})
+    if sha256 not in known_hashes:
+        known_hashes[sha256] = time.strftime("%Y-%m-%d %H:%M:%S")
         q_out.put(pickle.dumps({"type": "sha256", "name": proc["name"], "exe": proc["exe"], "sha256": sha256}))
     return sha256
 
@@ -151,8 +126,6 @@ def build_log_entries(
     state: State,
     fan_mod_cnt: dict[str, int],
     new_processes: list[BpfEvent],
-    p_fuse: ProcessManager,
-    q_vt: multiprocessing.Queue[bytes],
     q_out: multiprocessing.Queue[bytes],
     q_error: multiprocessing.Queue[str],
     ignored_networks: list,
@@ -177,11 +150,11 @@ def build_log_entries(
             q_error.put("sync error between secondary and primary, received '%s' in middle of transfer" % str(proc))
             continue
         # get the sha256 of the process executable, parent, and grandparent
-        sha256 = resolve_hash(state, fan_mod_cnt, proc, p_fuse, q_vt, q_out, q_error)
+        sha256 = resolve_hash(state, fan_mod_cnt, proc, q_out, q_error)
         pproc: ProcessHashInfo = {"pid": proc["ppid"], "name": proc["pname"], "exe": proc["pexe"], "fd": proc["pfd"], "dev": proc["pdev"], "ino": proc["pino"]}
-        psha256 = resolve_hash(state, fan_mod_cnt, pproc, p_fuse, q_vt, q_out, q_error)
+        psha256 = resolve_hash(state, fan_mod_cnt, pproc, q_out, q_error)
         gpproc: ProcessHashInfo = {"pid": proc["gppid"], "name": proc["gpname"], "exe": proc["gpexe"], "fd": proc["gpfd"], "dev": proc["gpdev"], "ino": proc["gpino"]}
-        gpsha256 = resolve_hash(state, fan_mod_cnt, gpproc, p_fuse, q_vt, q_out, q_error)
+        gpsha256 = resolve_hash(state, fan_mod_cnt, gpproc, q_out, q_error)
         # join or omit commands from logs
         if config.log.commands:
             proc["cmdline"] = clean_cmdline(proc["cmdline"])
@@ -256,20 +229,15 @@ def run_secondary(
     config: Config,
     state: State,
     fan_fd: int,
-    p_fuse: ProcessManager,
-    p_virustotal: ProcessManager,
     secondary_pipe: multiprocessing.connection.Connection,
     q_primary_in: multiprocessing.Queue[bytes],
-    q_remote_sql: multiprocessing.Queue[bytes],
     q_error: multiprocessing.Queue[str],
     _q_in: multiprocessing.Queue,
     _q_out: multiprocessing.Queue,
 ) -> int:
-    """second to receive connection data from monitor, less responsive than primary, coordinates connection data with virustotal subprocess and checks fanotify, updates connection logs and reports sha256/vt_results back to primary subprocess if needed"""
+    """second to receive connection data from monitor, less responsive than primary, hashes executables and checks fanotify, writes the connection log and reports new sha256s back to the primary subprocess"""
     parent_process = multiprocessing.parent_process()
     assert parent_process is not None
-    # maintain a separate copy of the state dictionary here and coordinate with the primary subprocess (sha256 and vt_results)
-    sync_vt_results(state, p_virustotal.q_in, q_primary_in, True)
     # init sql
     # connections columns: contime, send, recv, events, exe_id, pexe_id, gpexe_id, uid,
     # family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns  (16 cols).
@@ -282,7 +250,6 @@ def run_secondary(
     sqlite_select_addr = "SELECT id FROM addresses WHERE addr = ?"
     sqlite_insert_conn = "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     file_path = DATA_DIR / "picosnitch.db"
-    text_path = LOG_DIR / "conn.log"
     exe_id_cache: dict[tuple, int] = {}
     domain_id_cache: dict[str, int] = {"": 0}
     addr_id_cache: dict[str, int] = {"": 0}
@@ -292,8 +259,6 @@ def run_secondary(
     pending_cache_keys: list[tuple] = []
     if config.database.enabled:
         maintain_database(file_path, config.database.retention_days)
-    # remote logging is handed off to the remote_sql subprocess, not a destination here
-    log_destinations = int(bool(config.database.enabled)) + int(bool(config.database.text_log))
     # init fanotify mod counter = {"st_dev st_ino": modify_count}, and traffic counter = {"send|recv pid socket_ino": bytes}
     fan_mod_cnt = collections.defaultdict(int)
     # get network address and mask for ignored IP subnets
@@ -348,17 +313,13 @@ def run_secondary(
                     q_error.put("sync error between secondary and primary on receive (expected a batch list)")
             else:
                 q_error.put("sync error between secondary and primary on receive (timed out waiting for batch)")
-            # check for other pending data (vt, fanotify)
-            sync_vt_results(state, p_virustotal.q_out, q_primary_in, False)
+            # check for modified executables
             get_fanotify_events(fan_fd, fan_mod_cnt, q_error)
             # process connection data
             # a backward wall-clock jump must not stall writes; contime still uses time.time()
             if time.monotonic() - last_write > config.database.write_limit_seconds and (transaction or new_processes):
                 current_write = time.monotonic()
-                new_entries = build_log_entries(config, state, fan_mod_cnt, new_processes, p_fuse, p_virustotal.q_in, q_primary_in, q_error, ignored_networks)
-                if config.database.remote and new_entries:
-                    # new entries only: the retries below are local, resending would duplicate remote rows
-                    q_remote_sql.put(pickle.dumps(new_entries))
+                new_entries = build_log_entries(config, state, fan_mod_cnt, new_processes, q_primary_in, q_error, ignored_networks)
                 transaction += new_entries
                 new_processes = []
                 transaction_success = False
@@ -384,31 +345,14 @@ def run_secondary(
                     for cache, cache_key in pending_cache_keys:
                         cache.pop(cache_key, None)
                     pending_cache_keys.clear()
-                    q_error.put("SQLite execute %s%s on line %s, lost %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
-                try:
-                    if config.database.text_log:
-                        with safe_log_open(text_path, config=config) as text_file:
-                            for contime, send, recv, n_events, exe_key, pexe_key, gpexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns in transaction:
-                                flat = (contime, send, recv, n_events, *exe_key, *pexe_key, *gpexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns)
-                                # neutralize control chars (ESC/CR/LF/NUL/C1) and drop the CSV delimiter: an
-                                # attacker-influenced field (name/cmdline/domain) must not forge or overwrite a
-                                # log line, nor drive a terminal escape when conn.log is viewed (matches the
-                                # curses/error.log sinks; the other sinks already go through sanitize_log_line)
-                                clean_entry = [sanitize_log_line(str(value)).replace(",", "") for value in flat]
-                                clean_entry[0] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(contime))
-                                text_file.write(",".join(clean_entry) + "\n")
-                        transaction_success = True
-                except Exception as e:
-                    q_error.put("text log %s%s on line %s, lost %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
-                if transaction_success or log_destinations == 0:
+                    q_error.put("SQLite execute %s%s on line %s, will retry %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
+                if transaction_success or not config.database.enabled:
                     transaction = []
                 elif len(transaction) > RETRY_BUFFER_MAX:
                     # a persistent write outage would grow transaction unbounded; keep the newest
                     dropped = len(transaction) - RETRY_BUFFER_MAX
                     transaction = transaction[-RETRY_BUFFER_MAX:]
                     q_error.put("secondary retry buffer full (persistent write outage), dropped %s oldest entries; retrying %s" % (dropped, len(transaction)))
-                else:
-                    q_error.put("secondary subprocess all log desinations failed, will retry %s entries with next write" % (len(transaction)))
                 last_write = current_write
         except Exception as e:
             q_error.put("secondary subprocess %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))

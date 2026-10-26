@@ -1,43 +1,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2020 Eric Lesiuta
 
-import atexit
-import importlib.util
+import fcntl
 import logging
 import multiprocessing
 import os
-import re
-import shutil
 import sqlite3
 import stat
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 from picosnitch.config import load_config, write_default_config
 from picosnitch.constants import CACHE_DIR, CONFIG_DIR, DATA_DIR, DB_VERSION, LOG_DIR, RUN_DIR, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES, VERSION
-from picosnitch.daemon import Daemon
 from picosnitch.main_loop import run_main_loop
 from picosnitch.ui.top import top_init
 from picosnitch.ui.tui import tui_init
-from picosnitch.ui.webui import web_dashboard
-from picosnitch.utils import apply_data_permissions, connect_db_readonly, load_state, relaunch_argv, safe_log_open, sqlite_error_means_corrupt
+from picosnitch.utils import apply_data_permissions, connect_db_readonly, load_state, sqlite_error_means_corrupt
 
 
-def _systemctl() -> str:
-    """absolute path to systemctl (standard system dirs before $PATH); never a bare/relative name,
-    which subprocess would re-resolve from cwd -- root could then exec a planted ./systemctl"""
-    dirs = [d for d in ("/usr/bin", "/bin", "/usr/sbin", "/sbin", *os.environ.get("PATH", "").split(os.pathsep)) if d]
-    path = shutil.which("systemctl", path=os.pathsep.join(dirs))
-    return path if path and os.path.isabs(path) else "/usr/bin/systemctl"
-
-
-def check_root(cmd: str) -> int:
+def check_root() -> int:
     """check for root privileges, return exit code on failure"""
     if os.getuid() != 0:
-        # relaunch_argv gives a runnable suggestion for console script, -m, and nix wrapper alike
-        logging.error(f"This command requires root. Try: sudo {' '.join(relaunch_argv(cmd))}")
+        logging.error("This command requires root")
         return 1
     return 0
 
@@ -65,7 +50,7 @@ def check_database() -> int:
     db_path = DATA_DIR / "picosnitch.db"
     if not db_path.exists():
         logging.error(f"Database not found: {db_path}")
-        logging.error(f"Run: sudo {' '.join(relaunch_argv('start'))} (or use systemctl) to create it")
+        logging.error("Start the picosnitch service to create it (systemctl start picosnitch)")
         return 1
     con = None
     try:
@@ -83,26 +68,6 @@ def check_database() -> int:
             con.close()
     if user_version != DB_VERSION:
         logging.error(f"Unsupported database version {user_version}, expected {DB_VERSION}")
-        return 1
-    return 0
-
-
-def check_remote_config(remote: dict) -> int:
-    """validate [database.remote] without importing the driver (third-party code never runs
-    as root -- the unprivileged remote_sql subprocess imports it), return exit code on failure"""
-    sql_kwargs = dict(remote)
-    if not sql_kwargs:
-        return 0
-    sql_client = sql_kwargs.pop("client", "no client error")
-    conn_table = sql_kwargs.pop("connections_table", "connections")
-    if sql_client not in ["mariadb", "psycopg", "psycopg2", "pymysql"]:
-        logging.error(f'unsupported database.remote "client": {sql_client}')
-        return 1
-    if not isinstance(conn_table, str) or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", conn_table):
-        logging.error(f"invalid remote table name: {conn_table!r}")
-        return 1
-    if importlib.util.find_spec(sql_client) is None:
-        logging.error(f'database.remote "client" {sql_client} is not installed, install it or picosnitch[sql]')
         return 1
     return 0
 
@@ -184,19 +149,26 @@ def init_dirs_and_config() -> None:
     apply_data_permissions(CONFIG_DIR, DATA_DIR, LOG_DIR, CACHE_DIR)
 
 
-def main() -> None:
-    """init picosnitch"""
+def main() -> int:
+    """run the picosnitch daemon in the foreground (under a service manager)"""
+    # hold an exclusive lock for the daemon's lifetime: a second instance would unlink and
+    # rebind the live feed socket and write the same database. the kernel drops the lock
+    # when the process (and its forked subprocesses, which inherit the fd) exit, so a crash
+    # never leaves a stale lock behind
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(RUN_DIR / "picosnitch.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logging.error(f"picosnitch is already running (lock held on {RUN_DIR / 'picosnitch.lock'})")
+        return 1
     # master copy of config and state, all subprocesses only receive a static copy from this point in time
     config = load_config()
     state = load_state()
-    # start picosnitch process monitor
-    pid_file = RUN_DIR / "picosnitch.pid"
-    with open(pid_file, "r") as f:
-        pid = int(f.read().strip())
-    if pid != os.getpid():
-        logging.error(f"PID mismatch: pidfile has {pid}, current process is {os.getpid()}")
-        sys.exit(1)
-    sys.exit(run_main_loop(config, state))
+    logging.info(f"config: {CONFIG_DIR}")
+    logging.info(f"data: {DATA_DIR}")
+    logging.info(f"logs: {LOG_DIR}")
+    return run_main_loop(config, state)
 
 
 def start_picosnitch() -> int:
@@ -208,262 +180,52 @@ def start_picosnitch() -> int:
         logging.error("Did not detect a supported operating system")
         return 1
     multiprocessing.set_start_method("fork", force=True)
-    pid_file = RUN_DIR / "picosnitch.pid"
-
-    class PicoDaemon(Daemon):
-        def run(self) -> None:
-            try:
-                main()
-            except Exception:
-                logging.exception("picosnitch daemon crashed")
-                raise
-
     readme = textwrap.dedent(
         f"""
         Monitor your system for applications that make network connections, track their
-        bandwidth, verify hashes, and receive notifications.
+        bandwidth and verify hashes.
 
         Picosnitch comes with ABSOLUTELY NO WARRANTY. This is free software, and you
         are welcome to redistribute it under certain conditions. See version 3 of the
         GNU General Public License for details.
 
-        website: https://github.com/elesiuta/picosnitch
         version: {VERSION}
         entrypoint: {Path(sys.argv[0]).resolve()}
         config: {CONFIG_DIR}
         data: {DATA_DIR}
         logs: {LOG_DIR}
-        cache: {CACHE_DIR}
         run: {RUN_DIR}
 
         usage:
-            picosnitch webui|tui|top|status|version|help
-                        |     |   |   |      |       |--> this text
-                        |     |   |   |      |--> version number
-                        |     |   |   |--> show pid and service status
-                        |     |   |--> live event monitor
-                        |     |--> curses tui
-                        |--> web gui (http://{os.getenv("PICOSNITCH_HOST", "localhost")}:{os.getenv("PICOSNITCH_PORT", "5100")})
-
-            picosnitch start|stop|restart|start-no-daemon|systemd
-                        |     |    |       |               |--> create service
-                        |     |    |       |--> run without daemonizing
-                        |_____|____|--> start/stop/restart daemon
+            picosnitch run|top|tui|version|help
+                        |   |   |   |       |--> this text
+                        |   |   |   |--> version number
+                        |   |   |--> curses tui
+                        |   |--> live event monitor
+                        |--> run the daemon in the foreground (used by picosnitch.service)
 
             systemctl enable|disable|start|stop|restart|status picosnitch
-                       |      |       |     |    |       |--> show status with systemd
-                       |      |       |_____|____|--> start/stop/restart picosnitch
-                       |______|--> enable/disable autostart on reboot
-
-        * if systemctl isn't working, recreate the service with `sudo picosnitch systemd`
-        * if you don't use systemd, you can use `sudo picosnitch start|stop|restart`
-        * if the daemon isn't working, try `sudo picosnitch start-no-daemon`
-        * available environment variables for webui: PICOSNITCH_HOST, PICOSNITCH_PORT
-        """.lstrip("\n")
-    )
-    systemd_service = textwrap.dedent(
-        f"""
-        [Unit]
-        Description=picosnitch
-        # a future clock at boot would make the startup retention purge wipe the db
-        Wants=time-sync.target
-        After=time-sync.target
-
-        [Service]
-        # READY=1 is sent once the BPF probes are attached, so ordering waits for capture
-        Type=notify
-        Restart=always
-        RestartSec=5
-        ExecStart={sys.executable} -m picosnitch start-no-daemon
-        PIDFile={pid_file}
-
-        # Auto-create FHS dirs (so ProtectSystem/ReadWritePaths can bind them on a clean install)
-        RuntimeDirectory=picosnitch
-        StateDirectory=picosnitch
-        LogsDirectory=picosnitch
-        CacheDirectory=picosnitch
-        ConfigurationDirectory=picosnitch
-
-        # Required for libbpf to lock the BPF maps and ring buffers past the inherited 8 MiB cap
-        LimitMEMLOCK=infinity
-
-        # Hardening
-        ProtectHome=read-only
-        ProtectSystem=strict
-        ReadWritePaths={DATA_DIR} {LOG_DIR} {RUN_DIR} {CACHE_DIR}
-        PrivateTmp=yes
-        NoNewPrivileges=yes
-        CapabilityBoundingSet=CAP_BPF CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_PERFMON CAP_SETGID CAP_SETUID CAP_SYSLOG CAP_SYS_ADMIN CAP_SYS_PTRACE
-        ProtectKernelModules=yes
-        ProtectControlGroups=yes
-        ProtectClock=yes
-        RestrictRealtime=yes
-        LockPersonality=yes
-        RestrictSUIDSGID=yes
-
-        [Install]
-        WantedBy=multi-user.target
         """.lstrip("\n")
     )
     if len(sys.argv) != 2:
         print(readme)
         return 2
     cmd = sys.argv[1]
-    # the built-in daemon (start/stop/restart) works on Nix once picosnitch is re-invoked
-    # via its wrapped entry point rather than `-m picosnitch`; only `systemd` is unsupported
-    if sys.executable.startswith("/nix/") and cmd == "systemd":
-        logging.error("Command not supported on Nix, add `services.picosnitch.enable = true;` to your Nix configuration")
-        return 2
-    # command dispatch
     if cmd == "help":
         print(readme)
         return 0
     elif cmd == "version":
         print(f"version: {VERSION}")
         return 0
-    elif cmd == "status":
-        Daemon(pid_file).status()
-        if Path("/usr/lib/systemd/system/picosnitch.service").exists() or Path("/etc/systemd/system/picosnitch.service").exists():
-            try:
-                r = subprocess.run([_systemctl(), "is-active", "picosnitch"], capture_output=True, text=True, check=False)
-                state = (r.stdout or r.stderr).strip() or "unknown"
-            except FileNotFoundError:
-                state = "unknown (systemctl not found)"
-            logging.info(f"picosnitch.service (systemd): {state}")
-        return 0
-    elif cmd == "systemd":
-        if err := check_root(cmd):
-            return err
-        try:
-            with open("/usr/lib/systemd/system/picosnitch.service", "w") as f:
-                f.write(systemd_service)
-            subprocess.run([_systemctl(), "daemon-reload"])
-        except (OSError, FileNotFoundError) as e:
-            logging.error(f"could not install picosnitch.service (is this a systemd distro?): {e}")
-            return 1
-        logging.info("Wrote /usr/lib/systemd/system/picosnitch.service")
-        logging.info("Enable on boot and start now with: sudo systemctl enable --now picosnitch")
-        return 0
-    elif cmd == "stop":
-        if err := check_root(cmd):
-            return err
-        if Path("/usr/lib/systemd/system/picosnitch.service").exists() or Path("/etc/systemd/system/picosnitch.service").exists():
-            try:
-                # "activating" counts too: a crash-looping unit (RestartSec backoff) still
-                # respawns anything Daemon.stop() kills, so defer to systemctl there as well
-                r = subprocess.run([_systemctl(), "is-active", "picosnitch"], capture_output=True, text=True, check=False)
-                active = r.stdout.strip() in ("active", "activating", "reloading")
-            except FileNotFoundError:
-                active = False
-            if active:
-                logging.info("picosnitch.service is active under systemd; killing the pid would just be respawned by Restart=always")
-                if sys.stdin.isatty():
-                    try:
-                        confirm = input("Run `systemctl stop picosnitch` instead (Y/n)? ")
-                    except EOFError:
-                        confirm = ""
-                    if not confirm.lower().startswith("n"):
-                        subprocess.run([_systemctl(), "stop", "picosnitch"])
-                        return 0
-                else:
-                    logging.error("aborted; run `systemctl stop picosnitch` instead")
-                    return 1
-        logging.info("stopping picosnitch daemon")
-        return 0 if Daemon(pid_file).stop() else 1
-    elif cmd in ("start", "restart", "start-no-daemon"):
-        if err := check_root(cmd):
+    elif cmd == "run":
+        if err := check_root():
             return err
         if err := check_bpf():
             return err
         init_dirs_and_config()
         if err := check_database():
             return err
-        if err := check_remote_config(load_config().database.remote):
-            return err
-        # offer systemctl for start/restart
-        if cmd in ("start", "restart"):
-            if Path("/usr/lib/systemd/system/picosnitch.service").exists() or Path("/etc/systemd/system/picosnitch.service").exists():
-                try:
-                    # "activating" counts too: a crash-looping unit would conflict just the same
-                    r = subprocess.run([_systemctl(), "is-active", "picosnitch"], capture_output=True, text=True, check=False)
-                    active = r.stdout.strip() in ("active", "activating", "reloading")
-                except FileNotFoundError:
-                    active = False
-                if active:
-                    logging.info("picosnitch.service is active under systemd; the built-in daemon would conflict with it")
-                    if sys.stdin.isatty():
-                        try:
-                            confirm = input(f"Run `systemctl {cmd} picosnitch` instead (Y/n)? ")
-                        except EOFError:
-                            confirm = ""
-                        if not confirm.lower().startswith("n"):
-                            subprocess.run([_systemctl(), cmd, "picosnitch"])
-                            return 0
-                    else:
-                        logging.error(f"aborted; run `systemctl {cmd} picosnitch` instead")
-                        return 1
-                else:
-                    logging.info("Found picosnitch.service but you are not using systemctl")
-                    if sys.stdin.isatty():
-                        try:
-                            confirm = input(f"Did you intend to run `systemctl {cmd} picosnitch` (y/N)? ")
-                        except EOFError:
-                            confirm = ""
-                        if confirm.lower().startswith("y"):
-                            subprocess.run([_systemctl(), cmd, "picosnitch"])
-                            return 0
-        apply_data_permissions(CONFIG_DIR, DATA_DIR, LOG_DIR, CACHE_DIR)
-        # log warnings/errors to the existing error.log so failures in the
-        # forked daemon (where stderr is /dev/null) are still visible.
-        # Use O_NOFOLLOW so the daemon never follows an attacker-placed
-        # symlink in LOG_DIR (relevant when [data].owner is non-root).
-        error_log_stream = safe_log_open(LOG_DIR / "error.log", config=load_config())
-        error_log_handler = logging.StreamHandler(error_log_stream)
-        error_log_handler.setLevel(logging.WARNING)
-        error_log_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-        logging.getLogger().addHandler(error_log_handler)
-        # dispatch
-        if cmd == "start":
-            logging.info("starting picosnitch daemon")
-            PicoDaemon(pid_file).start()
-        elif cmd == "restart":
-            logging.info("restarting picosnitch daemon")
-            PicoDaemon(pid_file).restart()
-        elif cmd == "start-no-daemon":
-            if pid_file.exists():
-                daemon = Daemon(pid_file)
-                pid = daemon.getpid()
-                if pid and daemon._pid_is_picosnitch(pid):
-                    logging.error(f"pid file already exists: {pid_file} (picosnitch running with pid {pid})")
-                    return 1
-                # stale pidfile left by a SIGKILL/OOM/crash: clear it, like `start` does
-                logging.warning(f"removing stale pidfile {pid_file}")
-                pid_file.unlink(missing_ok=True)
-
-            def delpid():
-                try:
-                    pid_file.unlink()
-                except FileNotFoundError:
-                    pass
-
-            atexit.register(delpid)
-            RUN_DIR.mkdir(parents=True, exist_ok=True)
-            with open(pid_file, "w") as f:
-                f.write(str(os.getpid()) + "\n")
-            try:
-                os.chmod(pid_file, 0o644)
-            except OSError:
-                pass
-            logging.info("starting picosnitch in simple mode")
-            logging.info(f"config: {CONFIG_DIR}")
-            logging.info(f"data: {DATA_DIR}")
-            logging.info(f"logs: {LOG_DIR}")
-            sys.exit(main())
-        return 0
-    elif cmd == "webui":
-        if err := check_database():
-            return err
-        return web_dashboard()
+        return main()
     elif cmd == "tui":
         if err := check_database():
             return err

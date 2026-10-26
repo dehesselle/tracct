@@ -120,7 +120,7 @@ def _chrome_smoke(stdscr: "curses.window") -> None:
     _chrome.draw_modal(
         stdscr,
         "Live feed unavailable",
-        ["Daemon socket not found.", "Try `sudo picosnitch start`."],
+        ["Daemon socket not found.", "Is the picosnitch service running?"],
     )
     stdscr.refresh()
 

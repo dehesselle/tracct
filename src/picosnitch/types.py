@@ -57,7 +57,7 @@ class FanotifyEventMetadata(ctypes.Structure):
 
 
 class ProcessHashInfo(typing.TypedDict):
-    """Subset of process fields needed for hashing and VirusTotal submission"""
+    """Subset of process fields needed for hashing"""
 
     pid: int
     name: str

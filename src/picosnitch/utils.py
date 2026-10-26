@@ -13,16 +13,12 @@ import json
 import logging
 import multiprocessing
 import os
-import pickle
 import pwd
-import queue
 import socket
 import sqlite3
 import stat
-import sys
 import tempfile
 import termios
-import time
 import unicodedata
 import urllib.parse
 from pathlib import Path
@@ -30,8 +26,6 @@ from pathlib import Path
 from picosnitch.config import Config, load_config
 from picosnitch.constants import DATA_DIR, LOG_DIR, PID_CACHE, ST_DEV_MASK
 from picosnitch.types import FanotifyEventMetadata, State
-
-FUSE_HASH_TIMEOUT = 60
 
 
 def sd_notify(message: str) -> None:
@@ -50,45 +44,12 @@ def sd_notify(message: str) -> None:
         pass
 
 
-def relaunch_argv(cmd: str) -> list[str]:
-    """argv to re-invoke picosnitch for `cmd` (used by `top` to spawn a monitor and by the
-    main loop to restart after suspend). Re-exec argv[0] directly so its own shebang or nix
-    bash wrapper (which sets LD_LIBRARY_PATH for libbpf) runs; prefixing sys.executable breaks
-    nix, whose argv[0] is a bash wrapper the python interpreter can't parse. Fall back to
-    `-m picosnitch` when we weren't launched from a picosnitch console script/wrapper."""
-    argv0 = sys.argv[0]
-    base = os.path.basename(argv0).lstrip(".").split("-wrapped")[0]
-    # only re-exec argv0 directly if it's absolute; a bare/relative name would be resolved via
-    # $PATH or cwd at exec time. otherwise use the interpreter (sys.executable is always absolute)
-    if base == "picosnitch" and os.path.isabs(argv0) and os.access(argv0, os.X_OK):
-        return [argv0, cmd]
-    return [sys.executable, "-m", "picosnitch", cmd]
-
-
 def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
     """True when a sqlite error means picosnitch.db itself is unusable (quarantine+recreate);
     False for transient errors (locked by the live daemon, busy, disk I/O) where quarantining
     would destroy a healthy database. Shared by the cli boot check and the secondary purge."""
     msg = str(e).lower()
     return any(s in msg for s in ("malformed", "not a database", "no such table", "no such column", "encrypted"))
-
-
-def drop_root_permanent(uid: int, gid: int) -> None:
-    """Permanently drop root privileges. Cannot be reversed."""
-    if os.getuid() != 0:
-        return
-    os.setgroups([])
-    os.setgid(gid)
-    os.setuid(uid)
-    if os.getuid() != uid or os.getgid() != gid:
-        logging.error("Failed to drop root privileges")
-        sys.exit(1)
-    try:
-        os.setuid(0)
-    except PermissionError:
-        return
-    logging.error("FATAL: was able to regain root after dropping privileges")
-    sys.exit(1)
 
 
 def resolve_owner(owner: str) -> int:
@@ -105,27 +66,6 @@ def resolve_group(group: str) -> int:
         return int(group)
     except ValueError:
         return grp.getgrnam(group).gr_gid
-
-
-def resolve_unprivileged_user(user: str) -> tuple[int, int]:
-    """Resolve a user and primary group, falling back to nobody (also when uid or gid would be 0)."""
-    if user:
-        try:
-            entry = pwd.getpwuid(int(user))
-        except (ValueError, TypeError, OverflowError, KeyError):
-            try:
-                entry = pwd.getpwnam(user)
-            except (KeyError, TypeError):
-                entry = None
-        if entry is not None and entry.pw_uid != 0 and entry.pw_gid != 0:
-            return entry.pw_uid, entry.pw_gid
-    try:
-        entry = pwd.getpwnam("nobody")
-        if entry.pw_uid != 0:
-            return entry.pw_uid, entry.pw_gid
-    except KeyError:
-        pass
-    return 65534, 65534
 
 
 def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Connection:
@@ -280,8 +220,8 @@ def load_state() -> State:
                     if not isinstance(value, dict):
                         raise ValueError(f"state.json[{key!r}] is not an object")
                     # validate the inner shape too: SHA256 maps exe -> {sha256: result}, the rest
-                    # map exe -> [name history]. a wrong-typed entry (e.g. a str/int) crashes
-                    # sync_vt_results at startup (outside its subprocess try/except) -> crash-loop
+                    # map exe -> [name history]. a wrong-typed entry (e.g. a str/int) breaks the
+                    # secondary's hash bookkeeping on every write cycle
                     inner_type = dict if key == "SHA256" else list
                     if not all(isinstance(v, inner_type) for v in value.values()):
                         raise ValueError(f"state.json[{key!r}] has a non-{inner_type.__name__} entry")
@@ -427,31 +367,6 @@ def get_sha256_pid(pid: int, st_dev: int, st_ino: int, _mod_cnt: int = 0) -> str
         return "!!! PID Read Error"
 
 
-@functools.lru_cache(maxsize=PID_CACHE)
-def get_sha256_fuse(q_in: multiprocessing.Queue[bytes], q_out: multiprocessing.Queue[bytes], path: str, pid: int, st_dev: int, st_ino: int, _mod_cnt: int) -> str:
-    """get sha256 of process executable from a fuse mount"""
-    # _mod_cnt in the key so a post-modification re-hash isn't matched to a stale pre-mod reply
-    key = (path, pid, st_dev, st_ino, _mod_cnt)
-    q_in.put(pickle.dumps(key))
-    # bounded so a dead/wedged fuse subprocess can't stall the pipeline forever; match
-    # the reply to our request so a late reply after a timeout can't desync the queue
-    deadline = time.monotonic() + FUSE_HASH_TIMEOUT
-    while (remaining := deadline - time.monotonic()) > 0:
-        try:
-            reply = q_out.get(timeout=remaining)
-        except queue.Empty:
-            return "!!! FUSE Subprocess Timeout"
-        except Exception:
-            return "!!! FUSE Subprocess Error"
-        try:
-            rkey, sha256 = pickle.loads(reply)
-        except Exception:
-            return "!!! FUSE Subprocess Error"
-        if rkey == key:  # discard any stale reply left over from a prior timed-out call
-            return sha256
-    return "!!! FUSE Subprocess Timeout"
-
-
 def get_fstat(fd: int) -> tuple[int, int]:
     """get (st_dev, st_ino) or (0, 0) if fails"""
     try:
@@ -488,25 +403,3 @@ def get_fanotify_events(fan_fd: int, fan_mod_cnt: dict[str, int], q_error: multi
         finally:
             if event_fd >= 0:
                 os.close(event_fd)
-
-
-def sync_vt_results(state: State, q_vt: multiprocessing.Queue[bytes], q_out: multiprocessing.Queue[bytes], check_pending: bool = False) -> None:
-    """get virustotal results from subprocess and update state, q_vt = q_in if check_pending else q_out"""
-    if check_pending:
-        for exe in state["SHA256"]:
-            for sha256 in state["SHA256"][exe]:
-                vt_state = state["SHA256"][exe][sha256]
-                # re-query pending/unscanned states and transient/auth lookup errors (retried, not terminal)
-                if vt_state in ["VT Pending", "File not analyzed (no api key)", "", None] or (isinstance(vt_state, str) and vt_state.startswith("VT lookup error")):
-                    if exe in state["Executables"] and state["Executables"][exe]:
-                        name = state["Executables"][exe][0]
-                    elif exe in state["Parent Executables"] and state["Parent Executables"][exe]:
-                        name = state["Parent Executables"][exe][0]
-                    else:
-                        name = exe
-                    proc = {"exe": exe, "name": name}
-                    q_vt.put(pickle.dumps((proc, sha256)))
-    else:
-        while not q_vt.empty():
-            proc, sha256, result, suspicious = pickle.loads(q_vt.get())
-            q_out.put(pickle.dumps({"type": "vt_result", "name": proc["name"], "exe": proc["exe"], "sha256": sha256, "result": result, "suspicious": suspicious}))

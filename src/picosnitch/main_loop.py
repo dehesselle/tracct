@@ -8,7 +8,6 @@ import multiprocessing
 import os
 import queue
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -16,15 +15,11 @@ import time
 from picosnitch.config import Config
 from picosnitch.constants import FD_CACHE
 from picosnitch.process_manager import ProcessManager
-from picosnitch.subprocesses.fuse import run_fuse
 from picosnitch.subprocesses.monitor import run_monitor
-from picosnitch.subprocesses.notifications import run_notifications
 from picosnitch.subprocesses.primary import run_primary
-from picosnitch.subprocesses.remote_sql import run_remote_sql
 from picosnitch.subprocesses.secondary import run_secondary
-from picosnitch.subprocesses.virustotal import run_virustotal
 from picosnitch.types import State
-from picosnitch.utils import relaunch_argv, sd_notify
+from picosnitch.utils import sd_notify
 
 
 def run_main_loop(config: Config, state: State) -> int:
@@ -47,15 +42,6 @@ def run_main_loop(config: Config, state: State) -> int:
     event_recv_pipes, event_send_pipes = zip(*event_pipes)
     secondary_recv_pipe, secondary_send_pipe = multiprocessing.Pipe(duplex=False)
     q_error: multiprocessing.Queue[str] = multiprocessing.Queue()
-    p_notifications = ProcessManager(
-        name="snitchnotify",
-        target=run_notifications,
-        init_args=(
-            config,
-            fan_fd,
-            q_error,
-        ),
-    )
     p_monitor = ProcessManager(
         name="snitchmonitor",
         target=run_monitor,
@@ -63,33 +49,6 @@ def run_main_loop(config: Config, state: State) -> int:
             config,
             fan_fd,
             event_send_pipes,
-            q_error,
-        ),
-    )
-    p_fuse = ProcessManager(
-        name="snitchrfuse",
-        target=run_fuse,
-        init_args=(
-            config,
-            fan_fd,
-            q_error,
-        ),
-    )
-    p_virustotal = ProcessManager(
-        name="snitchvirustotal",
-        target=run_virustotal,
-        init_args=(
-            config,
-            fan_fd,
-            q_error,
-        ),
-    )
-    p_remote_sql = ProcessManager(
-        name="snitchremotesql",
-        target=run_remote_sql,
-        init_args=(
-            config,
-            fan_fd,
             q_error,
         ),
     )
@@ -102,7 +61,6 @@ def run_main_loop(config: Config, state: State) -> int:
             event_recv_pipes,
             secondary_send_pipe,
             q_error,
-            p_notifications.q_in,
         ),
     )
     p_secondary = ProcessManager(
@@ -112,16 +70,13 @@ def run_main_loop(config: Config, state: State) -> int:
             config,
             state,
             fan_fd,
-            p_fuse,
-            p_virustotal,
             secondary_recv_pipe,
             p_primary.q_in,
-            p_remote_sql.q_in,
             q_error,
         ),
     )
     # set signals
-    subprocesses = [p_monitor, p_fuse, p_virustotal, p_remote_sql, p_primary, p_secondary, p_notifications]
+    subprocesses = [p_monitor, p_primary, p_secondary]
     shutdown_event = threading.Event()
     resume_event = threading.Event()
 
@@ -151,16 +106,14 @@ def run_main_loop(config: Config, state: State) -> int:
             resume_event.wait(timeout=5)
             if shutdown_event.is_set():
                 break
+            # log here, not via q_error: the primary that drains it may be the one that died
             if not all(p.is_alive() for p in subprocesses):
                 dead = " ".join([p.name for p in subprocesses if not p.is_alive()])
-                q_error.put(f"picosnitch subprocess died, attempting restart, terminate by running `picosnitch stop` ({dead})")
+                logging.error(f"picosnitch subprocess died, exiting for the service manager to restart ({dead})")
                 break
             if any(p.is_zombie() for p in subprocesses):
                 zombies = " ".join([p.name for p in subprocesses if p.is_zombie()])
-                q_error.put(f"picosnitch subprocess became a zombie, attempting restart ({zombies})")
-                break
-            if sum(p.memory() for p in subprocesses) > 4096000000:
-                q_error.put("picosnitch memory usage exceeded 4096 MB, attempting restart")
+                logging.error(f"picosnitch subprocess became a zombie, exiting for the service manager to restart ({zombies})")
                 break
             mono_now = time.monotonic()
             boot_now = time.clock_gettime(time.CLOCK_BOOTTIME)
@@ -180,18 +133,8 @@ def run_main_loop(config: Config, state: State) -> int:
             mono_last, boot_last = mono_now, boot_now
     except Exception as e:
         tb = sys.exc_info()[2]
-        q_error.put("picosnitch subprocess exception: %s%s on line %s" % (type(e).__name__, str(e.args), tb.tb_lineno if tb else "?"))
-    # clean exit on signal (no restart)
-    if shutdown_event.is_set():
-        for p in subprocesses:
-            p.terminate()
-        sys.exit(0)
-    if sys.argv[1] == "start-no-daemon":
-        return 1
-    # attempt to restart picosnitch (terminate by running `picosnitch stop`)
-    time.sleep(5)
+        logging.error("picosnitch subprocess exception: %s%s on line %s" % (type(e).__name__, str(e.args), tb.tb_lineno if tb else "?"))
     for p in subprocesses:
         p.terminate()
-    # cwd="/" so the -m fallback doesn't put an inherited cwd on sys.path[0]
-    subprocess.Popen(relaunch_argv("restart"), cwd="/")
-    return 0
+    # a clean exit only on signal; otherwise a non-zero exit lets the service manager restart us
+    return 0 if shutdown_event.is_set() else 1

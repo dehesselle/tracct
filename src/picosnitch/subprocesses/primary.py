@@ -17,19 +17,8 @@ from picosnitch.types import BpfEvent, State
 from picosnitch.utils import flush_logs, save_state
 
 
-def _toast(q_notify: multiprocessing.Queue[str], q_error: multiprocessing.Queue[str], msg: str) -> None:
-    """send notification message to the notification subprocess; on put failure, surface via q_error tagged so it's clear the message body came from the toast path"""
-    try:
-        q_notify.put_nowait(msg)
-    except Exception as e:
-        try:
-            q_error.put_nowait(f"primary: q_notify.put failed, dropped toast ({type(e).__name__}): {msg}")
-        except Exception:
-            pass
-
-
-def handle_new_processes(state: State, new_processes: list[BpfEvent], q_notify: multiprocessing.Queue[str], q_error: multiprocessing.Queue[str]) -> None:
-    """iterate over the list of process/connection data to update the state dictionary and create notifications on new entries"""
+def handle_new_processes(state: State, new_processes: list[BpfEvent]) -> None:
+    """iterate over the list of process/connection data to update the state dictionary and log new entries to exe.log"""
     datetime_now = time.strftime("%Y-%m-%d %H:%M:%S")
     for proc in new_processes:
         levels = (
@@ -41,7 +30,7 @@ def handle_new_processes(state: State, new_processes: list[BpfEvent], q_notify: 
             # skip levels with no real process (e.g. grandparent of an init child
             # is the kernel/swapper, daemons whose parent walk hits PID 0, or
             # short-lived processes where /proc was already gone). these would
-            # otherwise pollute state with empty entries and emit blank toasts.
+            # otherwise pollute state with empty entries and log blank lines.
             if not proc_name and not proc_exe:
                 continue
             notification = []
@@ -61,7 +50,6 @@ def handle_new_processes(state: State, new_processes: list[BpfEvent], q_notify: 
                     state["SHA256"][proc_exe] = {}
             if notification:
                 state["Exe Log"].append(f"{datetime_now} {proc_name:<16.16} {proc_exe} (new {', '.join(notification)}){parent}")
-                _toast(q_notify, q_error, f"picosnitch: {proc_name} {proc_exe}")
 
 
 def run_primary(
@@ -70,11 +58,10 @@ def run_primary(
     event_pipes: tuple,
     secondary_pipe: multiprocessing.connection.Connection,
     q_error: multiprocessing.Queue[str],
-    q_notify: multiprocessing.Queue[str],
     q_in: multiprocessing.Queue[bytes],
     _q_out: multiprocessing.Queue,
 ) -> None:
-    """first to receive connection data from monitor, more responsive than secondary, creates notifications and writes exe.log, error.log, and state.json"""
+    """first to receive connection data from monitor, more responsive than secondary, publishes the live feed and writes exe.log, error.log, and state.json"""
     try:
         os.nice(-20)
     except Exception:
@@ -95,21 +82,12 @@ def run_primary(
     # init signal handlers
     shutdown_event = threading.Event()
 
-    def _drain_errors(state: State, q_error: multiprocessing.Queue, q_notify: multiprocessing.Queue) -> None:
+    def _drain_errors(state: State, q_error: multiprocessing.Queue) -> None:
         while not q_error.empty():
-            error = q_error.get()
-            state["Error Log"].append(time.strftime("%Y-%m-%d %H:%M:%S") + " " + error)
-            # shorten some common error messages before displaying them and after writing them to error.log
-            error = error.replace("FD Read Error and PID Read Error and FUSE Read Error for", "Read Error for")
-            if len(error) > 50:
-                error = error[:47] + "..."
-            # don't need to toast fallback success messages
-            if error.startswith("Fallback to FUSE hash successful on ") or error.startswith("Fallback to PID hash successful on "):
-                continue
-            _toast(q_notify, q_error, error)
+            state["Error Log"].append(time.strftime("%Y-%m-%d %H:%M:%S") + " " + q_error.get())
 
     def save_state_and_exit(state: State, q_error: multiprocessing.Queue, event_pipes: tuple) -> None:
-        _drain_errors(state, q_error, q_notify)
+        _drain_errors(state, q_error)
         save_state(state, config=config)
         live_feed.stop()
         for event_pipe in event_pipes:
@@ -154,7 +132,7 @@ def run_primary(
             save_state_and_exit(state, q_error, event_pipes)
         try:
             # check for errors
-            _drain_errors(state, q_error, q_notify)
+            _drain_errors(state, q_error)
             # get list of new processes and connections since last update
             listen.clear()
             if not ready.wait(timeout=300):
@@ -165,7 +143,7 @@ def run_primary(
             ready.clear()
             listen.set()
             # process the list and update state, send new process/connection data to secondary subprocess if ready
-            handle_new_processes(state, new_processes, q_notify, q_error)
+            handle_new_processes(state, new_processes)
             # serializing with no subscriber backs the pipeline up at high connection cardinality;
             # with one, the batch is serialized once and the publisher's writer thread delivers it
             if live_feed.has_subscribers():
@@ -185,26 +163,14 @@ def run_primary(
                     processes_to_send = []
                     break
                 elif msg["type"] == "sha256":
+                    # value is the first-seen time of this hash for this executable
+                    first_seen = time.strftime("%Y-%m-%d %H:%M:%S")
                     if msg["exe"] in state["SHA256"]:
                         if msg["sha256"] not in state["SHA256"][msg["exe"]]:
-                            state["SHA256"][msg["exe"]][msg["sha256"]] = "VT Pending"
-                            state["Exe Log"].append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg['sha256']:<16.16} {msg['exe']} (new hash)")
-                            _toast(q_notify, q_error, f"New sha256: {msg['exe']}")
+                            state["SHA256"][msg["exe"]][msg["sha256"]] = first_seen
+                            state["Exe Log"].append(f"{first_seen} {msg['sha256']:<16.16} {msg['exe']} (new hash)")
                     else:
-                        state["SHA256"][msg["exe"]] = {msg["sha256"]: "VT Pending"}
-                elif msg["type"] == "vt_result":
-                    if msg["exe"] in state["SHA256"]:
-                        if msg["sha256"] not in state["SHA256"][msg["exe"]]:
-                            state["Exe Log"].append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg['sha256']:<16.16} {msg['exe']} (new hash)")
-                            _toast(q_notify, q_error, f"New sha256: {msg['exe']}")
-                        state["SHA256"][msg["exe"]][msg["sha256"]] = msg["result"]
-                    else:
-                        state["SHA256"][msg["exe"]] = {msg["sha256"]: msg["result"]}
-                    if msg["suspicious"]:
-                        state["Exe Log"].append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg['sha256']:<16.16} {msg['exe']} (suspicious)")
-                        _toast(q_notify, q_error, f"Suspicious VT results: {msg['exe']}")
-                    else:
-                        state["Exe Log"].append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg['sha256']:<16.16} {msg['exe']} (clean)")
+                        state["SHA256"][msg["exe"]] = {msg["sha256"]: first_seen}
             # flush logs every iteration (cheap appends), write state.json only when changed or every 30s
             flush_logs(state, config)
             # monotonic interval: a wall-clock jump must not stall state.json persistence

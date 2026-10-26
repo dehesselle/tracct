@@ -9,8 +9,7 @@ After=time-sync.target
 Type=notify
 Restart=always
 RestartSec=5
-ExecStart=/usr/bin/picosnitch start-no-daemon
-PIDFile=/run/picosnitch/picosnitch.pid
+ExecStart=/usr/bin/picosnitch run
 
 # Auto-create FHS dirs (so ProtectSystem/ReadWritePaths can bind them on a clean install)
 RuntimeDirectory=picosnitch

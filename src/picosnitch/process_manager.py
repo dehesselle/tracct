@@ -3,7 +3,6 @@
 
 import collections.abc
 import multiprocessing
-import os
 
 
 def _read_proc_stat_state(pid: int | None) -> str:
@@ -20,18 +19,6 @@ def _read_proc_stat_state(pid: int | None) -> str:
             return f.read().rsplit(")", 1)[1].split()[0]
     except OSError:
         return ""
-
-
-def _read_proc_rss_bytes(pid: int | None) -> int:
-    """Resident set size in bytes from /proc/{pid}/statm field 2 (pages)."""
-    if pid is None:
-        return 0
-    try:
-        with open(f"/proc/{pid}/statm", "r") as f:
-            rss_pages = int(f.read().split()[1])
-        return rss_pages * os.sysconf("SC_PAGE_SIZE")
-    except (OSError, IndexError, ValueError):
-        return 0
 
 
 class ProcessManager:
@@ -63,6 +50,3 @@ class ProcessManager:
 
     def is_zombie(self) -> bool:
         return self.p.is_alive() and _read_proc_stat_state(self.p.pid) == "Z"
-
-    def memory(self) -> int:
-        return _read_proc_rss_bytes(self.p.pid)

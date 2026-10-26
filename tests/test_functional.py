@@ -75,14 +75,8 @@ def clean_test_dirs():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def stop_existing_picosnitch():
-    """Stop any existing picosnitch daemon."""
-    subprocess.run([PYTHON_EXE, "-m", "picosnitch", "stop"], capture_output=True, timeout=30)
-    time.sleep(2)
-
-
 def start_picosnitch(extra_config_toml: str = "") -> subprocess.Popen:
-    """Start picosnitch daemon in start-no-daemon mode and return the process.
+    """Start the picosnitch daemon in the foreground (`run`) and return the process.
 
     Waits for the daemon to be fully ready (events socket present) and then
     issues a warmup HTTP request that is polled-for in the database so we
@@ -94,7 +88,6 @@ def start_picosnitch(extra_config_toml: str = "") -> subprocess.Popen:
 enabled = true
 retention_days = 1
 write_limit_seconds = {DB_WRITE_LIMIT}
-text_log = false
 
 [data]
 owner = "root"
@@ -106,19 +99,9 @@ addresses = true
 commands = true
 ports = true
 
-[desktop]
-user = ""
-notifications = false
-geoip_lookup = true
-
 [monitoring]
 every_exe = false
 exec_ring_buffer_pages = 256
-
-[virustotal]
-api_key = ""
-file_upload = false
-request_limit_seconds = 15
 """
     if extra_config_toml:
         config_toml += "\n" + extra_config_toml
@@ -128,7 +111,7 @@ request_limit_seconds = 15
     with open(config_file, "w") as f:
         f.write(config_toml)
 
-    proc = subprocess.Popen([PYTHON_EXE, "-m", "picosnitch", "start-no-daemon"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen([PYTHON_EXE, "-m", "picosnitch", "run"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdout is not None and proc.stderr is not None
 
     # wait for the events socket to appear -- means primary subprocess is listening
@@ -220,7 +203,6 @@ def picosnitch_session():
     if os.geteuid() != 0:
         pytest.skip("Tests require root privileges. Run with: sudo uv run pytest tests/test_functional.py -v")
 
-    stop_existing_picosnitch()
     clean_test_dirs()
 
     proc = start_picosnitch()

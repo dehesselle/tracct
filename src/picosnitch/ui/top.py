@@ -5,29 +5,21 @@
 `picosnitch top` -- live curses view of network events as they happen.
 
 Connects to the daemon's live event socket and displays a rolling list of
-recent connections, plus a per-executable rate aggregate.
-
-If no daemon is running, top spawns `picosnitch start-no-daemon` as a
-subprocess in its own session/process group so a single killpg(SIGTERM)
-on top exit tears down the monitor and all of its helper subprocesses.
-Top requires root for this path (BPF needs CAP_SYS_ADMIN).
+recent connections, plus a per-executable rate aggregate. Requires the
+picosnitch service to be running.
 """
 
-import atexit
 import collections
 import curses
 import logging
 import os
-import signal
 import socket
-import subprocess
 import sys
 import time
 
-from picosnitch.constants import LOG_DIR, RUN_DIR, VERSION
+from picosnitch.constants import LOG_DIR, VERSION
 from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
-from picosnitch.utils import relaunch_argv, safe_log_open
 
 # _top_loop return value when the daemon closed the feed (vs. 0 when the user quit)
 _FEED_CLOSED = 1
@@ -101,41 +93,6 @@ def _scan_listening_ports() -> dict[str, set[int]]:
             if port is not None:
                 exe_to_ports.setdefault(exe, set()).add(port)
     return exe_to_ports
-
-
-def _stop_spawned(proc: subprocess.Popen) -> None:
-    """SIGTERM the spawned monitor's whole process group, then SIGKILL if needed."""
-    if proc.poll() is not None:
-        return
-    pgid = proc.pid
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        proc.wait(timeout=10)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
-
-
-def _wait_for_socket(timeout: float, proc: subprocess.Popen) -> bool:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if EVENTS_SOCKET_PATH.exists():
-            return True
-        if proc.poll() is not None:
-            return False
-        time.sleep(0.2)
-    return False
 
 
 def _top_loop(stdscr, sub: LiveFeedSubscriber) -> int:
@@ -411,80 +368,17 @@ def _top_loop(stdscr, sub: LiveFeedSubscriber) -> int:
 
 def top_init() -> int:
     """Entry point for `picosnitch top`."""
-    spawned: subprocess.Popen | None = None
-    daemon_pid_file = RUN_DIR / "picosnitch.pid"
-
     if not EVENTS_SOCKET_PATH.exists():
-        if daemon_pid_file.exists():
-            try:
-                old_pid = int(daemon_pid_file.read_text().strip())
-                os.kill(old_pid, 0)
-                logging.error(f"Daemon pid file {daemon_pid_file} exists but socket {EVENTS_SOCKET_PATH} is missing — try `sudo picosnitch restart`.")
-                return 1
-            except (OSError, ValueError):
-                # stale pidfile from a crashed picosnitch -- remove it
-                try:
-                    daemon_pid_file.unlink()
-                except OSError:
-                    pass
-        if os.geteuid() != 0:
-            # BPF needs CAP_SYS_ADMIN. Refuse to escalate privileges
-            # ourselves (security audit: no implicit sudo re-exec).
-            logging.error("picosnitch top needs root to spawn a private monitor; re-run with: sudo picosnitch top")
-            return 1
-        logging.info("No picosnitch daemon detected — launching a private monitor (will exit when top exits).")
-        # Spawn start-no-daemon as its own session leader so a single
-        # killpg(pgid, SIGTERM) on top exit reaches every helper subprocess.
-        log_path = LOG_DIR / "picosnitch-top.log"
-        try:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            mon_log = safe_log_open(log_path, binary=True)
-        except OSError:
-            mon_log = open(os.devnull, "ab", buffering=0)
-        try:
-            spawned = subprocess.Popen(
-                relaunch_argv("start-no-daemon"),
-                stdin=subprocess.DEVNULL,
-                stdout=mon_log,
-                stderr=mon_log,
-                start_new_session=True,
-                close_fds=True,
-                # don't inherit the caller's cwd: the -m fallback puts cwd on sys.path[0]
-                cwd="/",
-            )
-        finally:
-            mon_log.close()
-
-        atexit.register(_stop_spawned, spawned)
-
-        def _signal_cleanup(_signum: int, _frame) -> None:
-            _stop_spawned(spawned)
-            sys.exit(0)
-
-        signal.signal(signal.SIGTERM, _signal_cleanup)
-        signal.signal(signal.SIGHUP, _signal_cleanup)
-
-        if not _wait_for_socket(timeout=20.0, proc=spawned):
-            rc = spawned.poll()
-            if rc is not None:
-                logging.error(f"Spawned monitor exited immediately (exit code {rc}); see {log_path}")
-            else:
-                logging.error(f"Spawned monitor did not create the live event socket {EVENTS_SOCKET_PATH} within 20s")
-            _stop_spawned(spawned)
-            return 1
-
+        logging.error(f"Live event socket {EVENTS_SOCKET_PATH} not found — is the picosnitch service running? (systemctl status picosnitch)")
+        return 1
     sub = LiveFeedSubscriber(timeout=1.0)
     try:
         sub.connect()
     except PermissionError:
         logging.error(f"Live event socket {EVENTS_SOCKET_PATH} is not accessible (permission denied) — re-run with: sudo picosnitch top")
-        if spawned is not None:
-            _stop_spawned(spawned)
         return 1
     except OSError as e:
         logging.error(f"Could not connect to picosnitch live feed: {e}")
-        if spawned is not None:
-            _stop_spawned(spawned)
         return 1
     # While curses owns the tty, redirect stderr to a log file so any
     # in-process logging (LiveFeedSubscriber warnings, exceptions, etc.)
@@ -506,8 +400,6 @@ def top_init() -> int:
         os.dup2(saved_stderr_fd, 2)
         os.close(saved_stderr_fd)
         sub.close()
-        if spawned is not None:
-            _stop_spawned(spawned)
     if rc == _FEED_CLOSED:
         logging.error(f"Live feed closed: {feed_closed_reason()}")
     return rc

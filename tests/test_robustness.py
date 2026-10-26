@@ -1,14 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2020 Eric Lesiuta
 
-"""Regression tests for robustness against corrupt inputs: a malformed config.toml,
-state.json, or pidfile must never crash-loop the daemon. All pure-Python, no root/BPF."""
+"""Regression tests for robustness against corrupt inputs: a malformed config.toml or
+state.json must never crash-loop the daemon. All pure-Python, no root/BPF."""
 
 import ctypes
 import json
-import multiprocessing
 import os
-import pickle
 import socket
 import struct
 import subprocess
@@ -20,9 +18,7 @@ import pytest
 import picosnitch.utils as utils
 from picosnitch.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
 from picosnitch.config import Config, load_config, write_default_config
-from picosnitch.daemon import Daemon
 from picosnitch.types import FanotifyEventMetadata, State
-from picosnitch.utils import get_sha256_fuse, resolve_unprivileged_user
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -42,9 +38,7 @@ def test_non_utf8_config_falls_back_to_defaults(tmp_path):
 
 def test_config_numeric_clamps(tmp_path):
     (tmp_path / "config.toml").write_text(
-        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n"
-        "[database]\nretention_days = -1\nwrite_limit_seconds = -1\n"
-        "[virustotal]\nrequest_limit_seconds = -1\n"
+        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nretention_days = -1\nwrite_limit_seconds = -1\n"
     )
     config = load_config(tmp_path)
     assert config.monitoring.exec_ring_buffer_pages == 256  # non-power-of-two clamped to default
@@ -53,7 +47,6 @@ def test_config_numeric_clamps(tmp_path):
     assert config.monitoring.st_dev_mask is None
     assert config.database.retention_days == 30
     assert config.database.write_limit_seconds == 10
-    assert config.virustotal.request_limit_seconds == 15
 
 
 def test_config_valid_values_preserved(tmp_path):
@@ -90,15 +83,13 @@ def test_config_numeric_upper_clamps(tmp_path):
     assert config.monitoring.conn_map_max_entries == 65536  # 2^33 over max (and would wrap c_uint32)
 
 
-def test_config_unresolvable_owner_group_user_reset(tmp_path, monkeypatch):
-    """owner/group/desktop.user that don't resolve to a real uid/gid, or a non-octal mode, must
-    reset to defaults -- else apply_data_permissions / the subprocess privilege drop raise an
-    uncaught KeyError/ValueError at boot and crash-loop the daemon."""
-    monkeypatch.delenv("SUDO_UID", raising=False)  # else the reset user falls back to SUDO_UID
-    (tmp_path / "config.toml").write_text('[data]\nowner = "no_such_user_xyz123"\ngroup = "no_such_group_xyz123"\nmode = "garbage"\n[desktop]\nuser = "no_such_user_xyz123"\n')
+def test_config_unresolvable_owner_group_reset(tmp_path):
+    """owner/group that don't resolve to a real uid/gid, or a non-octal mode, must reset to
+    defaults -- else apply_data_permissions raises an uncaught KeyError/ValueError at boot and
+    crash-loops the daemon."""
+    (tmp_path / "config.toml").write_text('[data]\nowner = "no_such_user_xyz123"\ngroup = "no_such_group_xyz123"\nmode = "garbage"\n')
     config = load_config(tmp_path)
     assert config.data.owner == "root" and config.data.group == "root" and config.data.mode == "0644"
-    assert config.desktop.user == ""
 
 
 def test_config_valid_owner_preserved(tmp_path):
@@ -106,30 +97,6 @@ def test_config_valid_owner_preserved(tmp_path):
     (tmp_path / "config.toml").write_text('[data]\nowner = "root"\ngroup = "0"\nmode = "0600"\n')
     config = load_config(tmp_path)
     assert config.data.owner == "root" and config.data.group == "0" and config.data.mode == "0600"
-
-
-def test_desktop_user_uses_passwd_primary_group(tmp_path, monkeypatch):
-    import pwd
-
-    monkeypatch.delenv("SUDO_UID", raising=False)
-    nobody = pwd.getpwnam("nobody")
-    (tmp_path / "config.toml").write_text(f'[desktop]\nuser = "{nobody.pw_name}"\n')
-    assert load_config(tmp_path).desktop.user == nobody.pw_name
-    assert resolve_unprivileged_user(nobody.pw_name) == (nobody.pw_uid, nobody.pw_gid)
-    (tmp_path / "config.toml").write_text('[desktop]\nuser = "root"\n')
-    assert load_config(tmp_path).desktop.user == ""
-    assert resolve_unprivileged_user("9" * 100) != (0, 0)
-
-
-def test_resolve_unprivileged_user_rejects_gid_zero(monkeypatch):
-    """a non-root user whose primary group is root (gid 0) must fall back to nobody, not drop to
-    gid 0 -- setgid(0) would keep group-root on the dropped-privilege side of the boundary."""
-    import pwd
-
-    nobody = pwd.getpwnam("nobody")
-    gid0 = pwd.struct_passwd(("appliance", "x", 1000, 0, "", "/home/appliance", "/bin/sh"))
-    monkeypatch.setattr(utils.pwd, "getpwnam", lambda name: gid0 if name == "appliance" else nobody)
-    assert resolve_unprivileged_user("appliance") == (nobody.pw_uid, nobody.pw_gid)
 
 
 def test_default_config_is_private(tmp_path):
@@ -238,7 +205,6 @@ def test_maintain_database_purges_orphans(tmp_path):
     must shed rows no live connection points at, while referenced rows and the id=0
     sentinel survive -- otherwise executables grows unbounded with argv cardinality."""
     import sqlite3
-    import time
 
     from picosnitch.constants import DB_VERSION, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES
     from picosnitch.subprocesses.secondary import maintain_database
@@ -366,28 +332,6 @@ def test_config_scalar_section_falls_back(tmp_path):
     assert config.monitoring.exec_ring_buffer_pages == 256
 
 
-def test_relaunch_argv_reexecs_console_script(monkeypatch, tmp_path):
-    """relaunch_argv must re-exec an executable picosnitch console script / nix wrapper
-    directly (never `python <bash-wrapper>`, which SyntaxErrors on nix), and fall back to
-    `-m picosnitch` when not launched from a picosnitch entry point."""
-    for name in ("picosnitch", ".picosnitch-wrapped"):  # pip/venv console script and nix wrapper
-        script = tmp_path / name
-        script.write_text("#!/bin/sh\n")
-        script.chmod(0o755)
-        monkeypatch.setattr(sys, "argv", [str(script), "top"])
-        assert utils.relaunch_argv("restart") == [str(script), "restart"]
-    # non-picosnitch argv0 (e.g. `python -m picosnitch`) -> fall back to -m picosnitch
-    monkeypatch.setattr(sys, "argv", ["/usr/bin/python3", "top"])
-    assert utils.relaunch_argv("restart") == [sys.executable, "-m", "picosnitch", "restart"]
-    # a bare/relative argv0 must fall back to -m, never be re-exec'd directly (Popen would resolve
-    # it via $PATH/cwd) -- even an executable ./picosnitch in cwd
-    (tmp_path / "picosnitch").chmod(0o755)  # exists and executable, but relative
-    monkeypatch.chdir(tmp_path)
-    for bad_argv0 in ("picosnitch", "./picosnitch"):
-        monkeypatch.setattr(sys, "argv", [bad_argv0, "top"])
-        assert utils.relaunch_argv("restart") == [sys.executable, "-m", "picosnitch", "restart"]
-
-
 def test_resolve_tool_prefers_trusted_dirs(tmp_path, monkeypatch):
     """a build tool must resolve from a standard system dir even when another dir is earlier on
     $PATH (a bare-name lookup would resolve the other one first)."""
@@ -427,7 +371,7 @@ def test_state_json_non_dict_value_reset(tmp_path, monkeypatch):
 def test_state_json_nested_non_dict_value_reset(tmp_path, monkeypatch):
     """A state.json whose top-level keys are dicts but whose INNER values are the wrong shape
     (SHA256 exe -> str, or a name-history exe -> non-list) must be quarantined, not accepted --
-    else sync_vt_results crashes at startup outside its try/except and crash-loops the daemon."""
+    else the secondary's hash bookkeeping breaks on every write cycle."""
     monkeypatch.setattr(utils, "DATA_DIR", tmp_path)
     (tmp_path / "state.json").write_text('{"SHA256": {"/bin/x": "corrupt"}}')  # inner must be a dict
     state = utils.load_state()
@@ -461,57 +405,6 @@ def test_state_json_rejects_hardlinks_and_oversize(tmp_path, monkeypatch):
     assert (tmp_path / "state.json.bad").exists()
 
 
-def test_daemon_getpid_handles_bad_pidfile(tmp_path):
-    pidfile = tmp_path / "pico.pid"
-    daemon = Daemon(pidfile)
-    assert daemon.getpid() is None  # missing pidfile
-    pidfile.write_text("")
-    assert daemon.getpid() is None  # empty
-    pidfile.write_text("garbage\n")
-    assert daemon.getpid() is None  # non-numeric
-    pidfile.write_text("4242\n")
-    assert daemon.getpid() == 4242
-
-
-def test_daemon_pid_is_picosnitch_rejects_unrelated(tmp_path):
-    daemon = Daemon(tmp_path / "pico.pid")
-    # pid 1 is init/systemd, never picosnitch -> a stale/recycled pid is not signalled
-    assert daemon._pid_is_picosnitch(1) is False
-
-
-def test_daemon_cmdline_matching_is_exact():
-    assert Daemon._cmdline_is_picosnitch(b"/usr/bin/picosnitch\0start\0")
-    assert Daemon._cmdline_is_picosnitch(b"/usr/bin/python3\0-m\0picosnitch\0start\0")
-    assert Daemon._cmdline_is_picosnitch(b"/usr/bin/python3\0-I\0-m\0picosnitch\0start-no-daemon\0")
-    assert Daemon._cmdline_is_picosnitch(b"/usr/bin/python3\0/venv/bin/picosnitch\0restart\0")
-    # interpreter-agnostic: env-shebang and nix/bash-wrapper launches (picosnitch as a
-    # script path, not argv0) must still match, else stop()/start() break on those installs
-    assert Daemon._cmdline_is_picosnitch(b"/usr/bin/env\0python3\0/usr/bin/picosnitch\0start-no-daemon\0")
-    assert Daemon._cmdline_is_picosnitch(b"/bin/bash\0/nix/store/x/bin/picosnitch\0start-no-daemon\0")
-    # real nix runs the entry point as `.picosnitch-wrapped` (verified in a nix container)
-    assert Daemon._cmdline_is_picosnitch(b"/nix/store/a-python3/bin/python3.13\0/nix/store/b-picosnitch/bin/.picosnitch-wrapped\0start-no-daemon\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/picosnitch\0status\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/python3\0-m\0picosnitch\0version\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/sleep\0picosnitch\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/python3\0-c\0import time; time.sleep(30)\0picosnitch\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/sleep\0picosnitch\0start\0")  # bare-arg spoof w/ daemon cmd
-    # a /path/to/picosnitch passed as a file argument to an unrelated program (argv0 is neither
-    # picosnitch nor an interpreter) must not match, so a recycled pid is never signalled
-    assert not Daemon._cmdline_is_picosnitch(b"/usr/bin/tail\0-f\0/var/backups/picosnitch\0start-no-daemon\0")
-    assert not Daemon._cmdline_is_picosnitch(b"/bin/cp\0/etc/picosnitch\0restart\0")
-
-
-def test_daemon_pid_is_picosnitch_rejects_spoofed_arg(tmp_path):
-    daemon = Daemon(tmp_path / "pico.pid")
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "picosnitch"])
-    try:
-        time.sleep(0.1)
-        assert daemon._pid_is_picosnitch(proc.pid) is False
-    finally:
-        proc.terminate()
-        proc.wait(timeout=5)
-
-
 def test_dns_event_family_demux():
     """dns_event_t <-> DNSEvent must stay byte-synced, and the family field must tell a
     v4 0.0.0.0 answer from a v6 :: answer (regression: 0.0.0.0 was demuxed as IPv6
@@ -541,40 +434,6 @@ def test_conn_structs_byte_synced_with_bpf():
     assert ctypes.sizeof(ConnVal) == 128  # 48 + 56 + 24, no internal or trailing padding
     assert (ConnVal.send_bytes.offset, ConnVal.recv_bytes.offset) == (72, 80)
     assert (ConnVal.send_pkts.offset, ConnVal.recv_pkts.offset) == (88, 96)
-
-
-def test_fuse_reply_correlation_discards_stale():
-    """A late fuse reply left over from a previously timed-out call must be discarded,
-    not returned for the next (different) request -- otherwise sha256s desync."""
-    q_in: multiprocessing.Queue = multiprocessing.Queue()
-    q_out: multiprocessing.Queue = multiprocessing.Queue()
-    new_key = ("/new/exe", 222, 3, 4, 0)  # wire key is (path, pid, st_dev, st_ino, _mod_cnt)
-    q_out.put(pickle.dumps((("/old/exe", 111, 1, 2, 0), "STALE_SHA")))  # leftover from a timed-out call
-    q_out.put(pickle.dumps((new_key, "CORRECT_SHA")))  # the matching reply for our request
-    got = get_sha256_fuse.__wrapped__(q_in, q_out, *new_key)
-    assert got == "CORRECT_SHA", got
-
-
-def test_fuse_reply_correlation_keys_on_mod_cnt():
-    """A post-modification re-hash (same path/pid/dev/ino, bumped _mod_cnt) must not be served
-    the stale pre-modification reply -- the wire key includes _mod_cnt so it's discarded."""
-    q_in: multiprocessing.Queue = multiprocessing.Queue()
-    q_out: multiprocessing.Queue = multiprocessing.Queue()
-    ident = ("/app.AppImage", 222, 3, 4)  # same file, pid, and inode across both hashes
-    q_out.put(pickle.dumps(((*ident, 0), "OLD_PREMOD_SHA")))  # leftover from the timed-out mod_cnt=0 call
-    q_out.put(pickle.dumps(((*ident, 1), "NEW_POSTMOD_SHA")))  # reply for the mod_cnt=1 re-hash
-    got = get_sha256_fuse.__wrapped__(q_in, q_out, *ident, 1)
-    assert got == "NEW_POSTMOD_SHA", got  # not the stale pre-modification hash
-
-
-def test_fuse_no_reply_times_out(monkeypatch):
-    monkeypatch.setattr(utils, "FUSE_HASH_TIMEOUT", 0.1)
-    q_in: multiprocessing.Queue = multiprocessing.Queue()
-    q_out: multiprocessing.Queue = multiprocessing.Queue()
-    start = time.monotonic()
-    got = get_sha256_fuse.__wrapped__(q_in, q_out, "/new/exe", 222, 3, 4, 0)
-    assert got == "!!! FUSE Subprocess Timeout"
-    assert time.monotonic() - start < 1
 
 
 def test_fanotify_overflow_invalidates_all_hashes():
@@ -681,7 +540,7 @@ def test_save_state_preserves_configured_owner(tmp_path, monkeypatch):
 
 
 def test_sanitize_log_line_neutralizes_control_chars():
-    """attacker-influenced fields (comm/cmdline/domain) reach conn.log/error.log/exe.log; every
+    """attacker-influenced fields (comm/cmdline/domain) reach error.log/exe.log; every
     C0 (except tab), DEL, and C1 (e.g. U+009B CSI) must be stripped so a viewed log can't be
     driven to emit a terminal escape or overwrite a prior line."""
     dirty = "safe\x1b[2K\x07\x08\r\n\x00mid\x7f\x9bend\ttab\u202eignored\udc9b"
@@ -698,7 +557,7 @@ def test_safe_log_open_rejects_fifo_and_symlink(tmp_path):
     on open) or a symlink (redirect its writes); safe_log_open must reject both, not block."""
     import signal
 
-    fifo = tmp_path / "conn.log"
+    fifo = tmp_path / "error.log"
     os.mkfifo(fifo)
 
     def _alarm(*_):

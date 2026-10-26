@@ -18,8 +18,6 @@ class DatabaseConfig:
     enabled: bool = True
     retention_days: int = 30
     write_limit_seconds: int = 10
-    text_log: bool = False
-    remote: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -41,13 +39,6 @@ class LogConfig:
 
 
 @dataclasses.dataclass
-class DesktopConfig:
-    user: str = ""
-    notifications: bool = True
-    geoip_lookup: bool = True
-
-
-@dataclasses.dataclass
 class MonitoringConfig:
     every_exe: bool = False
     # attribute receives that never issue a recvmsg; off by default, adds a per-frame softirq hook
@@ -59,20 +50,11 @@ class MonitoringConfig:
 
 
 @dataclasses.dataclass
-class VirusTotalConfig:
-    api_key: str = ""
-    file_upload: bool = False
-    request_limit_seconds: int = 15
-
-
-@dataclasses.dataclass
 class Config:
     database: DatabaseConfig = dataclasses.field(default_factory=DatabaseConfig)
     data: DataConfig = dataclasses.field(default_factory=DataConfig)
     log: LogConfig = dataclasses.field(default_factory=LogConfig)
-    desktop: DesktopConfig = dataclasses.field(default_factory=DesktopConfig)
     monitoring: MonitoringConfig = dataclasses.field(default_factory=MonitoringConfig)
-    virustotal: VirusTotalConfig = dataclasses.field(default_factory=VirusTotalConfig)
 
 
 def _dump_toml(config: Config) -> str:
@@ -191,14 +173,10 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     if write_limit < 0:
         logging.warning(f"database.write_limit_seconds must not be negative, got {write_limit}, using 10")
         config.database.write_limit_seconds = 10
-    request_limit = config.virustotal.request_limit_seconds
-    if request_limit < 0:
-        logging.warning(f"virustotal.request_limit_seconds must not be negative, got {request_limit}, using 15")
-        config.virustotal.request_limit_seconds = 15
 
-    # reset owner/group/user/mode that don't resolve to a real uid/gid/octal mode; otherwise a
-    # typo'd name crash-loops the daemon at boot (apply_data_permissions and the subprocess
-    # privilege drop resolve these outside any try/except). resolved inline with pwd/grp (mirroring
+    # reset owner/group/mode that don't resolve to a real uid/gid/octal mode; otherwise a
+    # typo'd name crash-loops the daemon at boot (apply_data_permissions resolves these
+    # outside any try/except). resolved inline with pwd/grp (mirroring
     # utils.resolve_owner/resolve_group) to avoid a config<->utils import cycle
     def _resolves(value, lookup) -> bool:
         try:
@@ -225,22 +203,6 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     except ValueError:
         logging.warning(f"config.data.mode: {config.data.mode!r} is not an octal mode, using '0644'")
         config.data.mode = "0644"
-
-    def _unprivileged_user(value: str) -> bool:
-        try:
-            entry = pwd.getpwuid(int(value))
-        except (ValueError, TypeError, OverflowError):
-            try:
-                entry = pwd.getpwnam(value)
-            except (KeyError, TypeError):
-                return False
-        except KeyError:
-            return False
-        return entry.pw_uid != 0 and entry.pw_gid != 0
-
-    if config.desktop.user and not _unprivileged_user(config.desktop.user):
-        logging.warning(f"config.desktop.user: {config.desktop.user!r} is not a valid non-root user, ignoring")
-        config.desktop.user = ""
     # drop log.ignore_ips entries that aren't valid networks (strict=False accepts a host-bit CIDR);
     # otherwise secondary crashes building ignored_networks at boot outside its try/except
     valid_ignore_ips = []
@@ -264,9 +226,6 @@ def load_config(config_dir: Path = CONFIG_DIR) -> Config:
     config.log.ignore_domains = valid_ignore_domains
     config.log.ignore_ports = [port for port in config.log.ignore_ports if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535]
     config.log.ignore_sha256 = [digest.lower() for digest in config.log.ignore_sha256 if isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdefABCDEF" for c in digest)]
-    sudo_uid = os.environ.get("SUDO_UID", "")
-    if not config.desktop.user and sudo_uid.isdigit() and _unprivileged_user(sudo_uid):
-        config.desktop.user = sudo_uid
     return config
 
 

@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2020 Eric Lesiuta
 
-import bisect
 import collections
-import csv
 import curses
 import datetime
-import gzip
-import ipaddress
-import json
 import logging
 import pwd
 import queue
@@ -18,18 +13,11 @@ import sys
 import textwrap
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 
-from picosnitch.config import load_config
-from picosnitch.constants import CACHE_DIR, DATA_DIR, DB_VERSION, RUN_DIR, VERSION
+from picosnitch.constants import DATA_DIR, DB_VERSION, VERSION
 from picosnitch.live_feed import EVENTS_SOCKET_PATH, LiveFeedSubscriber, feed_closed_reason
 from picosnitch.ui import _chrome, _keys
 from picosnitch.utils import connect_db_readonly
-
-_GEOIP_DOWNLOAD_LIMIT = 64 * 1024 * 1024
-
 
 # ── sidebar layout ────────────────────────────────────────────────────
 # (section_label, [(item_label, sql_column), ...]) -- the selected
@@ -148,90 +136,6 @@ def _draw_sidebar(stdscr: "curses.window", view_i: int, focus: str, sidebar_w: i
             flat_idx += 1
 
 
-def init_geoip():
-    """Init a country-code lookup callable; returns lookup_fn(ip)->str|None or None on failure.
-
-    Uses the DB-IP Country Lite CSV (CC-BY 4.0, monthly, no account required).
-    Cached gzipped under CACHE_DIR; ~3MB on disk, parsed on each launch.
-    """
-    config = load_config()
-    if not config.desktop.geoip_lookup:
-        return None
-    try:
-        cache_path = CACHE_DIR / "dbip-country-lite.csv.gz"
-        now = datetime.datetime.now()
-        stale = not cache_path.is_file() or datetime.datetime.fromtimestamp(cache_path.stat().st_mtime).strftime("%Y%m") != now.strftime("%Y%m")
-        if stale:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            last_err: Exception | None = None
-            for delta_days in (0, 30):
-                # Try current month first, then last month if the new release isn't published yet.
-                when = now - datetime.timedelta(days=delta_days)
-                url = when.strftime("https://download.db-ip.com/free/dbip-country-lite-%Y-%m.csv.gz")
-                try:
-                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=30) as resp, open(cache_path, "wb") as f:
-                        downloaded = 0
-                        while chunk := resp.read(1024 * 1024):
-                            downloaded += len(chunk)
-                            if downloaded > _GEOIP_DOWNLOAD_LIMIT:  # bound the fetch so a bad/huge response can't fill the disk
-                                raise ValueError("GeoIP download is too large")
-                            f.write(chunk)
-                    last_err = None
-                    break
-                except Exception as exc:
-                    last_err = exc
-            if last_err is not None and not cache_path.is_file():
-                raise Exception(f"Could not download GeoIP database: {last_err}")
-            if last_err is not None:
-                logging.warning("Could not update GeoIP database, using cached version (%s)", last_err)
-
-        v4_starts: list[int] = []
-        v4_ends: list[int] = []
-        v4_cc: list[str] = []
-        v6_starts: list[int] = []
-        v6_ends: list[int] = []
-        v6_cc: list[str] = []
-        with gzip.open(cache_path, "rt", encoding="ascii", errors="replace") as fh:
-            for row in csv.reader(fh):
-                if len(row) != 3:
-                    continue
-                start_s, end_s, cc = row
-                try:
-                    start = int(ipaddress.ip_address(start_s))
-                    end = int(ipaddress.ip_address(end_s))
-                except ValueError:
-                    continue
-                if ":" in start_s:
-                    v6_starts.append(start)
-                    v6_ends.append(end)
-                    v6_cc.append(cc)
-                else:
-                    v4_starts.append(start)
-                    v4_ends.append(end)
-                    v4_cc.append(cc)
-
-        def lookup(ip: str) -> str | None:
-            try:
-                addr = ipaddress.ip_address(ip)
-                v = int(addr)
-                if isinstance(addr, ipaddress.IPv4Address):
-                    starts, ends, ccs = v4_starts, v4_ends, v4_cc
-                else:
-                    starts, ends, ccs = v6_starts, v6_ends, v6_cc
-                idx = bisect.bisect_right(starts, v) - 1
-                if 0 <= idx < len(starts) and starts[idx] <= v <= ends[idx]:
-                    return ccs[idx]
-            except Exception:
-                pass
-            return None
-
-        return lookup
-    except Exception as exc:
-        logging.warning("GeoIP lookup disabled: %s", exc)
-        return None
-
-
 def _format_bytes_short(n: int) -> str:
     for unit in ("B", "K", "M", "G"):
         if n < 1024:
@@ -287,8 +191,8 @@ def _live_tab_loop(stdscr: "curses.window") -> str:
             stdscr,
             [
                 f"Live feed socket {EVENTS_SOCKET_PATH} does not exist.",
-                "Start the daemon (sudo picosnitch start) or run",
-                "`picosnitch top` for a standalone live monitor.",
+                "Is the picosnitch service running?",
+                "(systemctl status picosnitch)",
             ],
         )
 
@@ -302,8 +206,7 @@ def _live_tab_loop(stdscr: "curses.window") -> str:
                 f"Permission denied: {e}",
                 "The live event socket is owned by the picosnitch daemon",
                 "and only readable by root (or members of the configured",
-                "picosnitch group). Re-run the TUI with sudo, or use",
-                "`sudo picosnitch top` for a standalone live monitor.",
+                "picosnitch group). Re-run the TUI with sudo.",
             ],
         )
     except OSError as e:
@@ -713,26 +616,6 @@ def tui_loop(stdscr: curses.window) -> int:
     def time_round_func(resolution_index: int, t: datetime.datetime) -> datetime.datetime:
         return time_round_functions[time_round_units[resolution_index]](t)
 
-    # ── geoip ─────────────────────────────────────────────────────
-    geoip_lookup = init_geoip()
-
-    def get_remote_label(ip: str) -> str:
-        # 2-char ASCII prefixes line up with country codes ("US 1.1.1.1"):
-        #   LO -- LOcal/private (RFC1918, loopback, link-local, ULA)
-        #   ZZ -- DB-IP's "no associated country" placeholder
-        #   ?? -- public IP not in the GeoIP database
-        #   !! -- string did not parse as an IP address
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return f"!! {ip}"
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            return f"LO {ip}"
-        cc = geoip_lookup(ip) if geoip_lookup else None
-        if cc:
-            return f"{cc} {ip}"
-        return f"?? {ip}"
-
     # ── view + query state ────────────────────────────────────────
     view_i = 0  # index into _VIEWS
     focus = "sidebar"  # "sidebar" or "main"
@@ -768,7 +651,6 @@ def tui_loop(stdscr: curses.window) -> int:
     running_query = False
     current_query, current_query_params, current_screen = "", (), [""]
     last_executed_query: tuple = (None, None)
-    vt_status: dict = collections.defaultdict(str)
     sum_send = 0
     sum_recv = 0
     time_history: object = ""
@@ -829,28 +711,9 @@ def tui_loop(stdscr: curses.window) -> int:
                 )
                 thread_query.start()
                 last_executed_query = (current_query, current_query_params)
-            # update terminal title with daemon status
-            try:
-                with open(RUN_DIR / "picosnitch.pid", "r") as f:
-                    run_status = "pid: " + f.read().strip()
-            except Exception:
-                run_status = "not running"
+            # update terminal title with daemon status (the live feed socket exists while it runs)
+            run_status = "running" if EVENTS_SOCKET_PATH.exists() else "not running"
             print(f"\033]0;picosnitch v{VERSION} ({run_status})\a", end="", flush=True)
-            # virustotal status check
-            try:
-                with open(DATA_DIR / "state.json", "r") as f:
-                    sha256_record = json.load(f)["SHA256"]
-                for _exe, hashes in sha256_record.items():
-                    for sha256, status in hashes.items():
-                        if sha256 not in vt_status and "harmless" in status:
-                            suspicious = status.split("'suspicious': ")[1].split(",")[0]
-                            malicious = status.split("'malicious': ")[1].split(",")[0]
-                            if suspicious == "0" and malicious == "0":
-                                vt_status[sha256] = " (clean)"
-                            else:
-                                vt_status[sha256] = " (suspicious)"
-            except Exception:
-                pass
             if not q_query_results.empty():
                 current_screen += q_query_results.get_nowait()
             sum_send = sum(b for _, b, _ in current_screen)
@@ -936,10 +799,6 @@ def tui_loop(stdscr: curses.window) -> int:
                         name = f"{pwd.getpwuid(name).pw_name} ({name})"
                     except Exception:
                         name = f"??? ({name})"
-                if col_sql_now == "ra.addr":
-                    name = get_remote_label(name)
-                if col_sql_now.endswith(".sha256"):
-                    name = f"{name}{vt_status[name]}"
                 value = f"{round_bytes(send, byte_units):>14.14} {round_bytes(recv, byte_units):>14.14}"  # ty: ignore[invalid-argument-type]
                 name_w = max(1, main_w - 29)
                 disp = f"{name!s:<{name_w}.{name_w}}{value}"
