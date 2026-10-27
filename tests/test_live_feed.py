@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Unit tests for picosnitch.live_feed (no root needed)."""
+"""Unit tests for tracct.live_feed (no root needed)."""
 
 import os
 import socket
@@ -13,10 +13,10 @@ import time
 import pytest
 
 # Force RUN_DIR to a tempdir before importing live_feed so the socket lands somewhere we can write.
-_TMP_RUN = tempfile.mkdtemp(prefix="picosnitch-test-")
+_TMP_RUN = tempfile.mkdtemp(prefix="tracct-test-")
 os.environ["RUNTIME_DIRECTORY"] = _TMP_RUN
 
-from picosnitch import live_feed  # noqa: E402
+from tracct import live_feed  # noqa: E402
 
 # Patch the socket path to live under our temp dir
 live_feed.EVENTS_SOCKET_PATH = type(live_feed.EVENTS_SOCKET_PATH)(os.path.join(_TMP_RUN, "events.sock"))

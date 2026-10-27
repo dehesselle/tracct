@@ -21,8 +21,8 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 from textual.worker import get_current_worker
 
-from picosnitch.live_feed import LiveFeedSubscriber, feed_closed_reason
-from picosnitch.viewer.format import bytes_cell, clean, clock
+from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
+from tracct.viewer.format import bytes_cell, clean, clock
 
 # events kept for the recent table, and how many of them it shows
 RECENT_KEPT = 10000
@@ -139,9 +139,9 @@ class LivePane(Vertical):
             try:
                 sub.connect()
             except PermissionError:
-                self.state = f"no access to {self.events_socket}: join the viewer group (picosnitch-viewer) or run as root"
+                self.state = f"no access to {self.events_socket}: join the viewer group (tracct-viewer) or run as root"
             except OSError as e:
-                self.state = f"live feed unavailable ({e.strerror or e}); is the picosnitch service running?"
+                self.state = f"live feed unavailable ({e.strerror or e}); is the tracct service running?"
             else:
                 self.state = "connected"
                 while not worker.is_cancelled:

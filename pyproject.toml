@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "picosnitch"
+name = "tracct"
 dynamic = ["version"]
 requires-python = ">=3.12"
 description = "Monitor network traffic per executable using BPF"
@@ -25,22 +25,27 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# the viewer, `picosnitch view`; the daemon and the query server need only the standard library
+# the viewer, `tracct view`; the daemon and the query server need only the standard library
 tui = ["textual>=8.2,<9"]
 
 [project.scripts]
-picosnitch = "picosnitch.cli:start_picosnitch"
+tracct = "tracct.cli:start_tracct"
 
 [project.urls]
 Homepage = "https://github.com/dehesselle/picosnitch"
 Repository = "https://github.com/dehesselle/picosnitch"
 
 [tool.hatch.version]
-path = "src/picosnitch/__init__.py"
+source = "vcs"
+# only tracct's own release tags; picosnitch's are kept as picosnitch-<version>
+raw-options = { scm = { git = { describe_command = "git describe --dirty --tags --long --match v[0-9]*" } } }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/tracct/version.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/src/picosnitch/",
+    "/src/tracct/",
     "/hatch_build.py",
     "/README.md",
     "/LICENSE",
@@ -50,8 +55,8 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/picosnitch"]
-exclude = ["src/picosnitch/bpf/vmlinux*.h"]
+packages = ["src/tracct"]
+exclude = ["src/tracct/bpf/vmlinux*.h"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"

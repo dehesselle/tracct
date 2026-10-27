@@ -16,9 +16,9 @@ import time
 
 import pytest
 
-import picosnitch.utils as utils
-from picosnitch.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
-from picosnitch.config import Config, load_config
+import tracct.utils as utils
+from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
+from tracct.config import Config, load_config
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -59,13 +59,6 @@ def test_config_valid_values_preserved(tmp_path):
     assert config.monitoring.conn_map_max_entries == 1024
 
 
-def test_config_renamed_key_warns_and_is_ignored(tmp_path, caplog):
-    (tmp_path / "config.toml").write_text("[monitoring]\nperf_ring_buffer_pages = 512\n")
-    config = load_config(tmp_path / "config.toml")
-    assert config.monitoring.exec_ring_buffer_pages == 256  # old name no longer applies
-    assert "config.monitoring.perf_ring_buffer_pages: unknown option" in caplog.text
-
-
 def test_config_scalar_for_list_field_skipped(tmp_path):
     """a scalar where a list is expected (e.g. ignore_ports = 443) must keep the default:
     it would TypeError in the writer's filters on every batch, so no connection would be
@@ -95,11 +88,11 @@ def test_config_viewer_group_reset_when_missing(tmp_path):
 
 
 def test_config_unknown_options_warn(tmp_path, caplog):
-    """removed sections and typos must be reported, not silently ignored."""
-    (tmp_path / "config.toml").write_text('[virustotal]\napi_key = "x"\n[database]\nretention_dayz = 7\n')
+    """unknown sections and typos must be reported, not silently ignored."""
+    (tmp_path / "config.toml").write_text('[no_such_section]\nkey = "x"\n[database]\nretention_dayz = 7\n')
     config = load_config(tmp_path / "config.toml")
     assert config.database.raw_retention_days == 30
-    assert "config.virustotal: unknown section" in caplog.text
+    assert "config.no_such_section: unknown section" in caplog.text
     assert "config.database.retention_dayz: unknown option" in caplog.text
 
 
@@ -110,14 +103,14 @@ def test_missing_config_uses_defaults(tmp_path):
 def test_paths_follow_systemd_directories(tmp_path):
     """the daemon finds its directories where the unit put them; the first entry wins when a
     unit lists several, and a missing variable falls back to the default."""
-    code = "from picosnitch import constants as c; print(c.CONFIG_PATH, c.STATE_DIR, c.RUN_DIR, c.DB_PATH)"
-    env = {k: v for k, v in os.environ.items() if k not in ("PICOSNITCH_CONFIG", "CONFIGURATION_DIRECTORY", "STATE_DIRECTORY", "RUNTIME_DIRECTORY")}
+    code = "from tracct import constants as c; print(c.CONFIG_PATH, c.STATE_DIR, c.RUN_DIR, c.DB_PATH)"
+    env = {k: v for k, v in os.environ.items() if k not in ("TRACCT_CONFIG", "CONFIGURATION_DIRECTORY", "STATE_DIRECTORY", "RUNTIME_DIRECTORY")}
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
-    assert out == ["/etc/opt/picosnitch/config.toml", "/var/lib/picosnitch", "/run/picosnitch", "/var/lib/picosnitch/picosnitch.db"]
+    assert out == ["/etc/opt/tracct/config.toml", "/var/lib/tracct", "/run/tracct", "/var/lib/tracct/tracct.db"]
     env.update(CONFIGURATION_DIRECTORY=f"{tmp_path}/etc", STATE_DIRECTORY=f"{tmp_path}/state:{tmp_path}/other", RUNTIME_DIRECTORY=f"{tmp_path}/run")
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
-    assert out == [f"{tmp_path}/etc/config.toml", f"{tmp_path}/state", f"{tmp_path}/run", f"{tmp_path}/state/picosnitch.db"]
-    env["PICOSNITCH_CONFIG"] = f"{tmp_path}/custom.toml"
+    assert out == [f"{tmp_path}/etc/config.toml", f"{tmp_path}/state", f"{tmp_path}/run", f"{tmp_path}/state/tracct.db"]
+    env["TRACCT_CONFIG"] = f"{tmp_path}/custom.toml"
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.split()
     assert out[0] == f"{tmp_path}/custom.toml"
 
@@ -157,9 +150,9 @@ def _purge_db(tmp_path):
     """a database with the real schema, its sentinels, and ids 1 (kept) and 2 (to be orphaned)"""
     import sqlite3
 
-    from picosnitch.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
+    from tracct.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
 
-    con = sqlite3.connect(tmp_path / "picosnitch.db")
+    con = sqlite3.connect(tmp_path / "tracct.db")
     for table, schema in TABLES:
         con.execute(f"CREATE TABLE {table} ({schema}) STRICT")
     for statement in SENTINELS + INDEXES:
@@ -191,7 +184,7 @@ def _config(raw_days=7, rollup_days=365):
 def test_roll_up_sums_closed_periods(tmp_path):
     """each closed period becomes one rollup row per identity, without ephemeral ports; the
     open period and the newest row's period wait, and a second pass finds nothing new"""
-    import picosnitch.writer as writer
+    import tracct.writer as writer
 
     con = _purge_db(tmp_path)
     hour = 3600
@@ -212,7 +205,7 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     """raw rows past their window go in chunks once rolled up, rollups past theirs too, with a
     hook between chunks; then the lookup entries nothing refers to any more. recent rows,
     their entries and the sentinels stay"""
-    import picosnitch.writer as writer
+    import tracct.writer as writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
     con = _purge_db(tmp_path)
@@ -232,7 +225,7 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
 def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
     """raw rows past their window stay until their period is rolled up, and the rollup keeps
     their entries referenced"""
-    import picosnitch.writer as writer
+    import tracct.writer as writer
 
     con = _purge_db(tmp_path)
     now = int(time.time())
@@ -253,7 +246,7 @@ def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
 def test_purge_database_guards(tmp_path, monkeypatch):
     """a hook returning True ends the purge before the orphan cleanup; retention 0 keeps
     everything; a clock ahead of the newest row deletes nothing"""
-    import picosnitch.writer as writer
+    import tracct.writer as writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
     con = _purge_db(tmp_path)
@@ -272,9 +265,9 @@ def test_init_database_uses_wal(tmp_path, monkeypatch):
     """a new database is in WAL mode, and one made without it is converted at the next start"""
     import sqlite3
 
-    import picosnitch.cli as cli
+    import tracct.cli as cli
 
-    db = tmp_path / "picosnitch.db"
+    db = tmp_path / "tracct.db"
     monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
     monkeypatch.setattr(cli, "DB_PATH", db)
 
@@ -297,11 +290,11 @@ def test_init_database_uses_wal(tmp_path, monkeypatch):
 
 def test_quarantine_moves_wal_files(tmp_path):
     """the WAL files go along, or one would be replayed into the next database"""
-    for name in ("picosnitch.db", "picosnitch.db-wal"):
+    for name in ("tracct.db", "tracct.db-wal"):
         (tmp_path / name).write_bytes(name.encode())
-    utils.quarantine_database(tmp_path / "picosnitch.db")
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["picosnitch.db.bad", "picosnitch.db.bad-wal"]
-    assert (tmp_path / "picosnitch.db.bad-wal").read_bytes() == b"picosnitch.db-wal"
+    utils.quarantine_database(tmp_path / "tracct.db")
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["tracct.db.bad", "tracct.db.bad-wal"]
+    assert (tmp_path / "tracct.db.bad-wal").read_bytes() == b"tracct.db-wal"
 
 
 def test_db_is_corrupt(tmp_path):
@@ -309,8 +302,8 @@ def test_db_is_corrupt(tmp_path):
     quarantined) but not a valid or merely wrong-version one."""
     import sqlite3
 
-    from picosnitch.cli import _db_is_corrupt
-    from picosnitch.constants import DB_VERSION, TABLES
+    from tracct.cli import _db_is_corrupt
+    from tracct.constants import DB_VERSION, TABLES
 
     def mkdb(name, connections_cols=None, tables=True, version=DB_VERSION):
         p = tmp_path / name
@@ -347,11 +340,11 @@ def test_db_is_corrupt_ignores_transient_errors(tmp_path, monkeypatch):
     so a lock false-positive would quarantine the live database out from under the daemon."""
     import sqlite3
 
-    from picosnitch.cli import _db_is_corrupt
-    from picosnitch.constants import DB_VERSION
-    from picosnitch.utils import sqlite_error_means_corrupt
+    from tracct.cli import _db_is_corrupt
+    from tracct.constants import DB_VERSION
+    from tracct.utils import sqlite_error_means_corrupt
 
-    db = tmp_path / "picosnitch.db"
+    db = tmp_path / "tracct.db"
     con = sqlite3.connect(db)
     con.execute("CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER)")
     con.execute("CREATE TABLE domains (id INTEGER)")
@@ -376,10 +369,10 @@ def test_db_is_corrupt_ignores_transient_errors(tmp_path, monkeypatch):
 def test_check_database_handles_corrupt(tmp_path, monkeypatch):
     """check_database must return 1 (not crash with sqlite3.DatabaseError, which is not an
     OperationalError) on a corrupt db, so the boot path doesn't crash-loop before init quarantines it."""
-    import picosnitch.cli as cli
+    import tracct.cli as cli
 
-    monkeypatch.setattr(cli, "DB_PATH", tmp_path / "picosnitch.db")
-    (tmp_path / "picosnitch.db").write_bytes(b"not a sqlite database" * 8)
+    monkeypatch.setattr(cli, "DB_PATH", tmp_path / "tracct.db")
+    (tmp_path / "tracct.db").write_bytes(b"not a sqlite database" * 8)
     assert cli.check_database() == 1
 
 
@@ -399,7 +392,7 @@ def test_resolve_tool_prefers_trusted_dirs(tmp_path, monkeypatch):
     $PATH (a bare-name lookup would resolve the other one first)."""
     import pytest
 
-    from picosnitch import bpf_wrapper
+    from tracct import bpf_wrapper
 
     other = tmp_path / "other"
     other.mkdir()
@@ -410,7 +403,7 @@ def test_resolve_tool_prefers_trusted_dirs(tmp_path, monkeypatch):
     assert os.path.isabs(resolved)
     assert str(other) not in resolved
     with pytest.raises(RuntimeError):
-        bpf_wrapper._resolve_tool("picosnitch-no-such-build-tool-xyz")
+        bpf_wrapper._resolve_tool("tracct-no-such-build-tool-xyz")
 
 
 def test_dns_event_family_demux():
@@ -432,7 +425,7 @@ def test_exec_event_byte_synced_with_bpf():
 
 def test_conn_structs_byte_synced_with_bpf():
     """conn_key4_t/conn_key6_t/conn_val_t drive all send/recv/pkt accounting and the connection
-    key; the ctypes mirrors must stay byte-exact with picosnitch.bpf.c or counts silently corrupt."""
+    key; the ctypes mirrors must stay byte-exact with tracct.bpf.c or counts silently corrupt."""
     # keys are packed (_pack_=1): u32 pid+netns+(saddr,daddr), then u16 lport,dport,protocol,_pad
     assert ctypes.sizeof(ConnKey4) == 24  # 4+4 + 4+4 (v4 addrs) + 2*4
     assert (ConnKey4.saddr.offset, ConnKey4.daddr.offset, ConnKey4.dport.offset) == (8, 12, 18)
@@ -448,7 +441,7 @@ def test_proc_reads_survive_non_utf8_comm():
     """a process can set a non-UTF-8 comm via prctl(PR_SET_NAME); the monitor's /proc text
     readers must degrade to replacement chars, not raise UnicodeDecodeError (which dropped
     the process's drain entry) or misparse stat/status (ppid 0, uid 0)"""
-    from picosnitch.monitor import _read_proc_comm, _read_proc_ppid, _read_proc_status_uid
+    from tracct.monitor import _read_proc_comm, _read_proc_ppid, _read_proc_status_uid
 
     code = 'import ctypes, time\nctypes.CDLL(None).prctl(15, b"\\xff\\xfe*bad", 0, 0, 0)\nprint("x", flush=True)\ntime.sleep(30)'
     p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE)

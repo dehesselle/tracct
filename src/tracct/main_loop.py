@@ -10,12 +10,12 @@ import signal
 import threading
 import time
 
-from picosnitch.config import Config
-from picosnitch.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
-from picosnitch.monitor import run_monitor
-from picosnitch.types import BpfEvent
-from picosnitch.utils import DropOldestQueue, log_error, sd_notify
-from picosnitch.writer import run_writer
+from tracct.config import Config
+from tracct.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
+from tracct.monitor import run_monitor
+from tracct.types import BpfEvent
+from tracct.utils import DropOldestQueue, log_error, sd_notify
+from tracct.writer import run_writer
 
 # hand-off bounds, in events; the writer sums what it takes off its queue right away, so its
 # queue only fills while it writes or purges
@@ -86,7 +86,7 @@ def run_main_loop(config: Config) -> int:
     while not shutdown_event.is_set():
         if not all(thread.is_alive() for thread in threads):
             dead = " ".join(thread.name for thread in threads if not thread.is_alive())
-            logging.error(f"picosnitch thread died, exiting for the service manager to restart ({dead})")
+            logging.error(f"tracct thread died, exiting for the service manager to restart ({dead})")
             break
         resume_event.wait(timeout=5)
         if shutdown_event.is_set():

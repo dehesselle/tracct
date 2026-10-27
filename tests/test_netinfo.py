@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-from picosnitch import netinfo
-from picosnitch.rtnetlink import Address, Link
+from tracct import netinfo
+from tracct.rtnetlink import Address, Link
 
 
 def _snapshot(eth0_rx: int, eth0_tx: int) -> netinfo.Snapshot:

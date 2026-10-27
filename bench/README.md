@@ -21,11 +21,11 @@ Each configuration runs alone.
 
 Versions are read from each installed tool during the run and published in the Versions table of the generated report.
 Pinned versions are set in `lib/adapters.py`; Ubuntu package versions are whatever the archive ships on the run date, and are recorded rather than pinned.
-picosnitch is built from the source tree in this repository and run by its systemd unit.
+tracct is built from the source tree in this repository and run by its systemd unit.
 
 | Tool | Install | Extraction path |
 | --- | --- | --- |
-| picosnitch | source tree (uv, into /opt/picosnitch) | SQLite `/var/lib/picosnitch/picosnitch.db` (`connections`) |
+| tracct | source tree (uv, into /opt/tracct) | SQLite `/var/lib/tracct/tracct.db` (`connections`) |
 | OpenSnitch | pinned (release .deb) | connection log via journald (`journalctl -t opensnitch`) |
 | bandwhich | pinned (release binary) | `--raw --total-utilization --no-resolve --show-dns` stdout |
 | NetHogs | pinned (built from source) | `-t -C -v 2 -a -d 1 vbench0 lo` trace stdout |
@@ -160,11 +160,11 @@ bench/
 ## Running
 
 **Run this on a disposable machine.**
-As root it installs packages, replaces the configuration of every monitor it tests, deletes picosnitch and Little Snitch history, starts and stops system services, kills processes by name, and binds the peer server's ports.
+As root it installs packages, replaces the configuration of every monitor it tests, deletes tracct and Little Snitch history, starts and stops system services, kills processes by name, and binds the peer server's ports.
 It is not safe on a workstation.
 
 The only prerequisites beyond a stock Ubuntu 26.04 install are internet access for the pinned downloads and the compiled helpers.
-`lib/run.py` preflights the rest — `uv` (for picosnitch), `docker` with the `alpine:3.20` image (s17), the kernel SCTP module (s08) — and aborts before the matrix if any of it is missing, rather than letting a missing prerequisite score as a tool result.
+`lib/run.py` preflights the rest — `uv` (for tracct), `docker` with the `alpine:3.20` image (s17), the kernel SCTP module (s08) — and aborts before the matrix if any of it is missing, rather than letting a missing prerequisite score as a tool result.
 `lib/build.sh` installs its own build dependencies.
 
 On Ubuntu 26.04 (kernel 7.0):
@@ -176,10 +176,10 @@ sudo python3 lib/run.py --tools all     # install, run matrix, score, report
 
 ## Load test
 
-`lib/loadtest.py` measures picosnitch alone under sustained load, rather than scoring it
+`lib/loadtest.py` measures tracct alone under sustained load, rather than scoring it
 against other tools: its CPU and PSS, connection rows written per second, how much of the
 generated traffic it recorded, and the warnings it logged. It drives the installed unit
-(install it first, e.g. with one `run.py --tools picosnitch` pass) and has three phases:
+(install it first, e.g. with one `run.py --tools tracct` pass) and has three phases:
 
 | Phase | Load |
 | --- | --- |

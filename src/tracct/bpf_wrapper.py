@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-libbpf wrapper for picosnitch - replaces BCC dependency
+libbpf wrapper for tracct - replaces BCC dependency
 Uses ctypes to interface with libbpf.so directly for BPF CO-RE support
 """
 
@@ -123,11 +123,11 @@ def compile_bpf(output_path: str | None = None, arch: str | None = None) -> str:
     """
     Compile the BPF CO-RE program from source.
 
-    Generates vmlinux.h from the running kernel's BTF and compiles picosnitch.bpf.c.
+    Generates vmlinux.h from the running kernel's BTF and compiles tracct.bpf.c.
     Used by CI/build systems and as a fallback when no pre-compiled .bpf.o is found.
 
     Args:
-        output_path: Where to write the .bpf.o file. Defaults to src/picosnitch/bpf/picosnitch.bpf.o
+        output_path: Where to write the .bpf.o file. Defaults to src/tracct/bpf/tracct.bpf.o
         arch: Target architecture (x86_64, aarch64). Defaults to current machine.
 
     Returns:
@@ -141,11 +141,11 @@ def compile_bpf(output_path: str | None = None, arch: str | None = None) -> str:
     bpf_target_arch = {"x86_64": "x86", "aarch64": "arm64"}.get(arch, arch)
 
     bpf_src_dir = Path(__file__).resolve().parent / "bpf"
-    bpf_src = bpf_src_dir / "picosnitch.bpf.c"
+    bpf_src = bpf_src_dir / "tracct.bpf.c"
     vmlinux_h = bpf_src_dir / "vmlinux.h"
 
     if output_path is None:
-        output_path = str(bpf_src_dir / "picosnitch.bpf.o")
+        output_path = str(bpf_src_dir / "tracct.bpf.o")
 
     if not bpf_src.exists():
         raise FileNotFoundError(f"BPF source not found: {bpf_src}")
@@ -171,7 +171,7 @@ def compile_bpf(output_path: str | None = None, arch: str | None = None) -> str:
         f"-D__TARGET_ARCH_{bpf_target_arch}",
         "-Wall",
         "-Werror",
-        f"-ffile-prefix-map={bpf_src_dir}=picosnitch/bpf",
+        f"-ffile-prefix-map={bpf_src_dir}=tracct/bpf",
         # Anonymous forward decls inside structs in libbpf's curated vmlinux.h
         # trip -Wmissing-declarations; harmless for BPF compilation.
         "-Wno-missing-declarations",
@@ -205,24 +205,24 @@ def find_bpf_object() -> str:
         Path to the .bpf.o file.
     """
     arch = platform.machine()
-    bpf_filename = "picosnitch.bpf.o"
-    bpf_filename_arch = f"picosnitch.bpf.{arch}.o"
+    bpf_filename = "tracct.bpf.o"
+    bpf_filename_arch = f"tracct.bpf.{arch}.o"
     _pkg_dir = Path(__file__).resolve().parent
 
     search_paths = [
         _pkg_dir / "bpf" / bpf_filename_arch,
         _pkg_dir / "bpf" / bpf_filename,
-        Path("/usr/share/picosnitch/bpf") / bpf_filename_arch,
-        Path("/usr/share/picosnitch/bpf") / bpf_filename,
-        Path(sys.prefix) / "share" / "picosnitch" / "bpf" / bpf_filename_arch,
-        Path(sys.prefix) / "share" / "picosnitch" / "bpf" / bpf_filename,
+        Path("/usr/share/tracct/bpf") / bpf_filename_arch,
+        Path("/usr/share/tracct/bpf") / bpf_filename,
+        Path(sys.prefix) / "share" / "tracct" / "bpf" / bpf_filename_arch,
+        Path(sys.prefix) / "share" / "tracct" / "bpf" / bpf_filename,
     ]
     for path in search_paths:
         if path.exists():
             return str(path)
 
     # Fallback: compile from source
-    bpf_src = _pkg_dir / "bpf" / "picosnitch.bpf.c"
+    bpf_src = _pkg_dir / "bpf" / "tracct.bpf.c"
     if bpf_src.exists():
         return compile_bpf()
 
@@ -266,7 +266,7 @@ class DNSEvent(ctypes.Structure):
 
 
 # Per-connection aggregation maps. Key/value layouts must match the
-# conn_key4_t / conn_key6_t / conn_val_t structs in picosnitch.bpf.c exactly.
+# conn_key4_t / conn_key6_t / conn_val_t structs in tracct.bpf.c exactly.
 class ConnKey4(ctypes.Structure):
     """Key for the conn_stats4 map (IPv4 connection identity)."""
 
@@ -646,7 +646,7 @@ class BPFObject:
         O(map_size * n) overall. At high connection cardinality that took seconds per
         drain (measured ~3 s for 50k entries in a 65k map, and worse for a larger map),
         so the 1 Hz drain fell behind and the LRU maps evicted un-drained connections.
-        The batch op is a 5.6+ feature, well below picosnitch's supported kernel floor,
+        The batch op is a 5.6+ feature, well below tracct's supported kernel floor,
         so no pre-batch fallback is needed.
         """
         fd = self.get_map_fd(name)
@@ -801,7 +801,7 @@ class BPFObject:
 class BPF:
     """
     Main BPF class providing a BCC-compatible API.
-    This is the primary interface for picosnitch to interact with BPF.
+    This is the primary interface for tracct to interact with BPF.
     """
 
     def __init__(

@@ -18,7 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from picosnitch import rtnetlink
+from tracct import rtnetlink
 
 # where ip netns and docker keep their named namespaces
 NETNS_DIRS = ("/run/netns", "/run/docker/netns")

@@ -1,23 +1,23 @@
 # Operations
 
-This document covers running picosnitch as a systemd unit: its privileges, what it logs,
+This document covers running tracct as a systemd unit: its privileges, what it logs,
 how it behaves under load and on failure, upgrades and troubleshooting. The install steps
 are in the [README](../README.md).
 
 ## The unit
 
-`systemd/picosnitch.service` runs `/opt/picosnitch/bin/picosnitch run` with:
+`systemd/tracct.service` runs `/opt/tracct/bin/tracct run` with:
 
 - `Type=notify`: the unit is started once the BPF probes are attached, so units ordered
   after it are measured.
 - `DynamicUser=yes`: an unprivileged user created per start, holding only the capabilities
-  below. Its state lives in `/var/lib/private/picosnitch` (reached through the symlink
-  `/var/lib/picosnitch`), readable by root only.
-- `SupplementaryGroups=picosnitch-viewer`: lets the daemon hand `events.sock` to that
+  below. Its state lives in `/var/lib/private/tracct` (reached through the symlink
+  `/var/lib/tracct`), readable by root only.
+- `SupplementaryGroups=tracct-viewer`: lets the daemon hand `events.sock` to that
   group (the query socket gets it from its socket unit). The group comes from
-  `systemd/picosnitch.sysusers`; it cannot be called `picosnitch`, which `DynamicUser=`
+  `systemd/tracct.sysusers`; it cannot be called `tracct`, which `DynamicUser=`
   takes for itself. Set `[viewer] group` to match and add
-  viewers with `usermod -aG picosnitch-viewer <user>`.
+  viewers with `usermod -aG tracct-viewer <user>`.
 - `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
   dies and is restarted.
 - `LimitMEMLOCK=infinity` for the BPF maps and ring buffers, and a commented
@@ -26,20 +26,20 @@ are in the [README](../README.md).
 Day to day:
 
 ```sh
-systemctl status picosnitch
-journalctl -u picosnitch -f
-systemctl restart picosnitch     # after a config change
+systemctl status tracct
+journalctl -u tracct -f
+systemctl restart tracct     # after a config change
 ```
 
 ## The query service
 
-The history tabs of `picosnitch view` ask `picosnitch-query.service`, which systemd starts
-from `systemd/picosnitch-query.socket` on the first connection:
+The history tabs of `tracct view` ask `tracct-query.service`, which systemd starts
+from `systemd/tracct-query.socket` on the first connection:
 
-- The socket is `/run/picosnitch-query.sock`, mode 0660, group `picosnitch-viewer`, set by
-  systemd. It is not in `/run/picosnitch`, which systemd removes whenever `picosnitch.service`
+- The socket is `/run/tracct-query.sock`, mode 0660, group `tracct-viewer`, set by
+  systemd. It is not in `/run/tracct`, which systemd removes whenever `tracct.service`
   stops.
-- The service runs `picosnitch query-server` as the daemon's dynamic user (`User=picosnitch`)
+- The service runs `tracct query-server` as the daemon's dynamic user (`User=tracct`)
   with the same `StateDirectory=`, so it can read the database and share its WAL index. It
   opens the database read-only and has no capabilities and no network.
 - It exits after ten minutes without a connected viewer; the next one starts it again.
@@ -49,11 +49,11 @@ from `systemd/picosnitch-query.socket` on the first connection:
 Install and enable the socket; the service needs no enabling:
 
 ```sh
-install -m 644 systemd/picosnitch-query.socket systemd/picosnitch-query.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now picosnitch-query.socket
+install -m 644 systemd/tracct-query.socket systemd/tracct-query.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now tracct-query.socket
 ```
 
-`systemctl stop picosnitch-query.service` ends a running server; the socket stays and starts
+`systemctl stop tracct-query.service` ends a running server; the socket stays and starts
 a new one when needed.
 
 ## Forwarded traffic
@@ -66,8 +66,8 @@ from the host's setting. Setting the option when the module loads at boot covers
 every namespace created later:
 
 ```sh
-echo nf_conntrack > /etc/modules-load.d/picosnitch.conf
-echo 'options nf_conntrack acct=1' > /etc/modprobe.d/picosnitch.conf
+echo nf_conntrack > /etc/modules-load.d/tracct.conf
+echo 'options nf_conntrack acct=1' > /etc/modprobe.d/tracct.conf
 ```
 
 On a running system, set it for the namespaces still to come and in each existing one, then
@@ -86,7 +86,7 @@ reading off.
 
 ## Capabilities
 
-`picosnitch run` checks these at startup and exits if one is missing; the unit grants
+`tracct run` checks these at startup and exits if one is missing; the unit grants
 exactly these.
 
 | Capability | Why |
@@ -103,7 +103,7 @@ exactly these.
 
 Everything goes to stderr, which is the journal under the unit; lines carry their syslog
 priority. Startup logs the resolved config, state and runtime paths. Problems of capturing
-and writing are logged under `picosnitch.error`, among them:
+and writing are logged under `tracct.error`, among them:
 
 - a skipped or failed BPF hook and which traffic it leaves uncounted
 - `exec ring buffer full: dropped N exec event(s)`: raise
@@ -138,7 +138,7 @@ and writing are logged under `picosnitch.error`, among them:
 - `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
   its interfaces go unrecorded until it can
 
-The query service logs to its own unit (`journalctl -u picosnitch-query`): where it reads
+The query service logs to its own unit (`journalctl -u tracct-query`): where it reads
 from at start, and `query server: interrupted …` for a query stopped after 30 seconds.
 
 ## Resource use
@@ -181,19 +181,19 @@ again in a later window. `[log] reverse_dns = false` turns it off.
 
 - **Database write fails** (locked, disk full): rows are kept and retried each window; past
   100 000 pending rows the oldest are dropped and the drop is logged.
-- **Corrupt database**: moved to `picosnitch.db.bad` (with its `-wal` and `-shm` files) in
+- **Corrupt database**: moved to `tracct.db.bad` (with its `-wal` and `-shm` files) in
   the state directory and recreated on the next start. When the writer finds it while
   running, the daemon exits so that the unit restarts it on a new database; the window
   being written is lost.
 - **Database of another schema version**: the daemon refuses to start, leaving the file
   untouched (see [Upgrades](#upgrades)).
 - **Malformed config**: defaults are used and the problem is logged.
-- **Second instance**: refused while `picosnitch.lock` in the runtime directory is held.
+- **Second instance**: refused while `tracct.lock` in the runtime directory is held.
 - **Stop**: the reader drains the kernel maps once more and the writer writes everything
   it holds before the process exits, so a restart loses no counted traffic.
 - **Suspend and resume**: detected from the clocks; the reader drains the maps, unloads
   the BPF program and loads it again.
-  `systemctl kill -s SIGUSR1 --kill-whom=main picosnitch` forces the same.
+  `systemctl kill -s SIGUSR1 --kill-whom=main tracct` forces the same.
 - **Clock ahead of the data** (booted before NTP): the retention purge is skipped rather
   than wiping the database, and tried again on the next pass; the rollup does not pass the
   newest row's period.
@@ -215,15 +215,42 @@ to any more.
 
 ## Upgrades
 
-Install the new version into `/opt/picosnitch` and restart the unit. When a release changes
+Install the new version into `/opt/tracct` and restart the unit. When a release changes
 the schema version, the daemon refuses the old database: stop the unit, move
-`/var/lib/private/picosnitch/picosnitch.db` aside (with its `-wal` and `-shm` files), and
+`/var/lib/private/tracct/tracct.db` aside (with its `-wal` and `-shm` files), and
 start it again to get a new one.
+
+### Moving from a picosnitch install
+
+Installs from before the rename used the name picosnitch for the unit, user, group and
+paths. The database format is the same, so its history carries over:
+
+```sh
+systemctl disable --now picosnitch picosnitch-query.socket
+rm /etc/systemd/system/picosnitch.service /etc/systemd/system/picosnitch-query.*
+rm /etc/sysusers.d/picosnitch.conf
+```
+
+Then install tracct as in the [README](../README.md#install), but move the old
+configuration and database in place before the final `systemctl enable --now`:
+
+```sh
+install -d /etc/opt/tracct
+sed 's/picosnitch-viewer/tracct-viewer/' /etc/opt/picosnitch/config.toml > /etc/opt/tracct/config.toml
+install -d -m 700 /var/lib/private/tracct
+mv /var/lib/private/picosnitch/picosnitch.db /var/lib/private/tracct/tracct.db
+mv /var/lib/private/picosnitch/picosnitch.db-wal /var/lib/private/tracct/tracct.db-wal 2>/dev/null
+mv /var/lib/private/picosnitch/picosnitch.db-shm /var/lib/private/tracct/tracct.db-shm 2>/dev/null
+```
+
+systemd hands the state directory to the new dynamic user on start. Add viewers to
+`tracct-viewer` again (`usermod -aG tracct-viewer <user>`); the old group can be removed
+with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
 
 ## Troubleshooting
 
 - **`Missing capabilities: …`**: the unit file in `/etc/systemd/system` is older than the
-  installed version; copy `systemd/picosnitch.service` again and `systemctl daemon-reload`.
+  installed version; copy `systemd/tracct.service` again and `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
 - **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that
@@ -233,7 +260,7 @@ start it again to get a new one.
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
 - **`view`: no access to `events.sock`**: the user is not in the viewer group (log in again
   after `usermod`), or `[viewer] group` is not set.
-- **`view`: query server unavailable**: `picosnitch-query.socket` is not installed or not
-  enabled (`systemctl status picosnitch-query.socket`); with "no access", the user is not in
-  `picosnitch-viewer`. Errors of the server itself are in `journalctl -u picosnitch-query`.
+- **`view`: query server unavailable**: `tracct-query.socket` is not installed or not
+  enabled (`systemctl status tracct-query.socket`); with "no access", the user is not in
+  `tracct-viewer`. Errors of the server itself are in `journalctl -u tracct-query`.
 - **`Unsupported database version N, expected M`**: see [Upgrades](#upgrades).

@@ -13,9 +13,9 @@ import time
 
 import pytest
 
-from picosnitch import query_server
-from picosnitch.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
-from picosnitch.query import QueryClient, QueryError, recv_message
+from tracct import query_server
+from tracct.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
+from tracct.query import QueryClient, QueryError, recv_message
 
 H = 3600
 P0 = 100 * H
@@ -27,7 +27,7 @@ def _db(tmp_path):
     """four hours of history: the first two only as rollups (the second one's raw rows partly
     purged), the third rolled up and still raw, the fourth raw only. rows that must not be read
     (the purged period's raw remainder, the third period's rollup) carry large sums"""
-    db = tmp_path / "picosnitch.db"
+    db = tmp_path / "tracct.db"
     con = sqlite3.connect(db)
     for table, schema in TABLES:
         con.execute(f"CREATE TABLE {table} ({schema}) STRICT")
@@ -193,7 +193,7 @@ def test_bad_requests(tmp_path, request_, error):
 
 
 def test_database_missing_or_other_version(tmp_path):
-    response = query_server.QueryServer(tmp_path / "picosnitch.db").answer({"op": "describe"})
+    response = query_server.QueryServer(tmp_path / "tracct.db").answer({"op": "describe"})
     assert not response["ok"] and "no database" in response["error"]
     db = _db(tmp_path)
     con = sqlite3.connect(db)

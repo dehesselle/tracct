@@ -14,8 +14,8 @@ import socket
 import struct
 from pathlib import Path
 
-# created by picosnitch-query.socket; outside the daemon's runtime directory, which goes with the daemon
-QUERY_SOCKET_PATH = Path(os.getenv("PICOSNITCH_QUERY_SOCKET") or "/run/picosnitch-query.sock")
+# created by tracct-query.socket; outside the daemon's runtime directory, which goes with the daemon
+QUERY_SOCKET_PATH = Path(os.getenv("TRACCT_QUERY_SOCKET") or "/run/tracct-query.sock")
 # a response's bound; the server keeps its answers below it
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 

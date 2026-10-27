@@ -22,13 +22,13 @@ class BPFBuildHook(BuildHookInterface):
         # Skip BPF compilation for editable installs (used by `uv sync` /
         # dev workflows). The BPF object is only needed for runtime, not
         # for importing the package during development or testing.
-        if version == "editable" or os.environ.get("PICOSNITCH_SKIP_BPF_BUILD"):
+        if version == "editable" or os.environ.get("TRACCT_SKIP_BPF_BUILD"):
             return
 
         # The wheel has no C extension linked against glibc -- it ships a
         # precompiled BPF object (kernel bytecode, no userspace linkage) plus
         # pure-Python code that dlopen's libbpf.so via ctypes at runtime.
-        arch = os.environ.get("PICOSNITCH_BPF_TARGET_ARCH", platform.machine())
+        arch = os.environ.get("TRACCT_BPF_TARGET_ARCH", platform.machine())
         plat_tags = {
             "x86_64": "manylinux_2_34_x86_64",
             "aarch64": "manylinux_2_34_aarch64",
@@ -38,12 +38,12 @@ class BPFBuildHook(BuildHookInterface):
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{plat_tags[arch]}"
 
-        bpf_src_dir = os.path.join(self.root, "src", "picosnitch", "bpf")
-        bpf_src = os.path.join(bpf_src_dir, "picosnitch.bpf.c")
-        bpf_obj = os.path.join(bpf_src_dir, "picosnitch.bpf.o")
+        bpf_src_dir = os.path.join(self.root, "src", "tracct", "bpf")
+        bpf_src = os.path.join(bpf_src_dir, "tracct.bpf.c")
+        bpf_obj = os.path.join(bpf_src_dir, "tracct.bpf.o")
 
         def register(obj_path):
-            build_data.setdefault("force_include", {})[obj_path] = "picosnitch/bpf/picosnitch.bpf.o"
+            build_data.setdefault("force_include", {})[obj_path] = "tracct/bpf/tracct.bpf.o"
 
         if not os.path.exists(bpf_src):
             if os.path.exists(bpf_obj):
@@ -62,7 +62,7 @@ class BPFBuildHook(BuildHookInterface):
         bpf_target_arch = {"x86_64": "x86", "aarch64": "arm64"}[arch]
 
         # Select vmlinux.h with this precedence:
-        #   1. An existing src/picosnitch/bpf/vmlinux.h
+        #   1. An existing src/tracct/bpf/vmlinux.h
         #   2. Our vendored per-arch header
         #   3. bpftool BTF dump from the running kernel
         vmlinux_h = os.path.join(bpf_src_dir, "vmlinux.h")
@@ -78,7 +78,7 @@ class BPFBuildHook(BuildHookInterface):
                 raise RuntimeError(
                     f"Cannot compile BPF: no vendored vmlinux_{bpf_target_arch}.h and "
                     "/sys/kernel/btf/vmlinux not available.\n"
-                    "Either provide a pre-compiled bpf/picosnitch.bpf.o or build "
+                    "Either provide a pre-compiled bpf/tracct.bpf.o or build "
                     "on a kernel with CONFIG_DEBUG_INFO_BTF=y"
                 )
             result = subprocess.run(

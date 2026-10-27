@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: 0BSD
 
 """Tests for the Textual viewer, driven headless against a query server on a temporary socket
-and a live feed publisher. No root needed; skipped without textual (picosnitch[tui])."""
+and a live feed publisher. No root needed; skipped without textual (tracct[tui])."""
 
 import asyncio
 import threading
@@ -16,12 +16,12 @@ pytest.importorskip("textual")
 from test_query_server import P0, VPN, H, _db  # noqa: E402
 from textual.widgets import DataTable  # noqa: E402
 
-from picosnitch import live_feed, query_server  # noqa: E402
-from picosnitch.viewer.app import TimeRange, ViewerApp  # noqa: E402
-from picosnitch.viewer.format import SPANS, display, format_bytes  # noqa: E402
-from picosnitch.viewer.history import HistoryPane, bucket_step  # noqa: E402
-from picosnitch.viewer.live import LivePane, remote  # noqa: E402
-from picosnitch.viewer.timeline import Timeline  # noqa: E402
+from tracct import live_feed, query_server  # noqa: E402
+from tracct.viewer.app import TimeRange, ViewerApp  # noqa: E402
+from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
+from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
+from tracct.viewer.live import LivePane, remote  # noqa: E402
+from tracct.viewer.timeline import Timeline  # noqa: E402
 
 
 def test_format():

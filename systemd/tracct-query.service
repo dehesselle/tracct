@@ -3,20 +3,20 @@
 # SPDX-License-Identifier: 0BSD
 
 [Unit]
-Description=picosnitch history queries
-Requires=picosnitch-query.socket
-After=picosnitch-query.socket
+Description=tracct history queries
+Requires=tracct-query.socket
+After=tracct-query.socket
 
 [Service]
-# started by picosnitch-query.socket; exits once no viewer has been connected for 10 minutes
-ExecStart=/opt/picosnitch/bin/picosnitch query-server
+# started by tracct-query.socket; exits once no viewer has been connected for 10 minutes
+ExecStart=/opt/tracct/bin/tracct query-server
 Restart=on-failure
 
 # the daemon's dynamic user (named after its unit) and state directory: the database is readable
 # and the WAL index shared; the database itself is opened read-only
 DynamicUser=yes
-User=picosnitch
-StateDirectory=picosnitch
+User=tracct
+StateDirectory=tracct
 
 # no capabilities, no network; the socket comes from systemd
 CapabilityBoundingSet=

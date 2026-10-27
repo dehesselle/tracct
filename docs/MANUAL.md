@@ -1,28 +1,28 @@
 # Manual
 
-This document covers the `picosnitch` commands, the configuration file and the paths the
+This document covers the `tracct` commands, the configuration file and the paths the
 daemon and viewers use. Installing and running the unit is in [OPERATIONS.md](OPERATIONS.md).
 
 ## Commands
 
 ```text
-picosnitch run|view|query-server|version|help
+tracct run|view|query-server|version|help
 ```
 
 | Command | What it does | Needs |
 | --- | --- | --- |
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
-| `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `picosnitch[tui]`, access to `events.sock` and the query socket |
-| `query-server` | answer the viewer's history queries; this is what `picosnitch-query.service` starts | read access to the database |
-| `version` | print the version | |
+| `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[tui]`, access to `events.sock` and the query socket |
+| `query-server` | answer the viewer's history queries; this is what `tracct-query.service` starts | read access to the database |
+| `version` | print the version (`--version` does the same) | |
 | `help` | print usage and the resolved paths | |
 
 `view` works for root and for members of the viewer group (`[viewer] group`, and the group
-of `picosnitch-query.socket`). Press `?` in it for its keys.
+of `tracct-query.socket`). Press `?` in it for its keys.
 
 ### The viewer
 
-`picosnitch view` needs the `tui` extra (`uv pip install 'picosnitch[tui]'`). It has four
+`tracct view` needs the `tui` extra (`uv pip install 'tracct[tui]'`). It has four
 tabs, switched with `1` to `4`:
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
@@ -46,7 +46,7 @@ forwarded flow's source, ephemeral ports as 0. Dimensions marked "raw only" narr
 to the raw rows, and the status line says from when.
 
 ```text
-picosnitch view [--tab live|processes|interfaces|forwarded] [--events-socket PATH] [--query-socket PATH]
+tracct view [--tab live|processes|interfaces|forwarded] [--events-socket PATH] [--query-socket PATH]
 ```
 
 ## Configuration
@@ -109,10 +109,10 @@ apply. Viewers use the same rules, so they find the defaults unless the variable
 
 | What | Variable | Default |
 | --- | --- | --- |
-| configuration file | `PICOSNITCH_CONFIG` (a file), else `$CONFIGURATION_DIRECTORY/config.toml` | `/etc/opt/picosnitch/config.toml` |
-| state directory with `picosnitch.db` | `STATE_DIRECTORY` | `/var/lib/picosnitch` |
-| runtime directory with `events.sock`, `picosnitch.lock` | `RUNTIME_DIRECTORY` | `/run/picosnitch` |
-| query socket, from `picosnitch-query.socket` | `PICOSNITCH_QUERY_SOCKET` | `/run/picosnitch-query.sock` |
+| configuration file | `TRACCT_CONFIG` (a file), else `$CONFIGURATION_DIRECTORY/config.toml` | `/etc/opt/tracct/config.toml` |
+| state directory with `tracct.db` | `STATE_DIRECTORY` | `/var/lib/tracct` |
+| runtime directory with `events.sock`, `tracct.lock` | `RUNTIME_DIRECTORY` | `/run/tracct` |
+| query socket, from `tracct-query.socket` | `TRACCT_QUERY_SOCKET` | `/run/tracct-query.sock` |
 
 When a variable lists several directories separated by colons, the first one is used. The
 options of `view` override both sockets. Outside socket activation, `query-server` creates its

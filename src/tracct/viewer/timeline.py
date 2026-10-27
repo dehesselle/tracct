@@ -12,7 +12,7 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from picosnitch.viewer.format import duration, format_bytes, moment
+from tracct.viewer.format import duration, format_bytes, moment
 
 _EIGHTHS = " ▁▂▃▄▅▆▇█"
 

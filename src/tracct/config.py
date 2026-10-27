@@ -10,7 +10,7 @@ import logging
 import tomllib
 from pathlib import Path
 
-from picosnitch.constants import CONFIG_PATH
+from tracct.constants import CONFIG_PATH
 
 
 @dataclasses.dataclass

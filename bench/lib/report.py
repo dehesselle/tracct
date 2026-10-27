@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -19,9 +20,9 @@ LAYER_REF = {
     "ippayload": "IP payload bytes (L3 minus the IP header per packet)",
 }
 SHORT = {"PASS": "✅", "PARTIAL": "🟡", "FAIL": "❌", "N/A": "⬜", "ERROR": "⚠️"}
-TOOL_ORDER = ["picosnitch", "nethogs", "bandwhich", "opensnitch", "sniffnet", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig"]
+TOOL_ORDER = ["tracct", "nethogs", "bandwhich", "opensnitch", "sniffnet", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig"]
 TOOL_LABEL = {
-    "picosnitch": "picosnitch",
+    "tracct": "tracct",
     "nethogs": "NetHogs",
     "bandwhich": "bandwhich",
     "opensnitch": "OpenSnitch",
@@ -247,7 +248,7 @@ def write_findings():
     # neutral ordering for the scoreboard: by detection then bandwidth PASS
     order = sorted(tools, key=lambda t: (-C[t]["det_pass"], -C[t]["bw_pass"]))
 
-    REPO = "https://github.com/elesiuta/picosnitch/tree/master/bench"
+    REPO = ".."  # the reports live in bench/reports/
     L = [
         "# Per-process network & bandwidth monitors on Linux\n",
         "<!-- --8<-- [start:overview] -->",

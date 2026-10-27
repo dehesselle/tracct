@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Load test for the picosnitch daemon: its cost and its losses under sustained load.
+"""Load test for the tracct daemon: its cost and its losses under sustained load.
 
 Runs against the installed unit (it does not install or restart anything) and drives
 three phases, each measured on its own:
@@ -39,8 +39,8 @@ from resprof import ResProfiler
 
 BENCH = Path(__file__).resolve().parent.parent
 BENCHLOAD = BENCH / "bin" / "benchload"
-DB = "/var/lib/picosnitch/picosnitch.db"
-CONFIG = Path("/etc/opt/picosnitch/config.toml")
+DB = "/var/lib/tracct/tracct.db"
+CONFIG = Path("/etc/opt/tracct/config.toml")
 SINK_PORT = 9300
 CHURN_PORT = 20000
 # below the ephemeral range, so no other row has a remote port in it
@@ -63,7 +63,7 @@ def sh(cmd: str) -> str:
 
 
 def daemon_pids() -> list[int]:
-    pid = sh("systemctl show -p MainPID --value picosnitch")
+    pid = sh("systemctl show -p MainPID --value tracct")
     return [int(pid)] if pid.isdigit() and int(pid) > 0 else []
 
 
@@ -87,14 +87,14 @@ def max_rowid() -> int:
 
 
 def journal_cursor() -> str:
-    out = sh("journalctl -u picosnitch -n 0 --show-cursor --no-pager")
+    out = sh("journalctl -u tracct -n 0 --show-cursor --no-pager")
     m = re.search(r"-- cursor: (\S+)", out)
     return m.group(1) if m else ""
 
 
 def journal_warnings(cursor: str) -> dict:
-    out = sh(f"journalctl -u picosnitch --after-cursor='{cursor}' -o cat --no-pager") if cursor else ""
-    lines = [line for line in out.splitlines() if "picosnitch.error" in line or "Traceback" in line]
+    out = sh(f"journalctl -u tracct --after-cursor='{cursor}' -o cat --no-pager") if cursor else ""
+    lines = [line for line in out.splitlines() if "tracct.error" in line or "Traceback" in line]
     counts = {name: sum(1 for line in lines if rx.search(line)) for name, rx in WARNINGS.items()}
     counts["other"] = len(lines) - sum(counts.values())
     return {"counts": counts, "samples": lines[:8]}
@@ -220,9 +220,9 @@ def main() -> int:
         print(f"missing {BENCHLOAD} (compile the helpers first: sudo bash lib/build.sh)", file=sys.stderr)
         return 2
     if not daemon_pids():
-        print("the picosnitch unit is not running", file=sys.stderr)
+        print("the tracct unit is not running", file=sys.stderr)
         return 2
-    report = {"version": sh("/opt/picosnitch/bin/picosnitch version"), "write_limit_seconds": write_limit(), "phases": {}}
+    report = {"version": sh("/opt/tracct/bin/tracct version"), "write_limit_seconds": write_limit(), "phases": {}}
     for name in args.phases.split(","):
         print(f"== {name} ({args.seconds:g}s) ...", flush=True)
         res = run_phase(name, args)

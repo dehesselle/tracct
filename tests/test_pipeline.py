@@ -10,12 +10,12 @@ import threading
 import time
 import typing
 
-import picosnitch.cli as cli
-import picosnitch.writer as writer
-from picosnitch.config import Config
-from picosnitch.reverse_dns import ReverseDns
-from picosnitch.types import BpfEvent
-from picosnitch.utils import DropOldestQueue
+import tracct.cli as cli
+import tracct.writer as writer
+from tracct.config import Config
+from tracct.reverse_dns import ReverseDns
+from tracct.types import BpfEvent
+from tracct.utils import DropOldestQueue
 
 
 def _event(**fields) -> BpfEvent:
@@ -125,8 +125,8 @@ class _FakeNetInfo:
 def test_window_interfaces_and_flows():
     """a row carries the interface of its local address, a TUN row the device of its process;
     forwarded flows are summed per flow and named by reverse DNS of the answering side"""
-    from picosnitch.conntrack import Flow
-    from picosnitch.netinfo import NetInfo
+    from tracct.conntrack import Flow
+    from tracct.netinfo import NetInfo
 
     netinfo = _FakeNetInfo()
     dns = _FakeDns()
@@ -142,7 +142,7 @@ def test_window_interfaces_and_flows():
 
 
 def _init_database(tmp_path, monkeypatch):
-    db = tmp_path / "picosnitch.db"
+    db = tmp_path / "tracct.db"
     monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
     monkeypatch.setattr(cli, "DB_PATH", db)
     monkeypatch.setattr(writer, "DB_PATH", db)
@@ -213,4 +213,4 @@ def test_writer_quarantines_unusable_db(tmp_path, monkeypatch):
     thread.join(timeout=10)
     assert not thread.is_alive()
     assert failures == [sqlite3.DatabaseError]
-    assert (tmp_path / "picosnitch.db.bad").exists() and not db.exists()
+    assert (tmp_path / "tracct.db.bad").exists() and not db.exists()

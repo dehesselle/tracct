@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-          # Only need the tests/ directory; install picosnitch from the wheel
+          # Only need the tests/ directory; install tracct from the wheel
           # that the build job produced rather than from the working tree.
           sparse-checkout: |
             tests
@@ -74,12 +74,12 @@ jobs:
           version: "0.11.26"
           python-version: ${{ matrix.python-version }}
       - name: Install runtime dependencies
-        # libbpf1 provides libbpf.so for picosnitch's ctypes wrapper.
+        # libbpf1 provides libbpf.so for tracct's ctypes wrapper.
         # curl/wget are exercised by the tests as short-lived processes.
         run: |
           sudo apt-get update
           sudo apt-get install -y libbpf1 curl wget
-      - name: Install picosnitch wheel (with the viewer) + pytest into venv
+      - name: Install tracct wheel (with the viewer) + pytest into venv
         run: |
           uv venv
           uv pip install "$(ls dist/*.whl)[tui]" textual==8.2.8 pytest==9.1.1

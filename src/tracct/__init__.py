@@ -3,9 +3,6 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-import sys
+import logging
 
-from picosnitch.cli import start_picosnitch
-
-if __name__ == "__main__":
-    sys.exit(start_picosnitch())
+logging.basicConfig(level=logging.INFO)

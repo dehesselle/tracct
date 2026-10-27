@@ -7,7 +7,7 @@
 import threading
 import time
 
-import picosnitch.reverse_dns as reverse_dns
+import tracct.reverse_dns as reverse_dns
 
 
 def _wait_for(lookup, ip: str) -> str:

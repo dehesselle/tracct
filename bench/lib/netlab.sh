@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# netlab.sh — isolated, reproducible network lab for the picosnitch benchmark.
+# netlab.sh — isolated, reproducible network lab for the tracct benchmark.
 #
 # Builds a dedicated "remote peer" inside its own network namespace connected to
 # the host over a veth pair, so benchmark traffic crosses a real interface

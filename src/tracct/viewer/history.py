@@ -18,12 +18,12 @@ from textual.widgets import DataTable, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
-from picosnitch.query import QueryError
-from picosnitch.viewer.format import bytes_cell, display, moment, value_cell
-from picosnitch.viewer.timeline import Timeline
+from tracct.query import QueryError
+from tracct.viewer.format import bytes_cell, display, moment, value_cell
+from tracct.viewer.timeline import Timeline
 
 if TYPE_CHECKING:
-    from picosnitch.viewer.app import ViewerApp
+    from tracct.viewer.app import ViewerApp
 
 # rows asked for per request; the status line says when there are more
 ROWS = 1000

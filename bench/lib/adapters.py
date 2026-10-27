@@ -10,7 +10,7 @@ The runner runs as root, so sh() calls here already have privileges.
 
 Collection model: every monitor runs continuously for its whole session. For
 cumulative-total tools (nethogs, bandwhich) we snapshot per-process totals in
-pre_trial() and take the delta in collect(). For event/log tools (picosnitch
+pre_trial() and take the delta in collect(). For event/log tools (tracct
 rowid, opensnitch journald, bcc) we window by the trial's exe /
 time / rowid. Failures degrade to a noted Observation rather than aborting.
 """
@@ -89,7 +89,7 @@ class ToolAdapter:
     def collect(self, gt: GT) -> Observation:
         raise NotImplementedError
 
-    # Shared cumulative-bandwidth polling model (nethogs, bandwhich; picosnitch's
+    # Shared cumulative-bandwidth polling model (nethogs, bandwhich; tracct's
     # collect() applies the same budget to its database reads). Every monotonic-
     # cumulative tool gets the SAME budget so none is advantaged by a longer
     # window: poll until the known ground-truth amount is reached (fast path),
@@ -164,47 +164,47 @@ def _systemd_mainpid(service):
 
 
 # --------------------------------------------------------------------------- #
-# picosnitch: built from this source tree into /opt/picosnitch, run by its unit
+# tracct: built from this source tree into /opt/tracct, run by its unit
 # --------------------------------------------------------------------------- #
-class Picosnitch(ToolAdapter):
-    name = "picosnitch"
-    PREFIX = "/opt/picosnitch"
-    VERSION_CMD = f"{PREFIX}/bin/picosnitch version"
+class Tracct(ToolAdapter):
+    name = "tracct"
+    PREFIX = "/opt/tracct"
+    VERSION_CMD = f"{PREFIX}/bin/tracct version"
     VERSION_SOURCE = "source tree"
     layer = "socket"
     settle = 2.0  # small; collect() polls until the DB flush stabilizes
-    DB = "/var/lib/picosnitch/picosnitch.db"  # the unit's StateDirectory, a symlink into /var/lib/private
+    DB = "/var/lib/tracct/tracct.db"  # the unit's StateDirectory, a symlink into /var/lib/private
     SRC = BENCH.parent
 
     def install(self):
         # config first, unconditionally: local DB, fine time resolution -- a
         # pre-existing install must not run the benchmark under different settings.
-        Path("/etc/opt/picosnitch").mkdir(parents=True, exist_ok=True)
-        Path("/etc/opt/picosnitch/config.toml").write_text(
+        Path("/etc/opt/tracct").mkdir(parents=True, exist_ok=True)
+        Path("/etc/opt/tracct/config.toml").write_text(
             "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
         # always rebuild: the tree under test is whatever is checked out
         if not Path(f"{self.PREFIX}/bin/python").exists():
             r = sh(f"uv venv {self.PREFIX}", timeout=600)
             if r.returncode != 0:
-                raise RuntimeError(f"picosnitch venv failed: {r.stderr}\n{r.stdout}")
-        r = sh(f"VIRTUAL_ENV={self.PREFIX} uv pip install --reinstall-package picosnitch {self.SRC}", timeout=900)
+                raise RuntimeError(f"tracct venv failed: {r.stderr}\n{r.stdout}")
+        r = sh(f"VIRTUAL_ENV={self.PREFIX} uv pip install --reinstall-package tracct {self.SRC}", timeout=900)
         if r.returncode != 0:
-            raise RuntimeError(f"picosnitch install failed: {r.stderr}\n{r.stdout}")
-        sh(f"install -m 644 {self.SRC}/systemd/picosnitch.service /etc/systemd/system/picosnitch.service")
+            raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
+        sh(f"install -m 644 {self.SRC}/systemd/tracct.service /etc/systemd/system/tracct.service")
         # -D: a stock install has no /etc/sysusers.d, and without the viewer group the unit cannot start
-        sh(f"install -D -m 644 {self.SRC}/systemd/picosnitch.sysusers /etc/sysusers.d/picosnitch.conf")
+        sh(f"install -D -m 644 {self.SRC}/systemd/tracct.sysusers /etc/sysusers.d/tracct.conf")
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")
 
     def start(self):
         # Fresh DB each run so this run's rows are unambiguous (names repeat across runs).
-        sh("systemctl stop picosnitch")
-        sh("rm -f /var/lib/private/picosnitch/picosnitch.db /var/lib/private/picosnitch/picosnitch.db-wal /var/lib/private/picosnitch/picosnitch.db-shm")
-        sh("systemctl restart picosnitch")
+        sh("systemctl stop tracct")
+        sh("rm -f /var/lib/private/tracct/tracct.db /var/lib/private/tracct/tracct.db-wal /var/lib/private/tracct/tracct.db-shm")
+        sh("systemctl restart tracct")
         # wait for the daemon + DB to come up
         for _ in range(40):
-            if Path(self.DB).exists() and sh("systemctl is-active --quiet picosnitch").returncode == 0:
+            if Path(self.DB).exists() and sh("systemctl is-active --quiet tracct").returncode == 0:
                 break
             time.sleep(0.5)
         time.sleep(3)
@@ -246,7 +246,7 @@ class Picosnitch(ToolAdapter):
 
     def collect(self, gt: GT) -> Observation:
         snap = self._snap["rowid"]
-        # picosnitch flushes a connection's bytes across several write windows, so
+        # tracct flushes a connection's bytes across several write windows, so
         # the sum can look "stable" mid-flush and a single stable read can miss a
         # late-flushing row. Wait until it has plainly captured everything
         # (reached ~the known amount, since its hooks count app bytes) OR has
@@ -256,7 +256,7 @@ class Picosnitch(ToolAdapter):
         stable = zero = 0
         sent = recv = 0
         names, attributed, elsewhere = [], False, False
-        # Poll cadence + thresholds. picosnitch eventually reports the full byte
+        # Poll cadence + thresholds. tracct eventually reports the full byte
         # count, but its flush-to-SQLite latency after a transfer is bursty and long
         # (measured up to ~10s on a full-duplex trial with upstream's writer pipeline
         # and executable hashing). The target fast-path below breaks in a
@@ -301,10 +301,10 @@ class Picosnitch(ToolAdapter):
         )
 
     def pids(self):
-        return _systemd_mainpid("picosnitch")
+        return _systemd_mainpid("tracct")
 
     def stop(self):
-        sh("systemctl stop picosnitch")
+        sh("systemctl stop tracct")
 
 
 def _drop_noise(u_s, u_r, total_s, total_r, ref, floor=0.01):
@@ -1383,4 +1383,4 @@ class Sysdig(ToolAdapter):
         sh("pkill -f 'sysdig -p'")
 
 
-ADAPTERS = {c.name: c for c in [Picosnitch, Nethogs, Bandwhich, OpenSnitch, Sniffnet, LittleSnitch, Bcc, BccTcptop, Bpftrace, Sysdig]}
+ADAPTERS = {c.name: c for c in [Tracct, Nethogs, Bandwhich, OpenSnitch, Sniffnet, LittleSnitch, Bcc, BccTcptop, Bpftrace, Sysdig]}

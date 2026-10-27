@@ -16,11 +16,11 @@ import threading
 import time
 import typing
 
-from picosnitch.bpf_wrapper import BPF, ConnKey4, ConnKey6, ConnKeyPacket, ConnVal, check_bpf_requirements, find_bpf_object, kernel_symbol_addrs
-from picosnitch.config import Config
-from picosnitch.constants import ST_DEV_MASK
-from picosnitch.types import BpfEvent
-from picosnitch.utils import log_error
+from tracct.bpf_wrapper import BPF, ConnKey4, ConnKey6, ConnKeyPacket, ConnVal, check_bpf_requirements, find_bpf_object, kernel_symbol_addrs
+from tracct.config import Config
+from tracct.constants import ST_DEV_MASK
+from tracct.types import BpfEvent
+from tracct.utils import log_error
 
 # entries per drain handoff: one per event costs a hand-off each, one per drain lands a burst at once
 CONN_DRAIN_CHUNK: typing.Final[int] = 2048

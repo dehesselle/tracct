@@ -25,7 +25,7 @@ import struct
 import threading
 from collections.abc import Callable, Iterator, Mapping
 
-from picosnitch.netinfo import run_in_netns
+from tracct.netinfo import run_in_netns
 
 NETLINK_NETFILTER = 12
 NFNL_SUBSYS_CTNETLINK = 1

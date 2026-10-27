@@ -11,7 +11,7 @@ pkill -9 -x nethogs 2>/dev/null
 pkill -9 -f "sniffnet|Xvfb|tcplife|tcpconnect|benchserver|tcpdump" 2>/dev/null
 pkill -9 -f "bcc/tools/tcptop|bpftrace -e|sysdig -p|import -window" 2>/dev/null
 pkill -9 -f "/opt/bench/run/" 2>/dev/null
-systemctl stop picosnitch opensnitch littlesnitch 2>/dev/null
+systemctl stop tracct opensnitch littlesnitch 2>/dev/null
 systemctl stop 'lsbench*' 2>/dev/null
 # apt timers must not install anything mid-run: recorded distro versions must hold
 systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades 2>/dev/null

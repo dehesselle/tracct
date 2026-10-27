@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2020 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -133,8 +134,11 @@ dmypy.json
 .pyre/
 
 # BPF generated files
-src/picosnitch/bpf/vmlinux.h
-src/picosnitch/bpf/*.bpf.o
+src/tracct/bpf/vmlinux.h
+src/tracct/bpf/*.bpf.o
+
+# written by hatch-vcs at build time
+src/tracct/version.py
 
 # MkDocs build output
 site/

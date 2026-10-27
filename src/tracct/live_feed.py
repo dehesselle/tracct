@@ -5,7 +5,7 @@
 
 """
 Live event feed published over a UNIX socket so external readers
-(the live tab of picosnitch view, custom tools) can subscribe to network
+(the live tab of tracct view, custom tools) can subscribe to network
 events in real time without polling the database.
 """
 
@@ -19,7 +19,7 @@ import socket
 import threading
 from pathlib import Path
 
-from picosnitch.constants import RUN_DIR
+from tracct.constants import RUN_DIR
 
 EVENTS_SOCKET_PATH = RUN_DIR / "events.sock"
 MAX_SUBSCRIBERS = 32
@@ -34,7 +34,7 @@ def feed_closed_reason(path: Path | None = None) -> str:
     socket that is still there means this subscriber was dropped (or the daemon restarted)."""
     if (path or EVENTS_SOCKET_PATH).exists():
         return f"the daemon dropped this viewer after it fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind (or the daemon restarted)"
-    return "the picosnitch daemon stopped"
+    return "the tracct daemon stopped"
 
 
 class _Subscriber:
@@ -109,7 +109,7 @@ class LiveFeedPublisher:
 
     def has_subscribers(self) -> bool:
         """True if anyone is listening, so callers can skip serializing an event no
-        one will read -- the common case (no live tab of picosnitch view open)."""
+        one will read -- the common case (no live tab of tracct view open)."""
         return self._sock is not None and bool(self._subscribers)
 
     def publish(self, event: dict) -> None:

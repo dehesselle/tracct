@@ -7,21 +7,21 @@ benchmark.
 
 | Path | Contents |
 | --- | --- |
-| `src/picosnitch/bpf/picosnitch.bpf.c` | the BPF program (tracked against upstream) |
-| `src/picosnitch/bpf_wrapper.py` | ctypes libbpf wrapper and struct mirrors (tracked against upstream) |
-| `src/picosnitch/cli.py` | commands, capability and database checks, schema creation |
-| `src/picosnitch/main_loop.py` | starts and supervises the threads, the live feed thread |
-| `src/picosnitch/monitor.py` | the reader thread: BPF attach, drain, attribution |
-| `src/picosnitch/writer.py` | the writer thread: aggregation, filters, SQLite, rollups, retention |
-| `src/picosnitch/reverse_dns.py` | the reverse DNS workers |
-| `src/picosnitch/netinfo.py`, `rtnetlink.py` | namespaces, interfaces and their counters, via rtnetlink |
-| `src/picosnitch/conntrack.py` | forwarded flows from connection tracking, via ctnetlink |
-| `src/picosnitch/utils.py`, `types.py` | the hand-off queue between threads and the event passed through it, logging and SQLite helpers |
-| `src/picosnitch/config.py`, `constants.py` | configuration, paths, schema |
-| `src/picosnitch/live_feed.py` | `events.sock` publisher and subscriber |
-| `src/picosnitch/query.py` | the query socket's message framing and client |
-| `src/picosnitch/query_server.py` | the query server: sources, dimensions, raw and rollup routing, socket activation |
-| `src/picosnitch/viewer/` | `view` (Textual): app, live tab, history tabs, timeline |
+| `src/tracct/bpf/tracct.bpf.c` | the BPF program (kept close to picosnitch's) |
+| `src/tracct/bpf_wrapper.py` | ctypes libbpf wrapper and struct mirrors (kept close to picosnitch's) |
+| `src/tracct/cli.py` | commands, capability and database checks, schema creation |
+| `src/tracct/main_loop.py` | starts and supervises the threads, the live feed thread |
+| `src/tracct/monitor.py` | the reader thread: BPF attach, drain, attribution |
+| `src/tracct/writer.py` | the writer thread: aggregation, filters, SQLite, rollups, retention |
+| `src/tracct/reverse_dns.py` | the reverse DNS workers |
+| `src/tracct/netinfo.py`, `rtnetlink.py` | namespaces, interfaces and their counters, via rtnetlink |
+| `src/tracct/conntrack.py` | forwarded flows from connection tracking, via ctnetlink |
+| `src/tracct/utils.py`, `types.py` | the hand-off queue between threads and the event passed through it, logging and SQLite helpers |
+| `src/tracct/config.py`, `constants.py` | configuration, paths, schema |
+| `src/tracct/live_feed.py` | `events.sock` publisher and subscriber |
+| `src/tracct/query.py` | the query socket's message framing and client |
+| `src/tracct/query_server.py` | the query server: sources, dimensions, raw and rollup routing, socket activation |
+| `src/tracct/viewer/` | `view` (Textual): app, live tab, history tabs, timeline |
 | `systemd/` | daemon unit, query socket and service, sysusers file |
 | `hatch_build.py` | build hook compiling the BPF object into the wheel |
 | `bench/` | accuracy and overhead benchmark against other tools |
@@ -39,12 +39,17 @@ pins it for the tests.
 ## Building
 
 ```sh
-uv sync                                         # dev tools; an editable install, without the BPF object
-uv pip install --reinstall-package picosnitch .  # a real build, compiling picosnitch.bpf.o
+uv sync                                      # dev tools; an editable install, without the BPF object
+uv pip install --reinstall-package tracct .  # a real build, compiling tracct.bpf.o
 ```
 
-Editable installs skip the BPF build, as does `PICOSNITCH_SKIP_BPF_BUILD=1`. The build
-reuses `src/picosnitch/bpf/picosnitch.bpf.o` while it is newer than the source.
+Editable installs skip the BPF build, as does `TRACCT_SKIP_BPF_BUILD=1`. The build
+reuses `src/tracct/bpf/tracct.bpf.o` while it is newer than the source.
+
+The version comes from git: hatch-vcs runs `git describe` against the `v*` tags and writes
+`src/tracct/version.py` (ignored by git), so a build needs a git checkout or an sdist. After
+a commit or tag, `uv sync --reinstall-package tracct` refreshes it. picosnitch's release tags
+are kept as `picosnitch-<version>` and do not count.
 
 ## Checks
 
@@ -67,9 +72,9 @@ texts are in `LICENSES/`.
 ```
 
 - A new file names its author only and is `0BSD`.
-- A file holding code from upstream keeps Eric Lesiuta's line, with the year his header
-  had, and is `GPL-3.0-or-later`; the BPF program is `GPL-2.0-only`. Moving upstream code
-  into a file adds his line and changes its license to match.
+- A file holding code from picosnitch keeps Eric Lesiuta's line, with the year his header
+  had, and is `GPL-3.0-or-later`; the BPF program is `GPL-2.0-only`. Moving picosnitch's
+  code into a file adds his line and changes its license to match.
 - Write each header for its file; never copy one from another file.
 
 The project as a whole is distributed under GPL-3.0-or-later.
@@ -83,7 +88,7 @@ sudo .venv/bin/python -m pytest tests
 Call the venv's Python directly: `uv run` would re-sync the editable install, which has no
 BPF object.
 
-- `test_functional.py` starts a real daemon under `/tmp/picosnitch` and checks what it
+- `test_functional.py` starts a real daemon under `/tmp/tracct` and checks what it
   records for `curl`, `wget` and generated traffic. It needs root and the built BPF object,
   and is skipped otherwise.
 - `test_netinfo.py` and `test_conntrack.py` test their parsers and deltas with fakes; their
@@ -100,21 +105,22 @@ BPF object.
 CI (`.github/workflows/ci.yml`) runs the checks, builds the sdist and x86_64 and aarch64
 wheels, and runs the tests as root from the wheels on Python 3.12 to 3.14.
 
-## Comparing with upstream
+## Comparing with picosnitch
 
-The remote `upstream` points at elesiuta/picosnitch. Changes to the tracked files show
-with:
+The remote `upstream` points at elesiuta/picosnitch and fetches no tags. The files kept
+close to it (see [DESIGN.md](DESIGN.md#relationship-to-picosnitch)) compare with:
 
 ```sh
 git fetch upstream
-git diff upstream/master -- src/picosnitch/bpf/picosnitch.bpf.c src/picosnitch/bpf_wrapper.py
+git diff upstream/master:src/picosnitch/bpf/picosnitch.bpf.c HEAD:src/tracct/bpf/tracct.bpf.c
+git diff upstream/master:src/picosnitch/bpf_wrapper.py HEAD:src/tracct/bpf_wrapper.py
 ```
 
 ## Benchmark
 
 `bench/` generates known traffic in many hard-to-attribute ways and scores each tool's
-detection and byte counts; see [bench/README.md](../bench/README.md). Its picosnitch
-adapter builds the checked-out tree into `/opt/picosnitch` and runs the unit, replacing
+detection and byte counts; see [bench/README.md](../bench/README.md). Its tracct
+adapter builds the checked-out tree into `/opt/tracct` and runs the unit, replacing
 any existing install and its database, so run it on a disposable machine. Running only
-picosnitch (`--tools picosnitch`) regenerates `bench/reports/` with that tool alone; keep
+tracct (`--tools tracct`) regenerates `bench/reports/` with that tool alone; keep
 those files out of commits unless the full matrix ran.

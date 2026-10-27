@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
+# install as /etc/sysusers.d/tracct.conf (or /usr/lib/sysusers.d/), then run systemd-sysusers
+# members of this group may use tracct view: events.sock and the query socket
+g tracct-viewer -

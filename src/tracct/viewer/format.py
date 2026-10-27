@@ -12,7 +12,7 @@ import time
 
 from rich.text import Text
 
-from picosnitch.utils import sanitize_log_line
+from tracct.utils import sanitize_log_line
 
 # what `u` cycles through; auto picks a unit per value
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")

@@ -34,7 +34,7 @@ def sd_notify(message: str) -> None:
 
 
 def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
-    """True when a sqlite error means picosnitch.db itself is unusable (quarantine+recreate);
+    """True when a sqlite error means tracct.db itself is unusable (quarantine+recreate);
     False for transient errors (locked by the live daemon, busy, disk I/O) where quarantining
     would destroy a healthy database. Shared by the cli boot check and the writer."""
     msg = str(e).lower()
@@ -42,7 +42,7 @@ def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
 
 
 def quarantine_database(db_path: Path) -> None:
-    """move an unusable database aside to picosnitch.db.bad, with its WAL files so that none is
+    """move an unusable database aside to tracct.db.bad, with its WAL files so that none is
     replayed into the new database the next start creates"""
     for suffix in ("", "-wal", "-shm"):
         try:
@@ -86,7 +86,7 @@ def sanitize_log_line(line: str) -> str:
 
 def log_error(message: str) -> None:
     """log a problem of the capture or write side; messages carry comm, cmdline and domain strings"""
-    logging.getLogger("picosnitch.error").warning(sanitize_log_line(message))
+    logging.getLogger("tracct.error").warning(sanitize_log_line(message))
 
 
 class DropOldestQueue[T]:

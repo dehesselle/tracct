@@ -12,11 +12,11 @@ import sys
 import textwrap
 from pathlib import Path
 
-from picosnitch.config import load_config
-from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR, SENTINELS, STATE_DIR, TABLES, VERSION
-from picosnitch.main_loop import run_main_loop
-from picosnitch.query_server import run_query_server
-from picosnitch.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
+from tracct.config import load_config
+from tracct.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR, SENTINELS, STATE_DIR, TABLES, VERSION
+from tracct.main_loop import run_main_loop
+from tracct.query_server import run_query_server
+from tracct.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
 REQUIRED_CAPABILITIES: dict[str, int] = {
@@ -82,7 +82,7 @@ def check_database() -> int:
     """check database exists and has correct version, return exit code on failure"""
     if not DB_PATH.exists():
         logging.error(f"Database not found: {DB_PATH}")
-        logging.error("Start the picosnitch service to create it (systemctl start picosnitch)")
+        logging.error("Start the tracct service to create it (systemctl start tracct)")
         return 1
     con = None
     try:
@@ -145,8 +145,8 @@ def init_database() -> None:
     db_path = DB_PATH
     if (db_path.exists() or db_path.is_symlink()) and _db_is_corrupt(db_path):
         # quarantine a corrupt db and recreate it below, so check_database / the writer's first
-        # maintenance pass don't crash-loop the daemon (data is kept in picosnitch.db.bad)
-        logging.error(f"picosnitch.db is unusable, quarantining to {db_path.name}.bad and recreating")
+        # maintenance pass don't crash-loop the daemon (data is kept in tracct.db.bad)
+        logging.error(f"tracct.db is unusable, quarantining to {db_path.name}.bad and recreating")
         quarantine_database(db_path)
     if not db_path.exists():
         con = sqlite3.connect(db_path)
@@ -164,25 +164,25 @@ def init_database() -> None:
     try:
         mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if mode != "wal":
-            logging.warning(f"picosnitch.db stays in journal mode {mode}; readers will block writes")
+            logging.warning(f"tracct.db stays in journal mode {mode}; readers will block writes")
     except sqlite3.OperationalError as e:
         # another connection holds the database; the next start tries again
-        logging.warning(f"could not switch picosnitch.db to WAL mode ({e}); readers will block writes")
+        logging.warning(f"could not switch tracct.db to WAL mode ({e}); readers will block writes")
     finally:
         con.close()
 
 
 def main() -> int:
-    """run the picosnitch daemon in the foreground (under a service manager)"""
+    """run the tracct daemon in the foreground (under a service manager)"""
     # hold an exclusive lock for the daemon's lifetime: a second instance would unlink and
     # rebind the live feed socket and write the same database. the kernel drops the lock
     # when the process exits, so a crash never leaves a stale lock behind
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(RUN_DIR / "picosnitch.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    lock_fd = os.open(RUN_DIR / "tracct.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        logging.error(f"picosnitch is already running (lock held on {RUN_DIR / 'picosnitch.lock'})")
+        logging.error(f"tracct is already running (lock held on {RUN_DIR / 'tracct.lock'})")
         return 1
     init_database()
     if err := check_database():
@@ -195,7 +195,7 @@ def main() -> int:
     return run_main_loop(config)
 
 
-def start_picosnitch() -> int:
+def start_tracct() -> int:
     """command line interface, pre-startup checks, and run"""
     if sys.version_info < (3, 12):
         logging.error("Python version >= 3.12 is required")
@@ -206,12 +206,13 @@ def start_picosnitch() -> int:
     configure_logging()
     readme = textwrap.dedent(
         f"""
-        Monitor your system for applications that make network connections and track
-        their bandwidth.
+        Traffic accounting per process, unit and interface: recorded with BPF and kept
+        in SQLite.
 
-        Picosnitch comes with ABSOLUTELY NO WARRANTY. This is free software, and you
-        are welcome to redistribute it under certain conditions. See version 3 of the
-        GNU General Public License for details.
+        tracct is based on picosnitch by Eric Lesiuta
+        (https://github.com/elesiuta/picosnitch). It comes with ABSOLUTELY NO
+        WARRANTY. This is free software, and you are welcome to redistribute it under
+        certain conditions. See version 3 of the GNU General Public License for details.
 
         version: {VERSION}
         entrypoint: {Path(sys.argv[0]).resolve()}
@@ -220,25 +221,25 @@ def start_picosnitch() -> int:
         run: {RUN_DIR}
 
         usage:
-            picosnitch run|view|query-server|version|help
+            tracct run|view|query-server|version|help
                         |   |    |            |       |--> this text
                         |   |    |            |--> version number
-                        |   |    |--> answer history queries (used by picosnitch-query.service)
-                        |   |--> live and history viewer (needs picosnitch[tui]; view --help)
-                        |--> run the daemon in the foreground (used by picosnitch.service)
+                        |   |    |--> answer history queries (used by tracct-query.service)
+                        |   |--> live and history viewer (needs tracct[tui]; view --help)
+                        |--> run the daemon in the foreground (used by tracct.service)
 
-            systemctl enable|disable|start|stop|restart|status picosnitch
+            systemctl enable|disable|start|stop|restart|status tracct
 
-        paths follow $PICOSNITCH_CONFIG (a file), else $CONFIGURATION_DIRECTORY,
+        paths follow $TRACCT_CONFIG (a file), else $CONFIGURATION_DIRECTORY,
         $STATE_DIRECTORY and $RUNTIME_DIRECTORY as set by systemd; the query socket
-        follows $PICOSNITCH_QUERY_SOCKET
+        follows $TRACCT_QUERY_SOCKET
         """.lstrip("\n")
     )
     if len(sys.argv) >= 2 and sys.argv[1] == "view":
         try:
-            from picosnitch.viewer import run_viewer
+            from tracct.viewer import run_viewer
         except ImportError as e:
-            logging.error(f"the viewer needs Textual, installed with picosnitch[tui] ({e})")
+            logging.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
             return 1
         return run_viewer(sys.argv[2:])
     if len(sys.argv) != 2:
@@ -248,8 +249,8 @@ def start_picosnitch() -> int:
     if cmd == "help":
         print(readme)
         return 0
-    elif cmd == "version":
-        print(f"version: {VERSION}")
+    elif cmd in ("version", "--version"):
+        print(f"tracct {VERSION}")
         return 0
     elif cmd == "run":
         if err := check_capabilities():
@@ -263,4 +264,4 @@ def start_picosnitch() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(start_picosnitch())
+    sys.exit(start_tracct())

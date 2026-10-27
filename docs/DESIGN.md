@@ -1,6 +1,6 @@
 # Design
 
-This document describes how picosnitch collects, attributes and stores traffic, what it can
+This document describes how tracct collects, attributes and stores traffic, what it can
 and cannot see, and the principles the code must keep.
 
 ## Goal
@@ -17,12 +17,11 @@ it. Live monitors such as nethogs and bandwhich show only the present. Per-proce
 with history (atop with netatop, Netdata, systemd's `IPAccounting=`) do not keep the peer;
 flow accounting (ntopng, pmacct, conntrack with ulogd2) does not know the process.
 Application firewalls such as OpenSnitch and Little Snitch are built for filtering on
-desktops. Upstream picosnitch came closest, with per-process history including peers, but it
-is a desktop security tool; this project started as a fork of it and drops that part.
+desktops.
 
 ## Data sources
 
-Per-process traffic comes from one BPF CO-RE program, `src/picosnitch/bpf/picosnitch.bpf.c`,
+Per-process traffic comes from one BPF CO-RE program, `src/tracct/bpf/tracct.bpf.c`,
 loaded through the ctypes libbpf wrapper in `bpf_wrapper.py`; interfaces and forwarded
 traffic come from netlink.
 
@@ -111,7 +110,7 @@ counters and namespaces that cannot be queried are detected and logged, not sile
 
 ## Threads
 
-The daemon (`picosnitch run`) is one process with three worker threads, supervised by the
+The daemon (`tracct run`) is one process with three worker threads, supervised by the
 main thread (`main_loop.py`), and helper threads owned by the writer:
 
 ```mermaid
@@ -119,13 +118,13 @@ flowchart LR
     BPF["BPF program<br/>counters, exec and dns events"] --> R
     R["reader<br/>drain, attribution"] -- bounded queue --> W
     R -- bounded queue,<br/>only with viewers --> F
-    W["writer<br/>aggregation, SQLite, rollups, retention"] --> DB[(picosnitch.db)]
+    W["writer<br/>aggregation, SQLite, rollups, retention"] --> DB[(tracct.db)]
     W <-- cache --> DNS["reverse DNS<br/>workers"]
     NL["netlink<br/>interfaces, conntrack"] --> W
     F["feed<br/>JSON for viewers"] --> LIVE([events.sock])
     LIVE --> VIEW["view<br/>live tab"]
     DB -. read-only .-> Q["query server<br/>own unit"]
-    Q --> QS([picosnitch-query.sock])
+    Q --> QS([tracct-query.sock])
     QS --> HIST["view<br/>history tabs"]
 ```
 
@@ -155,8 +154,7 @@ never stalls the reader. The writer therefore must not modify the events it rece
 feed may be serializing the same objects.
 
 One process is enough because what remains besides the reader's attribution is I/O
-(SQLite, DNS, sockets), which releases the GIL. Upstream split the work into processes
-because hashing executables is CPU-bound and would have starved the reader.
+(SQLite, DNS, sockets), which releases the GIL.
 
 ## Executable identity
 
@@ -176,7 +174,7 @@ subvolumes, the device check is masked off (`st_dev_mask`).
 
 ## Storage
 
-SQLite at `$STATE_DIRECTORY/picosnitch.db`, in WAL mode so that readers never block the
+SQLite at `$STATE_DIRECTORY/tracct.db`, in WAL mode so that readers never block the
 writer; every start switches a database made without it. The tables are defined in
 `constants.py` (`TABLES`, `SENTINELS`, `INDEXES`), all `STRICT`. The database is an internal
 format: the writer is its only writer and the query server its only reader, so its layout
@@ -232,12 +230,12 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
 - **`events.sock`** in the daemon's runtime directory streams every batch as JSON lines to
   up to 32 subscribers (`live_feed.py`); the daemon hands it to `[viewer] group`. A
   subscriber more than 8 MiB behind is dropped.
-- **`/run/picosnitch-query.sock`** belongs to `picosnitch-query.socket`, whose service runs
-  `picosnitch query-server` (`query_server.py`) on the first connection and exits after ten
+- **`/run/tracct-query.sock`** belongs to `tracct-query.socket`, whose service runs
+  `tracct query-server` (`query_server.py`) on the first connection and exits after ten
   idle minutes. It runs as the daemon's dynamic user, so it shares the state directory and
   the WAL index, but it opens the database read-only and holds no capabilities. A heavy
   query then grows the query server, which its own `MemoryMax=` stops, not the daemon. The
-  socket lies outside `/run/picosnitch`, which systemd deletes whenever the daemon's unit
+  socket lies outside `/run/tracct`, which systemd deletes whenever the daemon's unit
   stops; history stays readable while the daemon is down.
 
 The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
@@ -257,21 +255,22 @@ been partly purged, and only its rollup is complete. A dimension the rollups do 
 the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
 
-`picosnitch view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
+`tracct view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
 and a history tab per source with one time range shared between them. A tab's timeline shows
 the highlighted row rather than the sum of all rows, so layers or interfaces are not added
 up unless asked for; choosing a bucket narrows the range to it, which every tab then shows.
 The viewer imports only `live_feed`, `query` and `utils`; it reaches the daemon through the
 two sockets alone.
 
-## Relationship to upstream
+## Relationship to picosnitch
 
-`picosnitch.bpf.c` and `bpf_wrapper.py` are tracked against upstream: they hold the kernel
-side and its ctypes mirror, which change in lockstep. They differ from upstream in one place:
+`tracct.bpf.c` and `bpf_wrapper.py` come from
+[picosnitch](https://github.com/elesiuta/picosnitch) and are kept close to it, so that its
+fixes can be carried over by hand; they hold the kernel side and its ctypes mirror, which
+change in lockstep. Apart from names and copyright headers they differ in one place:
 `fill_conn_ancestry` keeps the I/O of a kernel thread, which has no executable, with its comm
-instead of dropping it. Everything above them, including
-`monitor.py`, is owned by this fork; its BPF attach and drain code stays structurally close
-to upstream so fixes can still be carried over by hand.
+instead of dropping it. The BPF attach and drain code in `monitor.py` stays structurally close
+to picosnitch's for the same reason.
 
 ## Core principles
 
@@ -286,18 +285,18 @@ to upstream so fixes can still be carried over by hand.
    right for their layer; any total or rollup keeps them apart.
 4. **Socket bytes are labelled as such.** Wherever wire bytes (interface counters,
    conntrack) are added, the two kinds stay separate columns or tables.
-5. **The BPF program and `bpf_wrapper.py` stay identical to upstream** apart from deliberate
-   changes, each named under "Relationship to upstream" and kept small enough to port
-   upstream's fixes around; the two change together, and the struct-size tests in
+5. **The BPF program and `bpf_wrapper.py` stay identical to picosnitch's** apart from
+   deliberate changes, each named under "Relationship to picosnitch" and kept small enough to
+   port its fixes around; the two change together, and the struct-size tests in
    `tests/test_robustness.py` guard the mirror.
 6. **Bad input never crash-loops the daemon.** A malformed config falls back to defaults
    with a warning, an unknown key is reported, a corrupt database is moved to
-   `picosnitch.db.bad` and recreated, whether found at startup or by the writer. Only a
+   `tracct.db.bad` and recreated, whether found at startup or by the writer. Only a
    database with another schema version stops the daemon, so no data is destroyed.
 7. **A schema change bumps `DB_VERSION`.** The daemon refuses any other version; there is
    no migration code.
 8. **The daemon's capabilities are listed twice and must match:**
-   `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `systemd/picosnitch.service`.
+   `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `systemd/tracct.service`.
    Each one carries the reason it is needed. Nothing that answers viewers runs with them:
    the live feed only sends, and history queries go to the query server, which has none.
 9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,

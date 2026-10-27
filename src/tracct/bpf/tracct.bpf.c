@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: GPL-2.0-only
 
-// BPF CO-RE program for picosnitch
+// BPF CO-RE program for tracct
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>

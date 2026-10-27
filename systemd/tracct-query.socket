@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
+[Unit]
+Description=tracct history query socket
+
+[Socket]
+# outside /run/tracct, which belongs to tracct.service and goes when it stops
+ListenStream=/run/tracct-query.sock
+# members of the viewer group from tracct.sysusers may query the history
+SocketMode=0660
+SocketGroup=tracct-viewer
+# one server process takes all connections; it starts on the first and exits when idle
+Accept=no
+
+[Install]
+WantedBy=sockets.target

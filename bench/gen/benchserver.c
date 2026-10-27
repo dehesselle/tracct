@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-/* benchserver — controlled peer for the picosnitch benchmark.
+/* benchserver — controlled peer for the tracct benchmark.
  *
  * Runs inside the peer network namespace. Speaks a tiny framed protocol so a
  * client (the traffic generator on the host) can push or pull a requested

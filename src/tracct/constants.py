@@ -8,9 +8,9 @@ import tomllib
 import typing
 from pathlib import Path
 
-from picosnitch import __version__
+from tracct.version import __version__
 
-# picosnitch version
+# tracct version, from the git tag at build time (hatch-vcs writes version.py)
 VERSION: typing.Final[str] = __version__
 
 
@@ -23,10 +23,10 @@ def _systemd_directory(variable: str, default: str) -> Path:
 
 # paths come from the environment so a unit (or a test) can place them; the variables are the
 # ones systemd sets for ConfigurationDirectory=, StateDirectory= and RuntimeDirectory=
-CONFIG_PATH: typing.Final[Path] = Path(os.getenv("PICOSNITCH_CONFIG") or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/picosnitch") / "config.toml")
-STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/picosnitch")
-RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/picosnitch")
-DB_PATH: typing.Final[Path] = STATE_DIR / "picosnitch.db"
+CONFIG_PATH: typing.Final[Path] = Path(os.getenv("TRACCT_CONFIG") or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/tracct") / "config.toml")
+STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/tracct")
+RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/tracct")
+DB_PATH: typing.Final[Path] = STATE_DIR / "tracct.db"
 
 # bounds the writer's retry buffer near 200 MB (~2 KB/entry) on a persistent outage
 RETRY_BUFFER_MAX: typing.Final[int] = 100000

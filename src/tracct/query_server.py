@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: 0BSD
 
 """the query server: answers the viewer's history requests from the database, opened read-only.
-it runs as picosnitch-query.service, which systemd starts on the first connection to
-picosnitch-query.socket, without capabilities, and exits once no viewer has been connected for a
+it runs as tracct-query.service, which systemd starts on the first connection to
+tracct-query.socket, without capabilities, and exits once no viewer has been connected for a
 while. a request names a source, a dimension to group by, filters and a time range; dimensions
 map to SQL here and values are bound, so no SQL comes from a client.
 
@@ -28,9 +28,9 @@ import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
-from picosnitch.constants import DB_PATH, DB_VERSION
-from picosnitch.query import MAX_RESPONSE_BYTES, QUERY_SOCKET_PATH, recv_message, send_message
-from picosnitch.utils import ephemeral_port_start
+from tracct.constants import DB_PATH, DB_VERSION
+from tracct.query import MAX_RESPONSE_BYTES, QUERY_SOCKET_PATH, recv_message, send_message
+from tracct.utils import ephemeral_port_start
 
 # viewers connected at once; one more is told so and closed
 MAX_CLIENTS = 8
@@ -380,7 +380,7 @@ OPS: dict[str, Callable[[sqlite3.Connection, dict, int], dict]] = {"describe": d
 def open_database(db_path: Path) -> sqlite3.Connection:
     """the database, read-only; the server runs as the daemon's user, so the WAL index is shared"""
     if not db_path.exists():
-        raise RequestError(f"no database at {db_path} yet; is the picosnitch service running?")
+        raise RequestError(f"no database at {db_path} yet; is the tracct service running?")
     con = sqlite3.connect(f"file:{urllib.parse.quote(os.fspath(db_path), safe='/')}?mode=ro", uri=True, timeout=5)
     try:
         version = con.execute("PRAGMA user_version").fetchone()[0]
@@ -389,7 +389,7 @@ def open_database(db_path: Path) -> sqlite3.Connection:
         raise
     if version != DB_VERSION:
         con.close()
-        raise RequestError(f"the database has schema version {version}, this picosnitch reads {DB_VERSION}")
+        raise RequestError(f"the database has schema version {version}, this tracct reads {DB_VERSION}")
     return con
 
 
@@ -503,7 +503,7 @@ def listening_socket(path: Path) -> tuple[socket.socket, bool]:
 
 
 def run_query_server(path: Path = QUERY_SOCKET_PATH) -> int:
-    """`picosnitch query-server`: under picosnitch-query.socket until idle, else until stopped"""
+    """`tracct query-server`: under tracct-query.socket until idle, else until stopped"""
     listener, activated = listening_socket(path)
     logging.info(f"query server: reading {DB_PATH}, {'socket from systemd' if activated else f'listening on {path}'}")
     try:

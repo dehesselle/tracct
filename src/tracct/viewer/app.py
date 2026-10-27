@@ -16,11 +16,11 @@ from textual.app import App
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
 
-from picosnitch.query import QueryClient, QueryError
-from picosnitch.viewer.format import BYTE_UNITS, SPANS, moment
-from picosnitch.viewer.history import HistoryPane
-from picosnitch.viewer.live import LivePane
-from picosnitch.viewer.timeline import Timeline
+from tracct.query import QueryClient, QueryError
+from tracct.viewer.format import BYTE_UNITS, SPANS, moment
+from tracct.viewer.history import HistoryPane
+from tracct.viewer.live import LivePane
+from tracct.viewer.timeline import Timeline
 
 # tab id -> (title, query source)
 TABS = {"live": ("Live", ""), "processes": ("Processes", "connections"), "interfaces": ("Interfaces", "interfaces"), "forwarded": ("Forwarded", "forwarded")}
@@ -68,7 +68,7 @@ class TimeRange:
 
 
 class ViewerApp(App):
-    TITLE = "picosnitch"
+    TITLE = "tracct"
     CSS = """
     #find { dock: bottom; display: none; }
     #find.shown { display: block; }
@@ -122,9 +122,9 @@ class ViewerApp(App):
             try:
                 return self._client.request(op, **params)
             except PermissionError as e:
-                raise QueryError(f"no access to {self.query_socket}: join the viewer group (picosnitch-viewer) or run as root") from e
+                raise QueryError(f"no access to {self.query_socket}: join the viewer group (tracct-viewer) or run as root") from e
             except OSError as e:
-                raise QueryError(f"query server unavailable at {self.query_socket} ({e.strerror or e}); is picosnitch-query.socket enabled?") from e
+                raise QueryError(f"query server unavailable at {self.query_socket} ({e.strerror or e}); is tracct-query.socket enabled?") from e
 
     @work(thread=True, exclusive=True, group="describe")
     def describe(self) -> None:

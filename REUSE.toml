@@ -15,6 +15,6 @@ SPDX-License-Identifier = "GPL-3.0-or-later"
 # kernel type definitions dumped from BTF by bpftool, taken from libbpf/vmlinux.h, which
 # states no license; they are the kernel's
 [[annotations]]
-path = "src/picosnitch/bpf/vmlinux_*.h"
+path = "src/tracct/bpf/vmlinux_*.h"
 SPDX-FileCopyrightText = "Linux kernel contributors"
 SPDX-License-Identifier = "GPL-2.0-only"

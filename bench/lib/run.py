@@ -11,7 +11,7 @@ every scenario x N trials -> score -> stop. Persists raw JSON and generates the
 markdown scorecards.
 
     sudo python3 lib/run.py --tools all --trials 5
-    sudo python3 lib/run.py --tools picosnitch,nethogs --scenarios s01,s05
+    sudo python3 lib/run.py --tools tracct,nethogs --scenarios s01,s05
     sudo python3 lib/run.py --report-only
 """
 
@@ -31,7 +31,7 @@ from harness import BIN, ERROR, FAIL, NA, RESULTS, Ctx, Netlab, combine_trials, 
 from resprof import ResProfiler
 from scenarios import build_scenarios
 
-DEFAULT_TOOLS = ["picosnitch", "nethogs", "bandwhich", "opensnitch", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig", "sniffnet"]
+DEFAULT_TOOLS = ["tracct", "nethogs", "bandwhich", "opensnitch", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig", "sniffnet"]
 
 # Fairness isolation: only the tool under test may run during its own benchmark.
 # Three tools run as systemd services and two of them (opensnitch,
@@ -42,11 +42,11 @@ DEFAULT_TOOLS = ["picosnitch", "nethogs", "bandwhich", "opensnitch", "littlesnit
 # process-based tools (nethogs, bandwhich, sniffnet, bcc, bpftrace, sysdig) are
 # launched and killed by their own adapters within run_tool, so they never leak
 # across tools.
-MONITOR_SERVICES = ("picosnitch", "opensnitch", "littlesnitch")
+MONITOR_SERVICES = ("tracct", "opensnitch", "littlesnitch")
 # pgrep -f cmdline signatures to confirm each daemon is actually gone. None may
 # start with '-' or pgrep parses it as an option.
 _MONITOR_SIG = {
-    "picosnitch": "picosnitch run",  # the unit's cmdline
+    "tracct": "tracct run",  # the unit's cmdline
     "opensnitch": "opensnitchd",
     "littlesnitch": "littlesnitch --daemon",
 }
@@ -57,7 +57,7 @@ def preflight(tools, scenarios):
 
     A stock cloud image has none of this. Without the check a missing prerequisite
     surfaces hours in and reads as a result: no docker turns s17 into ERROR cells
-    for every tool, no uv makes picosnitch's install fail, an unbuilt bin/ fails
+    for every tool, no uv makes tracct's install fail, an unbuilt bin/ fails
     every generator. Only what the SELECTED tools and scenarios need is required, so
     a subset run on a lesser box still works. Loud and up front: missing
     prerequisites are collected and the run aborts before the first tool."""
@@ -69,8 +69,8 @@ def preflight(tools, scenarios):
         if not (BIN / b).exists():
             missing.append(f"bin/{b} (compile the helpers first: sudo bash lib/build.sh)")
 
-    if "picosnitch" in tools and sh("command -v uv").returncode != 0:
-        missing.append("uv on root's PATH (picosnitch is built from the source tree with it)")
+    if "tracct" in tools and sh("command -v uv").returncode != 0:
+        missing.append("uv on root's PATH (tracct is built from the source tree with it)")
 
     if "s17" in sids:  # in-container egress
         if sh("command -v docker").returncode != 0:

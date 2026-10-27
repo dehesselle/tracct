@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from picosnitch import conntrack, netinfo
+from tracct import conntrack, netinfo
 
 
 def _attr(kind: int, payload: bytes, nested: bool = False) -> bytes:

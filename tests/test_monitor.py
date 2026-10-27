@@ -12,8 +12,8 @@ import sys
 
 import pytest
 
-from picosnitch.constants import ST_DEV_MASK
-from picosnitch.monitor import ExeResolver, _classify_inode_fallback, _parse_proc_net_addr, _read_proc_unit, unit_of_cgroup, unmap_ipv4
+from tracct.constants import ST_DEV_MASK
+from tracct.monitor import ExeResolver, _classify_inode_fallback, _parse_proc_net_addr, _read_proc_unit, unit_of_cgroup, unmap_ipv4
 
 
 def _dev_ino(path: str) -> tuple[int, int]:

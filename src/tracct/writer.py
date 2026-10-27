@@ -14,13 +14,13 @@ import threading
 import time
 from collections.abc import Callable
 
-from picosnitch.config import Config
-from picosnitch.conntrack import Flow, Trackers
-from picosnitch.constants import DB_PATH, RETRY_BUFFER_MAX
-from picosnitch.netinfo import NetInfo
-from picosnitch.reverse_dns import ReverseDns
-from picosnitch.types import BpfEvent
-from picosnitch.utils import DropOldestQueue, ephemeral_port_start, log_error, quarantine_database, sqlite_error_means_corrupt
+from tracct.config import Config
+from tracct.conntrack import Flow, Trackers
+from tracct.constants import DB_PATH, RETRY_BUFFER_MAX
+from tracct.netinfo import NetInfo
+from tracct.reverse_dns import ReverseDns
+from tracct.types import BpfEvent
+from tracct.utils import DropOldestQueue, ephemeral_port_start, log_error, quarantine_database, sqlite_error_means_corrupt
 
 # distinct connections one write window may hold; past it the window is written early
 WINDOW_CONNECTIONS_MAX = 65536
@@ -318,7 +318,7 @@ def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Call
     newest = con.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
     shortest = database.raw_retention_days or database.rollup_retention_days
     if newest is not None and shortest > 0 and now - shortest * 86400 > newest:
-        logging.error("picosnitch: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted")
+        logging.error("tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted")
         return periods, 0, 0
     watermark_row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
     watermark = watermark_row[0] if watermark_row is not None else 0
@@ -507,7 +507,7 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
             except Exception as e:
                 if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
                     # the thread ends and the daemon exits, for the service manager to start it on a new db
-                    logging.error(f"picosnitch.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart")
+                    logging.error(f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart")
                     quarantine_database(file_path)
                     raise
                 log_error("writer %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
