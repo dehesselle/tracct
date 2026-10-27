@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import ipaddress
+import logging
 import os
 import socket
 import sqlite3
@@ -75,6 +76,11 @@ def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Co
 def sanitize_log_line(line: str) -> str:
     """Remove control characters from a log line to prevent terminal-escape / log injection."""
     return "".join(c for c in line if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"))
+
+
+def log_error(message: str) -> None:
+    """log a problem of the capture or write side; messages carry comm, cmdline and domain strings"""
+    logging.getLogger("picosnitch.error").warning(sanitize_log_line(message))
 
 
 # reverse-DNS results keyed by ip; getnameinfo blocks, so callers probe reverse_dns_is_cached() first

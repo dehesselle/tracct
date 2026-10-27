@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import multiprocessing
-import multiprocessing.connection
-import pickle
+import queue
 import shlex
 import sqlite3
 import sys
+import threading
 import time
 from pathlib import Path
 
 from picosnitch.config import Config
 from picosnitch.constants import DB_PATH, DB_VERSION, RETRY_BUFFER_MAX, VERSION
 from picosnitch.types import BpfEvent
-from picosnitch.utils import reverse_dns_is_cached, reverse_dns_lookup, sqlite_error_means_corrupt
+from picosnitch.utils import log_error, reverse_dns_is_cached, reverse_dns_lookup, sqlite_error_means_corrupt
 
 # new (uncached, blocking) reverse-DNS lookups per write; ~256 * a few ms stays under a second
 REVERSE_DNS_LOOKUPS_PER_WRITE = 256
@@ -78,10 +77,10 @@ def maintain_database(file_path: Path, retention_days: int) -> None:
 def build_log_entries(
     config: Config,
     new_processes: list[BpfEvent],
-    q_error: multiprocessing.Queue[str],
     ignored_networks: list,
 ) -> list[tuple]:
-    """iterate over the list of process/connection data to generate a list of entries for the sql database"""
+    """iterate over the list of process/connection data to generate a list of entries for the sql database;
+    the events are not modified, the live feed may still be sending the same objects"""
     datetime_now = int(time.time())
     traffic_counter: dict[tuple, list[int]] = {}
     # a burst of distinct addresses is that many serial round-trips before any row is written
@@ -97,62 +96,57 @@ def build_log_entries(
         return cleaned
 
     for proc in new_processes:
-        if not isinstance(proc, dict):
-            q_error.put("sync error between secondary and primary, received '%s' in middle of transfer" % str(proc))
-            continue
         # join or omit commands from logs
         if config.log.commands:
-            proc["cmdline"] = clean_cmdline(proc["cmdline"])
-            proc["pcmdline"] = clean_cmdline(proc["pcmdline"])
+            cmdline = clean_cmdline(proc["cmdline"])
+            pcmdline = clean_cmdline(proc["pcmdline"])
         else:
-            proc["cmdline"] = ""
-            proc["pcmdline"] = ""
+            cmdline = pcmdline = ""
         # reverse dns lookup or omit with IP from logs
+        domain, raddr = proc["domain"], proc["raddr"]
         if config.log.addresses:
-            if not proc["domain"] and proc["raddr"]:
+            if not domain and raddr:
                 # a cached lookup is free; a new one has to fit the per-write budget
-                if reverse_dns_is_cached(proc["raddr"]):
-                    proc["domain"] = reverse_dns_lookup(proc["raddr"])
+                if reverse_dns_is_cached(raddr):
+                    domain = reverse_dns_lookup(raddr)
                 elif reverse_dns_budget > 0:
-                    proc["domain"] = reverse_dns_lookup(proc["raddr"])
+                    domain = reverse_dns_lookup(raddr)
                     reverse_dns_budget -= 1
         else:
-            proc["domain"], proc["raddr"] = "", ""
+            domain = raddr = ""
+        lport, rport = proc["lport"], proc["rport"]
         if not config.log.ports:
-            proc["lport"] = min(0, proc["lport"])
-            proc["rport"] = min(0, proc["rport"])
+            lport, rport = min(0, lport), min(0, rport)
         # omit entry from logs
         ignored = False
-        if proc["rport"] in config.log.ignore_ports or proc["lport"] in config.log.ignore_ports:
+        if rport in config.log.ignore_ports or lport in config.log.ignore_ports:
             ignored = True
         if not ignored:
             for domain_prefix in config.log.ignore_domains:
-                if proc["domain"].startswith(domain_prefix):
+                if domain.startswith(domain_prefix):
                     ignored = True
                     break
         if ignored:
             continue
-        if ignored_networks and proc["raddr"]:
-            raddr = ipaddress.ip_address(proc["raddr"])
-            if any(raddr in network for network in ignored_networks):
+        if ignored_networks and raddr:
+            if any(ipaddress.ip_address(raddr) in network for network in ignored_networks):
                 continue
-            laddr = ipaddress.ip_address(proc["laddr"])
-            if any(laddr in network for network in ignored_networks):
+            if any(ipaddress.ip_address(proc["laddr"]) in network for network in ignored_networks):
                 continue
         # create sql entry (exe info as tuples for normalization, connection-specific fields)
-        exe_key = (proc["exe"], proc["name"], proc["cmdline"])
-        pexe_key = (proc["pexe"], proc["pname"], proc["pcmdline"])
+        exe_key = (proc["exe"], proc["name"], cmdline)
+        pexe_key = (proc["pexe"], proc["pname"], pcmdline)
         event = (
             exe_key,
             pexe_key,
             proc["uid"],
             int(proc.get("family", 0) or 0),
             int(proc.get("protocol", 0) or 0),
-            proc["lport"],
-            proc["rport"],
+            lport,
+            rport,
             proc["laddr"],
-            proc["raddr"],
-            proc["domain"],
+            raddr,
+            domain,
             int(proc.get("netns", 0) or 0),
         )
         if event in traffic_counter:
@@ -164,17 +158,9 @@ def build_log_entries(
     return [(datetime_now, send, recv, n_events, *event) for event, (send, recv, n_events) in traffic_counter.items()]
 
 
-def run_secondary(
-    config: Config,
-    secondary_pipe: multiprocessing.connection.Connection,
-    q_primary_in: multiprocessing.Queue[bytes],
-    q_error: multiprocessing.Queue[str],
-    _q_in: multiprocessing.Queue,
-    _q_out: multiprocessing.Queue,
-) -> int:
-    """second to receive connection data from monitor, less responsive than primary, writes the connection log"""
-    parent_process = multiprocessing.parent_process()
-    assert parent_process is not None
+def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threading.Event) -> None:
+    """the writer thread: collects the reader's batches and writes them to SQLite once per write
+    window; once stop is set it writes what the queue still holds and returns"""
     # init sql
     # connections columns: contime, send, recv, events, exe_id, pexe_id, uid,
     # family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns  (15 cols).
@@ -194,8 +180,6 @@ def run_secondary(
     # a rolled-back INSERT frees its rowid for reuse, so on failure these must be dropped
     # from the caches or a later cache hit would misattribute rows to a stale/reused id
     pending_cache_keys: list[tuple] = []
-    if config.database.enabled:
-        maintain_database(file_path, config.database.retention_days)
     # get network address and mask for ignored IP subnets
     ignored_networks = [ipaddress.ip_network(ip_subnet, strict=False) for ip_subnet in config.log.ignore_ips]
 
@@ -227,64 +211,63 @@ def run_secondary(
         pending_cache_keys.append((addr_id_cache, addr))
         return row[0]
 
-    # main loop
-    transaction = []
+    transaction: list[tuple] = []
     new_processes: list[BpfEvent] = []
-    last_write = 0
-    while True:
-        if not parent_process.is_alive():
-            return 0
+
+    def write() -> None:
+        nonlocal transaction, new_processes
+        transaction += build_log_entries(config, new_processes, ignored_networks)
+        new_processes = []
+        transaction_success = False
         try:
-            # request a batch, then read the single (possibly empty) list primary sends back
-            if secondary_pipe.poll():
-                q_error.put("sync error between secondary and primary on ready (pipe not empty)")
-            else:
-                q_primary_in.put(pickle.dumps({"type": "ready"}))
-            if secondary_pipe.poll(timeout=300):
-                batch = pickle.loads(secondary_pipe.recv_bytes())
-                if isinstance(batch, list):
-                    new_processes.extend(batch)
-                else:
-                    q_error.put("sync error between secondary and primary on receive (expected a batch list)")
-            else:
-                q_error.put("sync error between secondary and primary on receive (timed out waiting for batch)")
-            # process connection data
+            if config.database.enabled:
+                con = sqlite3.connect(file_path)
+                with con:
+                    conn_rows = []
+                    for contime, send, recv, n_events, exe_key, pexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns in transaction:
+                        exe_id = resolve_exe_id(con, exe_key)
+                        pexe_id = resolve_exe_id(con, pexe_key)
+                        laddr_id = resolve_addr_id(con, laddr)
+                        raddr_id = resolve_addr_id(con, raddr)
+                        domain_id = resolve_domain_id(con, domain)
+                        conn_rows.append((contime, send, recv, n_events, exe_id, pexe_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns))
+                    con.executemany(sqlite_insert_conn, conn_rows)
+                con.close()
+                transaction_success = True
+                pending_cache_keys.clear()  # committed: cached ids are now durable
+        except Exception as e:
+            # rolled back: drop this transaction's cache entries so a retry re-inserts
+            for cache, cache_key in pending_cache_keys:
+                cache.pop(cache_key, None)
+            pending_cache_keys.clear()
+            log_error("SQLite execute %s%s on line %s, will retry %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
+        if transaction_success or not config.database.enabled:
+            transaction = []
+        elif len(transaction) > RETRY_BUFFER_MAX:
+            # a persistent write outage would grow transaction unbounded; keep the newest
+            dropped = len(transaction) - RETRY_BUFFER_MAX
+            transaction = transaction[-RETRY_BUFFER_MAX:]
+            log_error("writer retry buffer full (persistent write outage), dropped %s oldest entries; retrying %s" % (dropped, len(transaction)))
+
+    last_write = 0.0
+    while True:
+        # checked before emptying the queue: the reader has stopped by the time stop is set,
+        # so the queue then holds all that is left
+        stopping = stop.is_set()
+        try:
+            new_processes.extend(batches.get(timeout=0.5))
+            while True:
+                new_processes.extend(batches.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            if stopping:
+                if transaction or new_processes:
+                    write()
+                return
             # a backward wall-clock jump must not stall writes; contime still uses time.time()
             if time.monotonic() - last_write > config.database.write_limit_seconds and (transaction or new_processes):
-                current_write = time.monotonic()
-                new_entries = build_log_entries(config, new_processes, q_error, ignored_networks)
-                transaction += new_entries
-                new_processes = []
-                transaction_success = False
-                try:
-                    if config.database.enabled:
-                        con = sqlite3.connect(file_path)
-                        with con:
-                            conn_rows = []
-                            for contime, send, recv, n_events, exe_key, pexe_key, uid, family, protocol, lport, rport, laddr, raddr, domain, netns in transaction:
-                                exe_id = resolve_exe_id(con, exe_key)
-                                pexe_id = resolve_exe_id(con, pexe_key)
-                                laddr_id = resolve_addr_id(con, laddr)
-                                raddr_id = resolve_addr_id(con, raddr)
-                                domain_id = resolve_domain_id(con, domain)
-                                conn_rows.append((contime, send, recv, n_events, exe_id, pexe_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns))
-                            con.executemany(sqlite_insert_conn, conn_rows)
-                        con.close()
-                        transaction_success = True
-                        pending_cache_keys.clear()  # committed: cached ids are now durable
-                except Exception as e:
-                    # rolled back: drop this transaction's cache entries so a retry re-inserts
-                    for cache, cache_key in pending_cache_keys:
-                        cache.pop(cache_key, None)
-                    pending_cache_keys.clear()
-                    q_error.put("SQLite execute %s%s on line %s, will retry %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
-                if transaction_success or not config.database.enabled:
-                    transaction = []
-                elif len(transaction) > RETRY_BUFFER_MAX:
-                    # a persistent write outage would grow transaction unbounded; keep the newest
-                    dropped = len(transaction) - RETRY_BUFFER_MAX
-                    transaction = transaction[-RETRY_BUFFER_MAX:]
-                    q_error.put("secondary retry buffer full (persistent write outage), dropped %s oldest entries; retrying %s" % (dropped, len(transaction)))
-                last_write = current_write
+                last_write = time.monotonic()
+                write()
         except Exception as e:
-            q_error.put("secondary subprocess %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+            log_error("writer %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))

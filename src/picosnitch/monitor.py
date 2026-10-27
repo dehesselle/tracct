@@ -4,23 +4,22 @@ from __future__ import annotations
 
 import collections
 import ipaddress
-import multiprocessing
 import os
-import pickle
 import resource
 import shutil
-import signal
 import socket
 import struct
-import sys
+import threading
 import time
 import typing
 
 from picosnitch.bpf_wrapper import BPF, ConnKey4, ConnKey6, ConnKeyPacket, ConnVal, check_bpf_requirements, find_bpf_object, kernel_symbol_addrs
 from picosnitch.config import Config
 from picosnitch.constants import ST_DEV_MASK
+from picosnitch.types import BpfEvent
+from picosnitch.utils import log_error
 
-# entries per drain handoff: a send per event stalls the drain, one per drain lands a burst at once
+# entries per drain handoff: one per event costs a hand-off each, one per drain lands a burst at once
 CONN_DRAIN_CHUNK: typing.Final[int] = 2048
 # bound of each exe resolution cache and of the dns answer cache
 LOOKUP_CACHE_MAX: typing.Final[int] = 8192
@@ -381,26 +380,19 @@ def initial_poll() -> list:
     return initial_processes
 
 
-def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Queue[str], q_in: multiprocessing.Queue[str], q_out: multiprocessing.Queue) -> int:
-    """runs a bpf program to monitor the system for new connections and puts info into a pipe for run_primary"""
-    # initialization of subprocess
-    try:
-        os.nice(-20)
-    except Exception:
-        pass
+def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], object], stop: threading.Event, reattach: threading.Event, ready: threading.Event) -> None:
+    """runs a bpf program to monitor the system for new connections and hands each batch of
+    attributed events to publish; the reader thread of the daemon, so nothing here may block
+    on anything but the kernel"""
     # Required for libbpf to lock the BPF maps and ring buffers past the inherited 8 MiB cap
     try:
         resource.setrlimit(resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
     except (ValueError, OSError):
         pass
-    parent_process = multiprocessing.parent_process()
-    assert parent_process is not None
-    signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))
-    event_pipe_0, event_pipe_1, event_pipe_2, event_pipe_3, event_pipe_4 = event_pipes
     EVERY_EXE: typing.Final[bool] = config.monitoring.every_exe
     CONN_MAP_MAX: typing.Final[int] = config.monitoring.conn_map_max_entries
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
-    resolver = ExeResolver(q_error.put)
+    resolver = ExeResolver(log_error)
 
     # PID-only caching survives execve and PID reuse, so read the current value.
     def get_cmdline(pid: int) -> str:
@@ -420,7 +412,7 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
         return cache[pid]
 
     # get current connections
-    initial_batch = []
+    initial_batch: list[BpfEvent] = []
     for proc in initial_poll():
         try:
             stat = os.stat(f"/proc/{proc['pid']}/exe")
@@ -460,130 +452,133 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
         except Exception:
             pass
     if initial_batch:
-        event_pipe_0.send_bytes(pickle.dumps(initial_batch))
-    # pre-flight checks and BPF program init
-    try:
-        check_bpf_requirements()
-    except (RuntimeError, FileNotFoundError) as e:
-        q_error.put(f"BPF requirements check failed: {e}")
-        raise
-    try:
-        bpf_obj_path = find_bpf_object()
-        optional_trace_targets = {
-            "inet6_sendmsg_ret": "inet6_sendmsg",
-            "inet6_recvmsg_ret": "inet6_recvmsg",
-            "tcp_splice_read_ret": "tcp_splice_read",
-            "mptcp_splice_read_ret": "mptcp_splice_read",
-            # tcp_read_sock covers io_uring zero-copy recv (IORING_OP_RECV_ZC), but it is also
-            # every proto_ops->read_sock: kTLS copy-mode, strparser (kcm/espintcp), nvme-tcp etc.
-            # reach it too, double counting or misattributing bytes. So the BPF program counts
-            # only calls whose recv_actor is io_zcrx_recv_skb (the actor io_uring passes) and
-            # needs its address; without the symbol the program stays disabled
-            "tcp_read_sock_ret": "io_zcrx_recv_skb",
-            # af_packet raw send/recv (L2 injection / capture). optional: absent if CONFIG_PACKET=n
-            "packet_sendmsg_ret": "packet_sendmsg",
-            "packet_recvmsg_ret": "packet_recvmsg",
-            # tun/tap raw write egress + read ingress. optional: absent if CONFIG_TUN=n
-            "tun_get_user_ret": "tun_get_user",
-            "tun_do_read_ret": "tun_do_read",
-            # af_xdp copy-mode tx (per-frame skb build). optional: absent if CONFIG_XDP_SOCKETS=n
-            "xsk_build_skb_ret": "xsk_build_skb",
-            # mmap-ring RX capture (opt-in mmap_ring_rx). absent if CONFIG_PACKET=n / CONFIG_XDP_SOCKETS=n
-            "packet_set_ring_ret": "packet_set_ring",
-            "tpacket_rcv_ret": "tpacket_rcv",
-            "xsk_bind_ret": "xsk_bind",
-            "xsk_rcv_ret": "__xsk_rcv",
-        }
-        syms = kernel_symbol_addrs(set(optional_trace_targets.values()))
-        # gate on symbol PRESENCE (kptr_restrict=2 zeroes addresses but still lists names).
-        # None (kallsyms unreadable) -> assume present and let the load try; a fexit prog
-        # whose target symbol is absent would otherwise fail the whole bpf object load
-        disabled_traces = set() if syms is None else {prog for prog, target in optional_trace_targets.items() if target not in syms}
-        # snapshot before the opt-in gate below, so a disabled hook is not reported as a missing symbol
-        missing_symbol = set(disabled_traces)
-        # tcp_read_sock_ret is the exception: its actor filter needs the real address, not
-        # just existence -- disable it rather than leave it attached counting nothing
-        io_zcrx_actor = 0 if syms is None else syms.get("io_zcrx_recv_skb", 0)
-        if io_zcrx_actor == 0:
-            disabled_traces.add("tcp_read_sock_ret")
-        # opt-in: these add a per-frame softirq hook the per-connection aggregation avoids
-        if not config.monitoring.mmap_ring_rx:
-            disabled_traces.update(("packet_set_ring_ret", "tpacket_rcv_ret", "xsk_bind_ret", "xsk_rcv_ret"))
-        # a ringbuf's max_entries is its byte size, so the configured page count sizes it
-        exec_ring_bytes = config.monitoring.exec_ring_buffer_pages * resource.getpagesize()
-        b = BPF(obj_file=bpf_obj_path, map_max_entries={"conn_stats4": CONN_MAP_MAX, "conn_stats6": CONN_MAP_MAX, "exec_events": exec_ring_bytes}, disabled_programs=disabled_traces)
-        b.attach_kretprobe(event=b.get_syscall_fnname("execve"), fn_name="exec_entry")
-    except Exception as e:
-        q_error.put("Init BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
-        time.sleep(5)
-        if parent_process.pid is not None:
-            os.kill(parent_process.pid, signal.SIGTERM)
-        raise e
-    use_getaddrinfo_uprobe = False
-    try:
-        b.attach_uprobe(name="c", sym="getaddrinfo", fn_name="dns_entry")
-        b.attach_uretprobe(name="c", sym="getaddrinfo", fn_name="dns_return")
-        use_getaddrinfo_uprobe = True
-    except Exception as e:
-        q_error.put(f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup")
-    # attach fexit network hooks: inet_sendmsg for send, inet_recvmsg for recv;
-    # sock_common_recvmsg covers af_inet6 raw / l2tp / dccp recv (not inet6_recvmsg)
-    try:
-        b.bpf_obj.attach_trace("inet_sendmsg_ret")
-        b.bpf_obj.attach_trace("inet_recvmsg_ret")
-        b.bpf_obj.attach_trace("sock_common_recvmsg_ret")
-    except Exception as e:
-        q_error.put(f"Failed to attach network monitoring programs: {e}")
-        raise
-    # inet6_sendmsg and inet6_recvmsg are best-effort: absent on kernels built
-    # without IPv6, a missing hook only drops IPv6 send/recv bytes. attach each
-    # independently so one failing does not skip the other.
-    # packet_sendmsg/packet_recvmsg are best-effort too (see optional_trace_targets)
-    for prog, target, msg in (
-        ("inet6_sendmsg_ret", "inet6_sendmsg", "IPv6 send bytes"),
-        ("inet6_recvmsg_ret", "inet6_recvmsg", "IPv6 recv bytes"),
-        ("packet_sendmsg_ret", "packet_sendmsg", "AF_PACKET raw send bytes"),
-        ("packet_recvmsg_ret", "packet_recvmsg", "AF_PACKET raw recv bytes"),
-        ("tun_get_user_ret", "tun_get_user", "TUN/TAP raw write bytes"),
-        ("tun_do_read_ret", "tun_do_read", "TUN/TAP raw read bytes"),
-        ("xsk_build_skb_ret", "xsk_build_skb", "AF_XDP copy-mode tx bytes"),
-        ("packet_set_ring_ret", "packet_set_ring", "AF_PACKET RX_RING owner tracking"),
-        ("tpacket_rcv_ret", "tpacket_rcv", "AF_PACKET RX_RING capture bytes"),
-        ("xsk_bind_ret", "xsk_bind", "AF_XDP RX owner tracking"),
-        ("xsk_rcv_ret", "__xsk_rcv", "AF_XDP RX capture bytes"),
-    ):
-        if prog in disabled_traces:
-            if prog in missing_symbol:
-                q_error.put(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded")
-            continue
-        try:
-            b.bpf_obj.attach_trace(prog)
-        except Exception as e:
-            q_error.put(f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded")
-    # tcp/mptcp splice_read: recv via splice()/sendfile() bypasses recvmsg. best-effort,
-    # one hook covers v4+v6; a missing hook only drops spliced recv bytes
-    for prog, target in (("tcp_splice_read_ret", "tcp_splice_read"), ("mptcp_splice_read_ret", "mptcp_splice_read")):
-        if prog in disabled_traces:
-            q_error.put(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded")
-            continue
-        try:
-            b.bpf_obj.attach_trace(prog)
-        except Exception as e:
-            q_error.put(f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded")
-    # tcp_read_sock: recv via io_uring zero-copy (IORING_OP_RECV_ZC). only enabled when
-    # io_zcrx_recv_skb is present (see optional_trace_targets); its address must be written
-    # before attach so the actor filter never counts other read_sock users. a missing/disabled
-    # hook only drops io_uring zcrx recv
-    if "tcp_read_sock_ret" in disabled_traces:
-        q_error.put("BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded")
-    else:
-        try:
-            b.bpf_obj.set_global(".data.io_zcrx", struct.pack("<Q", io_zcrx_actor))
-            b.bpf_obj.attach_trace("tcp_read_sock_ret")
-        except Exception as e:
-            q_error.put(f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded")
+        publish(initial_batch)
 
-    # callbacks for bpf events, read event and put into a pipe for run_primary
+    def attach() -> BPF:
+        """pre-flight checks, load the BPF program and attach its probes and ring buffers"""
+        try:
+            check_bpf_requirements()
+        except (RuntimeError, FileNotFoundError) as e:
+            log_error(f"BPF requirements check failed: {e}")
+            raise
+        try:
+            bpf_obj_path = find_bpf_object()
+            optional_trace_targets = {
+                "inet6_sendmsg_ret": "inet6_sendmsg",
+                "inet6_recvmsg_ret": "inet6_recvmsg",
+                "tcp_splice_read_ret": "tcp_splice_read",
+                "mptcp_splice_read_ret": "mptcp_splice_read",
+                # tcp_read_sock covers io_uring zero-copy recv (IORING_OP_RECV_ZC), but it is also
+                # every proto_ops->read_sock: kTLS copy-mode, strparser (kcm/espintcp), nvme-tcp etc.
+                # reach it too, double counting or misattributing bytes. So the BPF program counts
+                # only calls whose recv_actor is io_zcrx_recv_skb (the actor io_uring passes) and
+                # needs its address; without the symbol the program stays disabled
+                "tcp_read_sock_ret": "io_zcrx_recv_skb",
+                # af_packet raw send/recv (L2 injection / capture). optional: absent if CONFIG_PACKET=n
+                "packet_sendmsg_ret": "packet_sendmsg",
+                "packet_recvmsg_ret": "packet_recvmsg",
+                # tun/tap raw write egress + read ingress. optional: absent if CONFIG_TUN=n
+                "tun_get_user_ret": "tun_get_user",
+                "tun_do_read_ret": "tun_do_read",
+                # af_xdp copy-mode tx (per-frame skb build). optional: absent if CONFIG_XDP_SOCKETS=n
+                "xsk_build_skb_ret": "xsk_build_skb",
+                # mmap-ring RX capture (opt-in mmap_ring_rx). absent if CONFIG_PACKET=n / CONFIG_XDP_SOCKETS=n
+                "packet_set_ring_ret": "packet_set_ring",
+                "tpacket_rcv_ret": "tpacket_rcv",
+                "xsk_bind_ret": "xsk_bind",
+                "xsk_rcv_ret": "__xsk_rcv",
+            }
+            syms = kernel_symbol_addrs(set(optional_trace_targets.values()))
+            # gate on symbol PRESENCE (kptr_restrict=2 zeroes addresses but still lists names).
+            # None (kallsyms unreadable) -> assume present and let the load try; a fexit prog
+            # whose target symbol is absent would otherwise fail the whole bpf object load
+            disabled_traces = set() if syms is None else {prog for prog, target in optional_trace_targets.items() if target not in syms}
+            # snapshot before the opt-in gate below, so a disabled hook is not reported as a missing symbol
+            missing_symbol = set(disabled_traces)
+            # tcp_read_sock_ret is the exception: its actor filter needs the real address, not
+            # just existence -- disable it rather than leave it attached counting nothing
+            io_zcrx_actor = 0 if syms is None else syms.get("io_zcrx_recv_skb", 0)
+            if io_zcrx_actor == 0:
+                disabled_traces.add("tcp_read_sock_ret")
+            # opt-in: these add a per-frame softirq hook the per-connection aggregation avoids
+            if not config.monitoring.mmap_ring_rx:
+                disabled_traces.update(("packet_set_ring_ret", "tpacket_rcv_ret", "xsk_bind_ret", "xsk_rcv_ret"))
+            # a ringbuf's max_entries is its byte size, so the configured page count sizes it
+            exec_ring_bytes = config.monitoring.exec_ring_buffer_pages * resource.getpagesize()
+            b = BPF(obj_file=bpf_obj_path, map_max_entries={"conn_stats4": CONN_MAP_MAX, "conn_stats6": CONN_MAP_MAX, "exec_events": exec_ring_bytes}, disabled_programs=disabled_traces)
+            b.attach_kretprobe(event=b.get_syscall_fnname("execve"), fn_name="exec_entry")
+        except Exception as e:
+            log_error("Init BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+            raise
+        use_getaddrinfo_uprobe = False
+        try:
+            b.attach_uprobe(name="c", sym="getaddrinfo", fn_name="dns_entry")
+            b.attach_uretprobe(name="c", sym="getaddrinfo", fn_name="dns_return")
+            use_getaddrinfo_uprobe = True
+        except Exception as e:
+            log_error(f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup")
+        # attach fexit network hooks: inet_sendmsg for send, inet_recvmsg for recv;
+        # sock_common_recvmsg covers af_inet6 raw / l2tp / dccp recv (not inet6_recvmsg)
+        try:
+            b.bpf_obj.attach_trace("inet_sendmsg_ret")
+            b.bpf_obj.attach_trace("inet_recvmsg_ret")
+            b.bpf_obj.attach_trace("sock_common_recvmsg_ret")
+        except Exception as e:
+            log_error(f"Failed to attach network monitoring programs: {e}")
+            raise
+        # inet6_sendmsg and inet6_recvmsg are best-effort: absent on kernels built
+        # without IPv6, a missing hook only drops IPv6 send/recv bytes. attach each
+        # independently so one failing does not skip the other.
+        # packet_sendmsg/packet_recvmsg are best-effort too (see optional_trace_targets)
+        for prog, target, msg in (
+            ("inet6_sendmsg_ret", "inet6_sendmsg", "IPv6 send bytes"),
+            ("inet6_recvmsg_ret", "inet6_recvmsg", "IPv6 recv bytes"),
+            ("packet_sendmsg_ret", "packet_sendmsg", "AF_PACKET raw send bytes"),
+            ("packet_recvmsg_ret", "packet_recvmsg", "AF_PACKET raw recv bytes"),
+            ("tun_get_user_ret", "tun_get_user", "TUN/TAP raw write bytes"),
+            ("tun_do_read_ret", "tun_do_read", "TUN/TAP raw read bytes"),
+            ("xsk_build_skb_ret", "xsk_build_skb", "AF_XDP copy-mode tx bytes"),
+            ("packet_set_ring_ret", "packet_set_ring", "AF_PACKET RX_RING owner tracking"),
+            ("tpacket_rcv_ret", "tpacket_rcv", "AF_PACKET RX_RING capture bytes"),
+            ("xsk_bind_ret", "xsk_bind", "AF_XDP RX owner tracking"),
+            ("xsk_rcv_ret", "__xsk_rcv", "AF_XDP RX capture bytes"),
+        ):
+            if prog in disabled_traces:
+                if prog in missing_symbol:
+                    log_error(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded")
+                continue
+            try:
+                b.bpf_obj.attach_trace(prog)
+            except Exception as e:
+                log_error(f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded")
+        # tcp/mptcp splice_read: recv via splice()/sendfile() bypasses recvmsg. best-effort,
+        # one hook covers v4+v6; a missing hook only drops spliced recv bytes
+        for prog, target in (("tcp_splice_read_ret", "tcp_splice_read"), ("mptcp_splice_read_ret", "mptcp_splice_read")):
+            if prog in disabled_traces:
+                log_error(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded")
+                continue
+            try:
+                b.bpf_obj.attach_trace(prog)
+            except Exception as e:
+                log_error(f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded")
+        # tcp_read_sock: recv via io_uring zero-copy (IORING_OP_RECV_ZC). only enabled when
+        # io_zcrx_recv_skb is present (see optional_trace_targets); its address must be written
+        # before attach so the actor filter never counts other read_sock users. a missing/disabled
+        # hook only drops io_uring zcrx recv
+        if "tcp_read_sock_ret" in disabled_traces:
+            log_error("BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded")
+        else:
+            try:
+                b.bpf_obj.set_global(".data.io_zcrx", struct.pack("<Q", io_zcrx_actor))
+                b.bpf_obj.attach_trace("tcp_read_sock_ret")
+            except Exception as e:
+                log_error(f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded")
+        b["exec_events"].open_ring_buffer(queue_exec_event)
+        if use_getaddrinfo_uprobe:
+            b["dns_events"].open_ring_buffer(queue_dns_event)
+        return b
+
+    # callbacks for bpf events, read event and hand it to publish
     # maps already warned as near-capacity, so the warning fires once per episode, not every drain
     near_capacity_maps: set[str] = set()
 
@@ -592,31 +587,30 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
 
         bytes and packets are summed in-kernel per connection in the
         conn_stats4/conn_stats6 LRU hash maps, so process-ancestry resolution
-        and pickling run once per connection per drain interval rather than per
-        packet. each entry carries the send and recv totals as one event. ipv4
-        goes to event_pipe_0, ipv6 to event_pipe_1."""
-        for map_name, key_type, family, pipe in (
-            ("conn_stats4", ConnKey4, socket.AF_INET, event_pipe_0),
-            ("conn_stats6", ConnKey6, socket.AF_INET6, event_pipe_1),
-            ("conn_stats_packet", ConnKeyPacket, socket.AF_PACKET, event_pipe_0),
+        runs once per connection per drain interval rather than per packet.
+        each entry carries the send and recv totals as one event."""
+        for map_name, key_type, family in (
+            ("conn_stats4", ConnKey4, socket.AF_INET),
+            ("conn_stats6", ConnKey6, socket.AF_INET6),
+            ("conn_stats_packet", ConnKeyPacket, socket.AF_PACKET),
         ):
             try:
                 entries = b.drain_map(map_name, key_type, ConnVal)
             except Exception as e:
-                q_error.put("BPF drain %s %s%s on line %s" % (map_name, type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                log_error("BPF drain %s %s%s on line %s" % (map_name, type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
                 continue
             # an lru map evicts oldest entries silently when full, so a drain at
             # near capacity means connections may have been dropped before drain
             if len(entries) >= CONN_MAP_MAX * 9 // 10:
                 if map_name not in near_capacity_maps:
                     near_capacity_maps.add(map_name)
-                    q_error.put(f"{map_name} near capacity ({len(entries)}/{CONN_MAP_MAX}), connections may have been evicted, try increasing [monitoring].conn_map_max_entries")
+                    log_error(f"{map_name} near capacity ({len(entries)}/{CONN_MAP_MAX}), connections may have been evicted, try increasing [monitoring].conn_map_max_entries")
             else:
                 near_capacity_maps.discard(map_name)
             # drain_map already lookup_and_delete'd every entry from the kernel, so a
             # raise here would drop the rest of this (now unrecoverable) batch -- keep
             # per-entry failures isolated so one bad entry can't lose its siblings.
-            outgoing = []
+            outgoing: list[BpfEvent] = []
             cmdline_cache: dict[int, str] = {}
             for key, val in entries:
                 try:
@@ -665,12 +659,12 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
                         }
                     )
                     if len(outgoing) >= CONN_DRAIN_CHUNK:
-                        pipe.send_bytes(pickle.dumps(outgoing))
+                        publish(outgoing)
                         outgoing = []
                 except Exception as e:
-                    q_error.put("BPF drain entry %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                    log_error("BPF drain entry %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
             if outgoing:
-                pipe.send_bytes(pickle.dumps(outgoing))
+                publish(outgoing)
 
     def queue_exec_event(ctx, data, size):
         event = b["exec_events"].event(data)
@@ -679,34 +673,34 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
         st_dev, st_ino, exe = resolver.resolve(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
         pst_dev, pst_ino, pexe = resolver.resolve(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
         if EVERY_EXE:
-            # wrap in a list: every event-pipe message is a batch, the contract the reader extends from
-            event_pipe_4.send_bytes(
-                pickle.dumps(
-                    [
-                        {
-                            "pid": event.pid,
-                            "name": event.comm.decode(errors="replace"),
-                            "dev": st_dev,
-                            "ino": st_ino,
-                            "exe": exe,
-                            "cmdline": get_cmdline(event.pid),
-                            "ppid": event.ppid,
-                            "pname": event.pcomm.decode(errors="replace"),
-                            "pdev": pst_dev,
-                            "pino": pst_ino,
-                            "pexe": pexe,
-                            "pcmdline": get_cmdline(event.ppid),
-                            "uid": event.uid,
-                            "send": 0,
-                            "recv": 0,
-                            "lport": -1,
-                            "rport": -1,
-                            "laddr": "",
-                            "raddr": "",
-                            "domain": "",
-                        }
-                    ]
-                )
+            publish(
+                [
+                    {
+                        "pid": event.pid,
+                        "name": event.comm.decode(errors="replace"),
+                        "dev": st_dev,
+                        "ino": st_ino,
+                        "exe": exe,
+                        "cmdline": get_cmdline(event.pid),
+                        "ppid": event.ppid,
+                        "pname": event.pcomm.decode(errors="replace"),
+                        "pdev": pst_dev,
+                        "pino": pst_ino,
+                        "pexe": pexe,
+                        "pcmdline": get_cmdline(event.ppid),
+                        "uid": event.uid,
+                        "send": 0,
+                        "recv": 0,
+                        "family": 0,
+                        "protocol": 0,
+                        "lport": -1,
+                        "rport": -1,
+                        "laddr": "",
+                        "raddr": "",
+                        "domain": "",
+                        "netns": 0,
+                    }
+                ]
             )
 
     def queue_dns_event(ctx, data, size):
@@ -721,11 +715,9 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
         except ValueError:
             _cache_put(domain_dict, ip, ".".join(reversed(domain.split("."))))
 
-    b["exec_events"].open_ring_buffer(queue_exec_event)
-    if use_getaddrinfo_uprobe:
-        b["dns_events"].open_ring_buffer(queue_dns_event)
-    # probes are attached, so the main process can sd_notify READY
-    q_out.put("ready")
+    b = attach()
+    # probes are attached, so the main thread can sd_notify READY
+    ready.set()
     # main loop: poll the exec/dns ring buffer on a short timeout so DNS/exec
     # context stays fresh, and drain the in-kernel connection aggregation maps
     # on a fixed interval. Bandwidth is accumulated in-kernel between drains, so
@@ -741,24 +733,36 @@ def run_monitor(config: Config, event_pipes: tuple, q_error: multiprocessing.Que
         except Exception:
             return
         if exec_drops > ring_drop_state[0]:
-            q_error.put(f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost")
+            log_error(f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost")
             ring_drop_state[0] = exec_drops
         if dns_drops > ring_drop_state[1]:
-            q_error.put(f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})")
+            log_error(f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})")
             ring_drop_state[1] = dns_drops
 
     drain_interval = 1.0
     next_drain = time.monotonic() + drain_interval
-    while True:
-        if not parent_process.is_alive() or not q_in.empty():
-            drain_conn_maps()
-            return 0
-        try:
-            b.ring_buffer_poll(timeout=200)
-            now = time.monotonic()
-            if now >= next_drain:
+    try:
+        while not stop.is_set():
+            if reattach.is_set():
+                # after a suspend: hand over what the maps hold, then load the program afresh;
+                # its counters, the ring drop totals among them, start from zero
+                reattach.clear()
                 drain_conn_maps()
-                report_ring_drops()
-                next_drain = now + drain_interval
-        except Exception as e:
-            q_error.put("BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                b.cleanup()
+                b = attach()
+                ring_drop_state[:] = [0, 0]
+                next_drain = time.monotonic() + drain_interval
+                continue
+            try:
+                b.ring_buffer_poll(timeout=200)
+                now = time.monotonic()
+                if now >= next_drain:
+                    drain_conn_maps()
+                    report_ring_drops()
+                    next_drain = now + drain_interval
+            except Exception as e:
+                log_error("BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+        # hand over what the maps still hold before shutting down
+        drain_conn_maps()
+    finally:
+        b.cleanup()

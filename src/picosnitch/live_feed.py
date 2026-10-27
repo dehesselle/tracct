@@ -7,6 +7,7 @@ Live event feed published over a UNIX socket so external readers
 events in real time without polling the database.
 """
 
+import collections.abc
 import grp
 import json
 import logging
@@ -111,7 +112,7 @@ class LiveFeedPublisher:
     def publish(self, event: dict) -> None:
         self.publish_many([event])
 
-    def publish_many(self, events: list[dict]) -> None:
+    def publish_many(self, events: collections.abc.Sequence[collections.abc.Mapping[str, object]]) -> None:
         """Serialize events once and queue them for every subscriber; the writer thread sends them."""
         if not events or self._sock is None or not self._subscribers:
             return

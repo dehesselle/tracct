@@ -46,4 +46,5 @@ Then watch live traffic as root or as a member of `picosnitch-viewer`:
   behavior, upgrades, troubleshooting
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building, checks, tests, benchmark
 - [docs/schema.md](docs/schema.md): database tables and example queries
+- [docs/performance.md](docs/performance.md): measured CPU, memory and losses under load
 - [docs/alternatives.md](docs/alternatives.md): how other per-process traffic tools compare

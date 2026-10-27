@@ -44,12 +44,16 @@ path = "picosnitch.live_feed"
 depends_on = ["picosnitch.constants"]
 
 [[modules]]
-path = "picosnitch.process_manager"
-depends_on = []
+path = "picosnitch.monitor"
+depends_on = ["picosnitch.bpf_wrapper", "picosnitch.config", "picosnitch.constants", "picosnitch.types", "picosnitch.utils"]
+
+[[modules]]
+path = "picosnitch.writer"
+depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.types", "picosnitch.utils"]
 
 [[modules]]
 path = "picosnitch.main_loop"
-depends_on = ["picosnitch.subprocesses.secondary", "picosnitch.config", "picosnitch.process_manager", "picosnitch.subprocesses.monitor", "picosnitch.subprocesses.primary", "picosnitch.utils"]
+depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.live_feed", "picosnitch.monitor", "picosnitch.types", "picosnitch.utils", "picosnitch.writer"]
 
 [[modules]]
 path = "picosnitch.cli"
@@ -58,22 +62,6 @@ depends_on = ["picosnitch.utils", "picosnitch.ui.top", "picosnitch.config", "pic
 [[modules]]
 path = "picosnitch.__main__"
 depends_on = ["picosnitch.cli"]
-
-[[modules]]
-path = "picosnitch.subprocesses"
-depends_on = []
-
-[[modules]]
-path = "picosnitch.subprocesses.monitor"
-depends_on = ["picosnitch.bpf_wrapper", "picosnitch.constants", "picosnitch.config"]
-
-[[modules]]
-path = "picosnitch.subprocesses.primary"
-depends_on = ["picosnitch.config", "picosnitch.utils", "picosnitch.live_feed"]
-
-[[modules]]
-path = "picosnitch.subprocesses.secondary"
-depends_on = ["picosnitch.config", "picosnitch.utils", "picosnitch.constants", "picosnitch.types"]
 
 [[modules]]
 path = "picosnitch.ui"

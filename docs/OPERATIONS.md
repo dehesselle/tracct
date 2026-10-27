@@ -17,8 +17,8 @@ are in the [README](../README.md).
   group. The group comes from `systemd/picosnitch.sysusers`; it cannot be called
   `picosnitch`, which `DynamicUser=` takes for itself. Set `[viewer] group` to match and add
   viewers with `usermod -aG picosnitch-viewer <user>`.
-- `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever a subprocess dies
-  and is restarted.
+- `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
+  dies and is restarted.
 - `LimitMEMLOCK=infinity` for the BPF maps and ring buffers, and a commented
   `MemoryMax=` to cap memory if wanted.
 
@@ -54,6 +54,9 @@ capture side are logged under `picosnitch.error`, among them:
   `[monitoring] exec_ring_buffer_pages`
 - `conn_stats4 near capacity`: connections may have been evicted before a drain; raise
   `[monitoring] conn_map_max_entries`
+- `writer queue full: dropped N event(s)`: the writer fell behind the reader (slow disk,
+  locked database) and the oldest batches were discarded
+- `live feed queue full: dropped N event(s)`: the same for viewers, which costs no data
 - `live feed: dropped N subscriber(s)`: a viewer fell more than 8 MiB behind
 - `hardlink multi-call inode …`: informational, once per multi-call binary
 - `SQLite execute … will retry N entries`: a failed write, retried on the next window
@@ -62,7 +65,11 @@ capture side are logged under `picosnitch.error`, among them:
 
 Bytes are summed in the kernel, so CPU use follows the number of active connections per
 second, not the packet rate. The benchmark in `bench/` measures overhead and accuracy; see
-[bench/reports/findings.md](../bench/reports/findings.md).
+[bench/reports/findings.md](../bench/reports/findings.md). `bench/lib/loadtest.py`
+measures the daemon's CPU, memory and losses under sustained load (many idle clients,
+tens of thousands of connections per second, hundreds of short-lived processes per
+second); see [bench/README.md](../bench/README.md#load-test). Measured results are in
+[performance.md](performance.md).
 
 The database grows with the number of distinct connections per write window (process,
 addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, larger rows.
@@ -77,7 +84,10 @@ addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, lar
   untouched (see [Upgrades](#upgrades)).
 - **Malformed config**: defaults are used and the problem is logged.
 - **Second instance**: refused while `picosnitch.lock` in the runtime directory is held.
-- **Suspend and resume**: detected from the clocks; the monitor drains and re-attaches.
+- **Stop**: the reader drains the kernel maps once more and the writer writes everything
+  it holds before the process exits, so a restart loses no counted traffic.
+- **Suspend and resume**: detected from the clocks; the reader drains the maps, unloads
+  the BPF program and loads it again.
   `systemctl kill -s SIGUSR1 --kill-whom=main picosnitch` forces the same.
 - **Clock ahead of the data** (booted before NTP): the retention purge is skipped rather
   than wiping the database.

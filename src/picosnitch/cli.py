@@ -3,7 +3,6 @@
 
 import fcntl
 import logging
-import multiprocessing
 import os
 import sqlite3
 import stat
@@ -169,8 +168,7 @@ def main() -> int:
     """run the picosnitch daemon in the foreground (under a service manager)"""
     # hold an exclusive lock for the daemon's lifetime: a second instance would unlink and
     # rebind the live feed socket and write the same database. the kernel drops the lock
-    # when the process (and its forked subprocesses, which inherit the fd) exit, so a crash
-    # never leaves a stale lock behind
+    # when the process exits, so a crash never leaves a stale lock behind
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(RUN_DIR / "picosnitch.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
     try:
@@ -181,7 +179,7 @@ def main() -> int:
     init_database()
     if err := check_database():
         return err
-    # master copy of config, all subprocesses only receive a static copy from this point in time
+    # read once: a change takes a restart
     config = load_config()
     logging.info(f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}")
     logging.info(f"state: {STATE_DIR}")
@@ -198,7 +196,6 @@ def start_picosnitch() -> int:
         logging.error("Did not detect a supported operating system")
         return 1
     configure_logging()
-    multiprocessing.set_start_method("fork", force=True)
     readme = textwrap.dedent(
         f"""
         Monitor your system for applications that make network connections and track

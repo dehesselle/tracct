@@ -156,7 +156,7 @@ def test_maintain_database_quarantines_corrupt(tmp_path):
     import pytest
 
     from picosnitch.constants import DB_VERSION
-    from picosnitch.subprocesses.secondary import maintain_database
+    from picosnitch.writer import maintain_database
 
     db = tmp_path / "picosnitch.db"
     bad = tmp_path / "picosnitch.db.bad"
@@ -216,7 +216,7 @@ def test_maintain_database_purges_orphans(tmp_path):
     import sqlite3
 
     from picosnitch.constants import DB_VERSION, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES
-    from picosnitch.subprocesses.secondary import maintain_database
+    from picosnitch.writer import maintain_database
 
     db = tmp_path / "picosnitch.db"
     con = sqlite3.connect(db)
@@ -395,7 +395,7 @@ def test_proc_reads_survive_non_utf8_comm():
     """a process can set a non-UTF-8 comm via prctl(PR_SET_NAME); the monitor's /proc text
     readers must degrade to replacement chars, not raise UnicodeDecodeError (which dropped
     the process's drain entry) or misparse stat/status (ppid 0, uid 0)"""
-    from picosnitch.subprocesses.monitor import _read_proc_comm, _read_proc_ppid, _read_proc_status_uid
+    from picosnitch.monitor import _read_proc_comm, _read_proc_ppid, _read_proc_status_uid
 
     code = 'import ctypes, time\nctypes.CDLL(None).prctl(15, b"\\xff\\xfe*bad", 0, 0, 0)\nprint("x", flush=True)\ntime.sleep(30)'
     p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE)

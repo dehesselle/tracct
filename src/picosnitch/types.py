@@ -5,7 +5,7 @@ import typing
 
 
 class BpfEvent(typing.TypedDict):
-    """Process and connection data for each event captured by the BPF program, and sent to the main & secondary processes"""
+    """Process and connection data for each event captured by the BPF program, handed from the reader to the writer and the live feed"""
 
     pid: int
     name: str
@@ -22,6 +22,8 @@ class BpfEvent(typing.TypedDict):
     uid: int
     send: int
     recv: int
+    # packets in a drained connection entry; other events count as one
+    pkts: typing.NotRequired[int]
     family: int
     protocol: int
     lport: int

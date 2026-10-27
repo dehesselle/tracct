@@ -55,39 +55,47 @@ Ring buffer drops and near-full aggregation maps are detected and logged, not si
 - **Network namespaces.** Every row carries the namespace inode, so processes in separate
   namespaces stay apart.
 
-## Process layout
+## Threads
 
-The daemon (`picosnitch run`) starts three processes and supervises them:
+The daemon (`picosnitch run`) is one process with three worker threads, supervised by the
+main thread (`main_loop.py`):
 
 ```mermaid
 flowchart LR
-    BPF["BPF program<br/>counters, exec and dns events"] --> MON
-    MON["monitor<br/>drain, attribution"] -- event pipes --> PRI
-    PRI["primary<br/>live feed, error log"] -- batches --> SEC
-    PRI --> LIVE([events.sock])
-    SEC["secondary<br/>aggregation, reverse DNS, SQLite"] --> DB[(picosnitch.db)]
+    BPF["BPF program<br/>counters, exec and dns events"] --> R
+    R["reader<br/>drain, attribution"] -- bounded queue --> W
+    R -- bounded queue,<br/>only with viewers --> F
+    W["writer<br/>aggregation, reverse DNS, SQLite"] --> DB[(picosnitch.db)]
+    F["feed<br/>JSON for viewers"] --> LIVE([events.sock])
     LIVE --> TOP["top / tui live"]
     DB -. read-only .-> TUI["tui history"]
 ```
 
-- **monitor** attaches the BPF program, polls the ring buffers, drains the maps every
-  second and attributes each entry to an executable (`subprocesses/monitor.py`).
-- **primary** receives the batches, publishes them on the live feed and writes errors from
-  all processes to the journal (`subprocesses/primary.py`).
-- **secondary** aggregates the batches per write window, filters them per `[log]`, adds
-  domains and writes SQLite; it also purges past the retention window at startup
-  (`subprocesses/secondary.py`).
-- The main process (`main_loop.py`) sends `READY=1` once the probes are attached, exits
-  non-zero when a subprocess dies so systemd restarts the unit, and restarts the monitor
-  after a suspend (detected as a gap between `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`).
+- **reader** attaches the BPF program, polls the ring buffers, drains the maps every
+  second and attributes each entry to an executable (`monitor.py`).
+- **writer** collects the batches, aggregates them per write window, filters them per
+  `[log]`, adds domains and writes SQLite (`writer.py`).
+- **feed** serializes batches for the live feed, and only receives them while a viewer is
+  connected (`main_loop.py`, `live_feed.py`).
+- The **main thread** purges past the retention window at startup, sends `READY=1` once
+  the probes are attached, exits non-zero when a thread dies so systemd restarts the unit,
+  and has the reader re-attach after a suspend (detected as a gap between `CLOCK_BOOTTIME`
+  and `CLOCK_MONOTONIC`). On shutdown the reader drains the maps once more and the writer
+  writes everything it was handed.
 
-The split is inherited from upstream, where executable hashing needed its own process. What
-it still provides is that a slow write never stalls the kernel reader.
+The reader hands each batch over without copying. Its queues drop the oldest batch when
+they are full and the drop is logged, so a stalled writer or viewer never stalls the
+reader. The writer therefore must not modify the events it receives: the feed may be
+serializing the same objects.
+
+One process is enough because what remains besides the reader's attribution is I/O
+(SQLite, DNS, sockets), which releases the GIL. Upstream split the work into processes
+because hashing executables is CPU-bound and would have starved the reader.
 
 ## Executable identity
 
 A process is identified by the path of its executable plus its comm and command line, and
-the same for its parent. The monitor reads `/proc/<pid>/exe` and accepts the path only if
+the same for its parent. The reader reads `/proc/<pid>/exe` and accepts the path only if
 its device and inode match what BPF recorded at event time; a process that has exec'd
 since gets no stale attribution. When the process is already gone, the resolver
 (`ExeResolver`) falls back to caches keyed by (device, inode, comm), to a binary found on
@@ -123,9 +131,9 @@ to upstream so fixes can still be carried over by hand.
 ## Core principles
 
 1. **The kernel reader never blocks.** Draining and attribution must not wait on disk,
-   DNS or a viewer; anything slower happens behind a pipe or queue, and data that cannot be
-   kept is dropped and counted, never back-pressured into the BPF maps (a full LRU map
-   evicts connections silently).
+   DNS or a viewer; anything slower happens in another thread behind a bounded queue, and
+   data that cannot be kept is dropped and counted, never back-pressured into the BPF maps
+   (a full LRU map evicts connections silently).
 2. **Identity by path, no file descriptors.** A path is attributed only when its device and
    inode match the event, and caches are keyed by (device, inode); an event without an
    inode is never cached. Holding fds would pin deleted binaries' disk space.

@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from picosnitch.constants import ST_DEV_MASK
-from picosnitch.subprocesses.monitor import ExeResolver, _classify_inode_fallback
+from picosnitch.monitor import ExeResolver, _classify_inode_fallback
 
 
 def _dev_ino(path: str) -> tuple[int, int]:
