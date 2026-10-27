@@ -7,6 +7,7 @@ import dataclasses
 import grp
 import ipaddress
 import logging
+import math
 import tomllib
 from pathlib import Path
 
@@ -16,9 +17,10 @@ from tracct.constants import CONFIG_PATH
 @dataclasses.dataclass
 class DatabaseConfig:
     enabled: bool = True
-    # rows per write window; rollups per period, which outlive them
-    raw_retention_days: int = 30
-    rollup_retention_days: int = 365
+    # rows per write window; rollups per period, which outlive them. fractions of a day are
+    # allowed, so a test can run through retention in minutes
+    raw_retention_days: float = 30.0
+    rollup_retention_days: float = 365.0
     rollup_period_minutes: int = 60
     write_limit_seconds: int = 10
     maintenance_interval_minutes: int = 60
@@ -105,6 +107,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                     elif not isinstance(expected_type, type):
                         # field.type may be a forward-ref string under `from __future__ import annotations`
                         pass
+                    elif expected_type is float and isinstance(value, int) and not isinstance(value, bool):
+                        # TOML reads 30 as an integer
+                        value = float(value)
                     elif not isinstance(value, expected_type) or (isinstance(value, bool) and expected_type is not bool):
                         type_name = getattr(expected_type, "__name__", str(expected_type))
                         logging.warning(f"config.{section_name}.{field.name}: expected {type_name}, got {type(value).__name__}, skipping")
@@ -123,10 +128,11 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
     if dev_mask is not None and (isinstance(dev_mask, bool) or not isinstance(dev_mask, int) or not 0 <= dev_mask <= 0xFFFFFFFF):
         logging.warning(f"monitoring.st_dev_mask must be in [0, 4294967295], got {dev_mask!r}, ignoring")
         config.monitoring.st_dev_mask = None
-    # reject only negatives (a negative retention makes the cutoff a future time -> wipes the db)
-    for key, default in (("raw_retention_days", 30), ("rollup_retention_days", 365)):
+    # reject negatives (a negative retention makes the cutoff a future time -> wipes the db) and
+    # TOML's inf and nan, which would make the cutoff meaningless
+    for key, default in (("raw_retention_days", 30.0), ("rollup_retention_days", 365.0)):
         retention = getattr(config.database, key)
-        if retention < 0:
+        if not math.isfinite(retention) or retention < 0:
             logging.warning(f"database.{key} must not be negative, got {retention}, using {default}")
             setattr(config.database, key, default)
     period = config.database.rollup_period_minutes

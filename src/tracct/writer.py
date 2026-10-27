@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import shlex
 import socket
 import sqlite3
@@ -316,18 +317,21 @@ def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Call
     now = int(time.time())
     # a cutoff past the newest row means a future clock (booted before NTP), which would wipe the db
     newest = con.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
-    shortest = database.raw_retention_days or database.rollup_retention_days
-    if newest is not None and shortest > 0 and now - shortest * 86400 > newest:
+    # retention may be a fraction of a day; the cutoffs are whole seconds, rounded up so a tiny
+    # retention never becomes 0, which keeps everything
+    raw_seconds, rollup_seconds = math.ceil(database.raw_retention_days * 86400), math.ceil(database.rollup_retention_days * 86400)
+    shortest = raw_seconds or rollup_seconds
+    if newest is not None and shortest > 0 and now - shortest > newest:
         logging.error("tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted")
         return periods, 0, 0
     watermark_row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
     watermark = watermark_row[0] if watermark_row is not None else 0
     purges = []
     # retention 0 is the usual "keep forever"; raw rows go only once they are rolled up
-    if database.raw_retention_days > 0:
-        purges += [(table, column, min(now - database.raw_retention_days * 86400, watermark)) for table, column in RAW_TABLES]
-    if database.rollup_retention_days > 0:
-        purges += [(table, column, now - database.rollup_retention_days * 86400) for table, column in ROLLUP_TABLES]
+    if raw_seconds > 0:
+        purges += [(table, column, min(now - raw_seconds, watermark)) for table, column in RAW_TABLES]
+    if rollup_seconds > 0:
+        purges += [(table, column, now - rollup_seconds) for table, column in ROLLUP_TABLES]
     deleted = 0
     for table, column, cutoff in purges:
         count, stopped = _chunked_delete(con, table, column, cutoff, between_chunks)

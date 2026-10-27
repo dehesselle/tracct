@@ -52,6 +52,18 @@ def test_config_numeric_clamps(tmp_path):
     assert config.database.maintenance_interval_minutes == 60
 
 
+def test_config_retention_fractions(tmp_path):
+    """retention takes fractions of a day and plain integers; inf and nan are replaced"""
+    (tmp_path / "config.toml").write_text("[database]\nraw_retention_days = 0.01\nrollup_retention_days = 2\n")
+    config = load_config(tmp_path / "config.toml")
+    assert config.database.raw_retention_days == 0.01
+    assert config.database.rollup_retention_days == 2.0 and isinstance(config.database.rollup_retention_days, float)
+    (tmp_path / "config.toml").write_text("[database]\nraw_retention_days = inf\nrollup_retention_days = nan\n")
+    config = load_config(tmp_path / "config.toml")
+    assert config.database.raw_retention_days == 30
+    assert config.database.rollup_retention_days == 365
+
+
 def test_config_valid_values_preserved(tmp_path):
     (tmp_path / "config.toml").write_text("[monitoring]\nexec_ring_buffer_pages = 512\nconn_map_max_entries = 1024\n")
     config = load_config(tmp_path / "config.toml")
@@ -258,6 +270,20 @@ def test_purge_database_guards(tmp_path, monkeypatch):
     # the newest row is 3 days old, so a 1 day window would delete everything: clock ahead
     assert writer.purge_database(con, _config(1, 0), lambda: False)[1:] == (0, 0)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 3
+    con.close()
+
+
+def test_purge_database_fraction_of_a_day(tmp_path):
+    """a retention of minutes, given as a fraction of a day, purges at that many seconds"""
+    import tracct.writer as writer
+
+    con = _purge_db(tmp_path)
+    now = int(time.time())
+    _insert_connections(con, (now - 1800, 2), (now - 300, 1))
+    config = _config(15 / 1440, 0)
+    config.database.rollup_period_minutes = 1
+    assert writer.purge_database(con, config, lambda: False)[1] == 1
+    assert [r[0] for r in con.execute("SELECT contime FROM connections")] == [now - 300]
     con.close()
 
 

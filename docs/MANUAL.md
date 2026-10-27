@@ -88,10 +88,12 @@ group = ""                  # group that gets events.sock; empty keeps the daemo
 ```
 
 Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
-`raw_retention_days`, `rollup_retention_days`, `rollup_period_minutes` (1 to 1440),
+`raw_retention_days`, `rollup_retention_days` (negative, `inf` or `nan`), `rollup_period_minutes` (1 to 1440),
 `write_limit_seconds`, `maintenance_interval_minutes` and `st_dev_mask` are replaced by
 their defaults with a warning.
 
+Both retentions take fractions of a day, down to seconds: `raw_retention_days = 0.0069`
+keeps about ten minutes, which lets a test run through retention without waiting a day.
 Raw rows past `raw_retention_days` are only deleted once their period is rolled up. A change
 of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries
 are dropped. A `[viewer] group` that does not exist is ignored. The `[log]` settings apply to
