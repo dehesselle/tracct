@@ -15,7 +15,7 @@ This document covers the code layout, building, the checks and tests, and the be
 | `src/picosnitch/reverse_dns.py` | the reverse DNS workers |
 | `src/picosnitch/netinfo.py`, `rtnetlink.py` | namespaces, interfaces and their counters, via rtnetlink |
 | `src/picosnitch/conntrack.py` | forwarded flows from connection tracking, via ctnetlink |
-| `src/picosnitch/utils.py` | the hand-off queue between threads, logging and SQLite helpers |
+| `src/picosnitch/utils.py`, `types.py` | the hand-off queue between threads and the event passed through it, logging and SQLite helpers |
 | `src/picosnitch/config.py`, `constants.py` | configuration, paths, schema |
 | `src/picosnitch/live_feed.py` | `events.sock` publisher and subscriber |
 | `src/picosnitch/query.py` | the query socket's message framing and client |

@@ -104,10 +104,10 @@ def check_database() -> int:
 
 def _db_is_corrupt(db_path: Path) -> bool:
     """True if the db can't be opened, its version read, or its expected tables are present -- such
-    a db must be quarantined+recreated, else check_database or the secondary boot purge crash-loops
-    the daemon. A populated db with the wrong version is NOT corrupt (returns False) so check_database
-    can reject it without destroying migratable data; an empty or schema-less file with a wrong
-    version has nothing to migrate and IS treated as recreatable."""
+    a db must be quarantined+recreated, else check_database or the writer's first maintenance pass
+    crash-loops the daemon. A populated db with the wrong version is NOT corrupt (returns False) so
+    check_database can reject it without destroying its data; an empty or schema-less file with a
+    wrong version holds nothing and IS treated as recreatable."""
     try:
         db_stat = db_path.lstat()
         if not stat.S_ISREG(db_stat.st_mode) or db_stat.st_nlink != 1:
@@ -120,8 +120,8 @@ def _db_is_corrupt(db_path: Path) -> bool:
                 has_schema = cur.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'connections'").fetchone()
                 return has_schema is None
             # validate the tables AND the columns the boot purge / inserts need: a db with the
-            # right table names but wrong columns (partial migration / foreign db sharing the
-            # version) passes a name-only check yet crashes the secondary. LIMIT 0 validates the
+            # right table names but wrong columns (a foreign db sharing the version) passes a
+            # name-only check yet crashes the writer. LIMIT 0 validates the
             # columns without reading any rows; a missing table or column raises here.
             cur.execute("SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0")
             cur.execute("SELECT id, exe, name, cmdline FROM executables LIMIT 0")
@@ -142,8 +142,8 @@ def init_database() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     db_path = DB_PATH
     if (db_path.exists() or db_path.is_symlink()) and _db_is_corrupt(db_path):
-        # quarantine a corrupt db and recreate it below, so check_database / the secondary boot
-        # purge don't crash-loop the daemon (data is kept in picosnitch.db.bad)
+        # quarantine a corrupt db and recreate it below, so check_database / the writer's first
+        # maintenance pass don't crash-loop the daemon (data is kept in picosnitch.db.bad)
         logging.error(f"picosnitch.db is unusable, quarantining to {db_path.name}.bad and recreating")
         quarantine_database(db_path)
     if not db_path.exists():

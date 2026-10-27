@@ -96,7 +96,7 @@ exec_ring_buffer_pages = 256
     with open(DAEMON_LOG, "wb") as daemon_log:
         proc = subprocess.Popen([PYTHON_EXE, "-m", "picosnitch", "run"], stdout=daemon_log, stderr=subprocess.STDOUT)
 
-    # wait for the events socket to appear -- means primary subprocess is listening
+    # wait for the events socket to appear -- means the daemon is listening
     events_sock = RUN_DIR / "events.sock"
     deadline = time.time() + STARTUP_WAIT + 10
     while time.time() < deadline:

@@ -14,8 +14,9 @@ are in the [README](../README.md).
   below. Its state lives in `/var/lib/private/picosnitch` (reached through the symlink
   `/var/lib/picosnitch`), readable by root only.
 - `SupplementaryGroups=picosnitch-viewer`: lets the daemon hand `events.sock` to that
-  group (the query socket gets it from its socket unit). The group comes from `systemd/picosnitch.sysusers`; it cannot be called
-  `picosnitch`, which `DynamicUser=` takes for itself. Set `[viewer] group` to match and add
+  group (the query socket gets it from its socket unit). The group comes from
+  `systemd/picosnitch.sysusers`; it cannot be called `picosnitch`, which `DynamicUser=`
+  takes for itself. Set `[viewer] group` to match and add
   viewers with `usermod -aG picosnitch-viewer <user>`.
 - `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
   dies and is restarted.
@@ -90,20 +91,26 @@ exactly these.
 ## Logs
 
 Everything goes to stderr, which is the journal under the unit; lines carry their syslog
-priority. Startup logs the resolved config, state and runtime paths. Problems from the
-capture side are logged under `picosnitch.error`, among them:
+priority. Startup logs the resolved config, state and runtime paths. Problems of capturing
+and writing are logged under `picosnitch.error`, among them:
 
 - a skipped or failed BPF hook and which traffic it leaves uncounted
 - `exec ring buffer full: dropped N exec event(s)`: raise
   `[monitoring] exec_ring_buffer_pages`
-- `conn_stats4 near capacity`: connections may have been evicted before a drain; raise
-  `[monitoring] conn_map_max_entries`
+- `dns ring buffer full: dropped N dns event(s)`: those connections get their domain from
+  reverse DNS instead
+- `conn_stats4 near capacity` (or `conn_stats6`, `conn_stats_packet`): connections may have
+  been evicted before a drain; raise `[monitoring] conn_map_max_entries`
 - `writer queue full: dropped N event(s)`: the writer fell behind the reader (slow disk,
   locked database) and the oldest batches were discarded
 - `live feed queue full: dropped N event(s)`: the same for viewers, which costs no data
 - `live feed: dropped N subscriber(s)`: a viewer fell more than 8 MiB behind
+- `live feed: could not hand … to group …` (warning): `[viewer] group` is not among the
+  unit's `SupplementaryGroups=`
 - `hardlink multi-call inode …`: informational, once per multi-call binary
 - `SQLite execute … will retry N entries`: a failed write, retried on the next window
+- `writer retry buffer full …, dropped N oldest entries`: writes have failed for so long
+  that the oldest rows were given up
 - `maintenance: rolled up N period(s), deleted N row(s) …` (info): a maintenance pass that
   did something, with how long it took
 - `conntrack: not available (…)`: no `nf_conntrack` module or no `CAP_NET_ADMIN`; forwarded
@@ -111,6 +118,8 @@ capture side are logged under `picosnitch.error`, among them:
 - `conntrack: net.netfilter.nf_conntrack_acct is 0 …`: see [Forwarded traffic](#forwarded-traffic)
 - `conntrack: N ended flow event(s) lost`: the kernel dropped destroy events under load;
   those flows miss their last window's bytes
+- `conntrack: listener stopped …`: from then on, flows that end miss their last window's
+  bytes until the daemon restarts
 - `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
   its interfaces go unrecorded until it can
 

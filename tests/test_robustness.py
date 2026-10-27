@@ -66,8 +66,8 @@ def test_config_renamed_key_warns_and_is_ignored(tmp_path, caplog):
 
 def test_config_scalar_for_list_field_skipped(tmp_path):
     """a scalar where a list is expected (e.g. ignore_ports = 443) must keep the default:
-    it would TypeError in the secondary's filters every write cycle, halting connection
-    logging and growing new_processes unboundedly."""
+    it would TypeError in the writer's filters on every batch, so no connection would be
+    recorded."""
     (tmp_path / "config.toml").write_text('[log]\nignore_ports = 443\nignore_domains = "example.com"\nignore_ips = "10.0.0.1"\n')
     config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_ports == []
@@ -122,8 +122,8 @@ def test_paths_follow_systemd_directories(tmp_path):
 
 def test_config_ignore_ips_validated(tmp_path):
     """log.ignore_ips entries that aren't valid networks must be dropped (a host-bit CIDR is kept
-    and later normalized with strict=False); else secondary crashes building ignored_networks at
-    boot (list[str] skips load_config's type check, so a non-list must also reset to [])."""
+    and later normalized with strict=False); else the writer crashes building ignored_networks at
+    start (list[str] skips load_config's type check, so a non-list must also reset to [])."""
     import ipaddress
 
     (tmp_path / "config.toml").write_text('[log]\nignore_ips = ["not-an-ip", "192.168.1.5/24", "10.0.0.0/8"]\n')
@@ -135,9 +135,9 @@ def test_config_ignore_ips_validated(tmp_path):
 
 
 def test_config_ignore_domains_validated(tmp_path):
-    """log.ignore_domains entries that aren't non-empty strings must be dropped: a non-str crashes
-    secondary's startswith() filter every write cycle (halting all logging), an empty string matches
-    every domain (silently dropping all connections) -- both outside the subprocess try/except."""
+    """log.ignore_domains entries that aren't non-empty strings must be dropped: a non-str breaks
+    the writer's startswith() filter on every write (nothing gets recorded), an empty string
+    matches every domain (silently dropping all connections)."""
     (tmp_path / "config.toml").write_text('[log]\nignore_domains = ["ads.", "", "telemetry."]\n')
     config = load_config(tmp_path / "config.toml")
     assert config.log.ignore_domains == ["ads.", "telemetry."]  # empty string dropped
@@ -357,7 +357,7 @@ def test_db_is_corrupt_ignores_transient_errors(tmp_path, monkeypatch):
     con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT)")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
-    con.execute("BEGIN EXCLUSIVE")  # hold a write lock, as the live secondary would
+    con.execute("BEGIN EXCLUSIVE")  # hold a write lock, as the live writer would
     orig_connect = sqlite3.connect
     monkeypatch.setattr(sqlite3, "connect", lambda p, **kw: orig_connect(p, timeout=0.05, **kw))  # don't wait out the 5s busy timeout
     assert _db_is_corrupt(db) is False

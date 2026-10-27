@@ -26,7 +26,7 @@ STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/
 RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/picosnitch")
 DB_PATH: typing.Final[Path] = STATE_DIR / "picosnitch.db"
 
-# bounds the secondary's write-retry buffer near 200 MB (~2 KB/entry) on a persistent outage
+# bounds the writer's retry buffer near 200 MB (~2 KB/entry) on a persistent outage
 RETRY_BUFFER_MAX: typing.Final[int] = 100000
 # btrfs device numbers differ per subvolume and its inodes aren't unique across subvolumes,
 # so (dev, ino) checks are disabled there unless [monitoring].st_dev_mask overrides it

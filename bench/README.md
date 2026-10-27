@@ -186,5 +186,6 @@ sudo python3 lib/loadtest.py --out results/loadtest.json   # see --help for the 
 
 Steady and churn count recorded bytes by the generator's command line, which is read when
 the kernel maps are drained; bytes from a client's last second, drained after it exited,
-are therefore missing from that count (about 1 % for steady, 2 % for churn). Exec counts by
-destination port instead and also shows which executable the bytes were attributed to.
+carry the command line the daemon read last for that process, so they are counted too. Exec
+counts by destination port instead and also shows which executable the bytes were
+attributed to.

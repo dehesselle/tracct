@@ -113,8 +113,8 @@ physical interface (outer layer).
 
 Bytes each interface received and sent during a write window, from the kernel's counters
 (`IFLA_STATS64`), for the daemon's namespace, the named ones and those a recorded process
-lives in. Windows without traffic have no row. The first window after a start only sets the
-baseline.
+lives in. Windows without traffic have no row. Counting starts when the daemon starts, or for
+a namespace when it is first seen; bytes from before are not recorded.
 
 ```sql
 contime  INTEGER NOT NULL
@@ -149,7 +149,7 @@ reply_packets INTEGER NOT NULL
 Each rollup row sums the raw rows of one period (`period` is its start, unix time) that share
 the columns it keeps; `rows` is how many raw rows went into it. The rollups drop what makes
 raw rows numerous: process ids were never stored, and addresses and ephemeral ports are
-dropped. A port at or above the start of the kernel's ephemeral range
+dropped, apart from a forwarded flow's source address (the peer). A port at or above the start of the kernel's ephemeral range
 (`net.ipv4.ip_local_port_range`, 32768 by default) is stored as 0, so a server keeps its
 service port as `lport`, a client the server's port as `rport`.
 

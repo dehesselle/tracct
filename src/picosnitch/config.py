@@ -96,7 +96,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                     expected_type = field.type
                     if hasattr(expected_type, "__origin__"):
                         # parameterized generics (list[int]): enforce the container type, a
-                        # scalar here would crash the secondary's filters every write cycle
+                        # scalar here would break the writer's filters on every batch
                         if expected_type.__origin__ is list and not isinstance(value, list):
                             logging.warning(f"config.{section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping")
                             continue
@@ -147,7 +147,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             logging.warning(f"config.viewer.group: {config.viewer.group!r} does not exist, ignoring")
             config.viewer.group = ""
     # drop log.ignore_ips entries that aren't valid networks (strict=False accepts a host-bit CIDR);
-    # otherwise secondary crashes building ignored_networks at boot outside its try/except
+    # otherwise the writer crashes building ignored_networks at start, outside its try/except
     valid_ignore_ips = []
     for ip_subnet in config.log.ignore_ips:
         try:
@@ -157,9 +157,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             continue
         valid_ignore_ips.append(ip_subnet)
     config.log.ignore_ips = valid_ignore_ips
-    # drop ignore_domains entries that aren't non-empty strings: a non-str crashes secondary's
-    # startswith() filter every write cycle (halting all logging), an empty string prefixes every
-    # domain (silently dropping all connections) -- both outside the subprocess try/except
+    # drop ignore_domains entries that aren't non-empty strings: a non-str breaks the writer's
+    # startswith() filter on every write (nothing gets recorded), an empty string prefixes every
+    # domain (silently dropping all connections)
     valid_ignore_domains = []
     for domain_prefix in config.log.ignore_domains:
         if not isinstance(domain_prefix, str) or not domain_prefix:

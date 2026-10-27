@@ -31,7 +31,7 @@ RuntimeDirectory=picosnitch
 
 # libbpf locks the BPF maps and ring buffers past the default 8 MiB
 LimitMEMLOCK=infinity
-# replaces the old built-in 4 GB watchdog: systemd restarts the daemon past this
+# caps the daemon's memory: systemd kills it past this and Restart= starts it again
 #MemoryMax=512M
 
 ProtectKernelModules=yes

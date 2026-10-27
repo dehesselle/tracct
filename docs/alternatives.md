@@ -11,11 +11,11 @@ much with whom.
 | Netdata eBPF | yes | application group, service | not historically |
 | ntopng, pmacct, conntrack + ulogd2 | yes | – | per flow, wire bytes, including forwarded traffic |
 | systemd `IPAccounting=` | counters only | unit | – |
-| picosnitch | yes | process and parent | address, domain, port |
+| picosnitch | yes | process, parent, unit | address, domain, port; forwarded flows per peer |
 
-The flow-based tools see forwarded traffic, which picosnitch does not (see
-[DESIGN.md](DESIGN.md#what-is-and-isnt-counted)); none of them attribute traffic to a
-process.
+The flow-based tools see forwarded traffic but attribute none of it to a process. picosnitch
+records forwarded flows from connection tracking too, apart from its per-process socket
+bytes (see [DESIGN.md](DESIGN.md#what-is-and-isnt-counted)).
 
 How accurately the per-process monitors detect and count traffic, across many
 hard-to-attribute cases, is measured by the benchmark in `bench/`:

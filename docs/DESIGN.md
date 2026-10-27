@@ -54,9 +54,10 @@ traffic come from netlink.
   connection tracking table (ctnetlink) and turns each flow's cumulative counters into the
   bytes moved since the last dump; a listener thread on the destroy group catches the final
   counters of flows that end in between. Counters are only read, never zeroed, so nothing
-  else that reads them is disturbed. Flows with a local address at either end are skipped,
-  first by comparing the raw addresses at their fixed offsets in the message, which keeps a
-  busy host's local flows cheap. Needs `nf_conntrack_acct = 1`.
+  else that reads them is disturbed. Flows with a local address at either end, and those
+  sent to a broadcast or multicast address, are skipped, first by comparing the raw
+  addresses at their fixed offsets in the message, which keeps a busy host's local flows
+  cheap. Needs `nf_conntrack_acct = 1`.
 
 Ring buffer drops, near-full aggregation maps, lost conntrack events and namespaces that
 cannot be queried are detected and logged, not silent.
@@ -160,7 +161,8 @@ events. The schema version sits in `PRAGMA user_version`; there are no migration
 History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
 spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
 who, which unit, which service port and which domain but drop addresses and ephemeral
-ports, so they stay small for a year.
+ports, so they stay small for a year. Forwarded flows keep their source address, the peer
+behind an exit node or NAT, which is the "who" there.
 
 Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
 each period that has closed since the watermark in `meta`, then deletes rows past their
@@ -199,7 +201,8 @@ A range is read from the raw rows wherever they still exist and from the rollups
 so a spike can be taken apart by address and port for all of `raw_retention_days`. The split
 is the first rolled-up period from the oldest raw row on: that row's own period has already
 been partly purged, and only its rollup is complete. A dimension the rollups do not keep
-(addresses, source ports) narrows the range to the raw rows. A port reaching into the rollups
+(the addresses of connections, the destination address and source port of forwarded flows) narrows
+the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
 
 `picosnitch view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`

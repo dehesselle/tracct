@@ -26,8 +26,8 @@ of `picosnitch-query.socket`). Press `?` in it for its keys.
 tabs, switched with `1` to `4`:
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
-  started and the ports each listens on. `p` pauses the list, `s` sorts by sent or received,
-  `r` resets.
+  started and the ports each listens on (for processes the viewer's user may inspect, all of
+  them as root). `p` pauses the list, `s` sorts by sent or received, `r` resets.
 - **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
   of routed flows): the history, grouped by the dimension chosen on the left, over the time
   range in the header. The three kinds of bytes are never added together.
@@ -41,9 +41,9 @@ hour, last day, ...), `h` and `H` step back and forward by a whole span, `u` cyc
 units, `/` finds text in the rows shown, `r` refreshes. A range that ends now refreshes
 every 10 seconds.
 
-Ranges older than the raw rows come from the rollups: whole periods, no addresses, ephemeral
-ports as 0. Dimensions marked "raw only" (addresses, source ports) narrow the range to the
-raw rows, and the status line says from when.
+Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
+forwarded flow's source, ephemeral ports as 0. Dimensions marked "raw only" narrow the range
+to the raw rows, and the status line says from when.
 
 ```text
 picosnitch view [--tab live|processes|interfaces|forwarded] [--events-socket PATH] [--query-socket PATH]
@@ -58,7 +58,7 @@ defaults.
 
 ```toml
 [database]
-enabled = true              # write connections to SQLite
+enabled = true              # record to SQLite; false leaves only the live feed
 raw_retention_days = 30     # keep the rows of every write window this long; 0 keeps them forever
 rollup_retention_days = 365 # keep the rollups this long; 0 keeps them forever
 rollup_period_minutes = 60  # the rows of each period are summed into rollups once it has closed
@@ -92,8 +92,9 @@ Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
 their defaults with a warning.
 
 Raw rows past `raw_retention_days` are only deleted once their period is rolled up. A change
-of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries are dropped. A `[viewer] group` that does not
-exist is ignored.
+of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries
+are dropped. A `[viewer] group` that does not exist is ignored. The `[log]` settings apply to
+forwarded flows too.
 
 Domains in the database are stored in reversed notation (`com.example.www`), which is what
 `ignore_domains` prefixes match. A domain is the name the program looked up, else the
