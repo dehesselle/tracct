@@ -6,6 +6,7 @@
 and a live feed publisher. No root needed; skipped without textual (tracct[tui])."""
 
 import asyncio
+import re
 import threading
 import time
 
@@ -61,6 +62,10 @@ def test_tab_keys(tmp_path):
         async with app.run_test(size=(120, 40)) as pilot:
             tabs = app.query_one(TabbedContent)
             assert not tabs.query_one(Tabs).can_focus
+            # no daemon: the live tab's banner shows why, as an error
+            banner = app.query_one(LivePane).query_one(".banner")
+            await _until(pilot, lambda: banner.display and banner.has_class("-error"))
+            assert "live feed unavailable" in str(banner.render())
             # p means Processes, even with the focus in the live tab
             await pilot.press("p")
             assert tabs.active == "processes"
@@ -210,6 +215,16 @@ def test_live_tab(tmp_path, monkeypatch):
             publisher.publish_many([event, {**event, "send": 1}, {**event, "name": "wget", "exe": "/usr/bin/wget", "recv": 5}])
             await _until(pilot, lambda: pane.events == 3)
             assert pane.totals[("curl", "/usr/bin/curl")][:3] == [101, 4000, 2]
+            # nothing to say: no banner; the events title carries the counts
+            banner = pane.query_one(".banner")
+            assert not banner.display
+            await _until(pilot, lambda: str(pane.query_one("#recent", DataTable).border_title) == "last 500 events · 3 total")
+            # the seconds since the tab started go with the totals they were summed over
+            assert re.fullmatch(r"summary · \d+ s", str(pane.query_one("#totals", DataTable).border_title))
+            pane.set_find("curl")
+            await _until(pilot, lambda: banner.display and str(banner.render()) == "find: curl")
+            pane.set_find("")
+            await _until(pilot, lambda: not banner.display)
             await _until(pilot, lambda: pane.query_one("#totals", DataTable).row_count == 2 and pane.query_one("#recent", DataTable).row_count == 3)
             # by executable, newest event first
             totals, recent = pane.query_one("#totals", DataTable), pane.query_one("#recent", DataTable)
@@ -231,7 +246,7 @@ def test_live_tab(tmp_path, monkeypatch):
             publisher.publish(event)
             await _until(pilot, lambda: pane.events == 4)
             assert len(pane.recent) == 3
-            assert recent.border_subtitle == "PAUSED"
+            await _until(pilot, lambda: recent.border_subtitle == "table is frozen")
             await pilot.press("r")
             await _until(pilot, lambda: pane.events == 0 and not pane.totals)
 
@@ -264,21 +279,21 @@ def test_live_limits(tmp_path, monkeypatch):
             publisher.publish_many([{"name": f"new{i}", "exe": f"/bin/new{i}", "send": 1} for i in range(10)])
             await _until(pilot, lambda: pane.events == 12)
             assert pane.dropped == 2 and len(pane.totals) == 10
-            await _until(pilot, lambda: pane.query_one("#totals", DataTable).border_title == "summary (2 dropped)")
-            assert pane.query_one("#recent", DataTable).border_title == "last 12 events"
+            await _until(pilot, lambda: str(pane.query_one("#totals", DataTable).border_title).startswith("summary (2 dropped) · "))
+            assert str(pane.query_one("#recent", DataTable).border_title) == "last 12 events · 12 total"
             assert not any(name.startswith("old") for name, _ in pane.totals)
             assert pane.query_one("#totals", DataTable).row_count == 10
             assert len(pane.recent) == 12
             # a lowered limit applies on the next redraw and keeps the newest events
             config.set(settings.LIVE_EVENTS, 10)
             await _until(pilot, lambda: pane.recent.maxlen == 10)
-            await _until(pilot, lambda: pane.query_one("#recent", DataTable).border_title == "last 10 events")
+            await _until(pilot, lambda: str(pane.query_one("#recent", DataTable).border_title).startswith("last 10 events · "))
             assert [event["name"] for event in pane.recent] == [f"new{i}" for i in range(9, -1, -1)]
             await _until(pilot, lambda: pane.query_one("#recent", DataTable).row_count == 10)
             pane.query_one("#totals", DataTable).focus()
             await pilot.press("r")
             await _until(pilot, lambda: pane.dropped == 0)
-            await _until(pilot, lambda: pane.query_one("#totals", DataTable).border_title == "summary")
+            await _until(pilot, lambda: str(pane.query_one("#totals", DataTable).border_title).startswith("summary · "))
 
     try:
         asyncio.run(drive())

@@ -91,8 +91,8 @@ def remote(event: dict) -> str:
 
 class LivePane(Vertical):
     DEFAULT_CSS = """
-    LivePane .header { height: 1; padding: 0 1; background: $foreground 8%; }
-    LivePane .header.-error { color: $text-error; }
+    LivePane .banner { height: auto; padding: 0 1; background: $foreground 8%; display: none; }
+    LivePane .banner.-error { color: $text-error; }
     /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
     LivePane DataTable { border: round $foreground 40%; }
     LivePane DataTable:focus { border: round $accent; }
@@ -129,7 +129,7 @@ class LivePane(Vertical):
         self._shown_recent: dict[str, dict] = {}
 
     def compose(self):
-        yield Static(classes="header")
+        yield Static(classes="banner")
         yield DataTable(id="totals", cursor_type="row", zebra_stripes=True)
         yield DataTable(id="recent", cursor_type="row", zebra_stripes=True)
 
@@ -225,7 +225,7 @@ class LivePane(Vertical):
         if arrived or self._dirty:
             self._dirty = False
             self.render_tables(recent=not self.paused)
-        self.update_header()
+        self.update_status()
 
     def apply_limits(self) -> None:
         """the limits from the settings, read on every redraw so a change applies at once"""
@@ -292,22 +292,22 @@ class LivePane(Vertical):
             # the cursor keeps its place while new events push the rows along
             _replace_rows(self.query_one("#recent", DataTable), rows, follow=False)
 
-    def update_header(self) -> None:
-        elapsed = max(1.0, time.time() - self.since)
-        header = Text()
-        header.append("Live ", style="bold")
-        header.append(f"(socket bytes)  {self.events} events in {int(elapsed)} s")
-        if self.find:
-            header.append(f"  find: {self.find}")
+    def update_status(self) -> None:
+        """the banner, shown only while there is something to say, and the tables' titles"""
+        notes = []
         if self.state != "connected":
-            header.append(f"  {self.state}", style="bold")
-        widget = self.query_one(".header", Static)
-        widget.set_class(self.state != "connected", "-error")
-        widget.update(header)
-        self.query_one("#totals", DataTable).border_title = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
+            notes.append(self.state)
+        if self.find:
+            notes.append(f"find: {self.find}")
+        banner = self.query_one(".banner", Static)
+        banner.display = bool(notes)
+        banner.set_class(self.state != "connected", "-error")
+        banner.update(Text(" · ".join(notes)))
+        summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
+        self.query_one("#totals", DataTable).border_title = f"{summary} · {int(time.time() - self.since)} s"
         recent = self.query_one("#recent", DataTable)
-        recent.border_title = f"last {config.get(LIVE_EVENTS)} events"
-        recent.border_subtitle = "PAUSED" if self.paused else ""
+        recent.border_title = f"last {config.get(LIVE_EVENTS)} events · {self.events} total"
+        recent.border_subtitle = "table is frozen" if self.paused else ""
 
     def action_pause(self) -> None:
         self.paused = not self.paused
