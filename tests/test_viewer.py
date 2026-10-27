@@ -147,6 +147,9 @@ def test_history_drill_down(tmp_path):
         async with app.run_test(size=(140, 45)) as pilot:
             processes = app.query_one("#processes HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(processes.result))
+            # the tab asked for keeps the focus, rather than the first tab taking it
+            await pilot.pause(0.3)
+            assert app.query_one(TabbedContent).active == "processes"
             assert _values(processes) == ["/usr/bin/curl", "/usr/sbin/nginx"]
             assert processes.result["totals"] == [1111 + 5300, 11022 + 530]
             # the timeline follows the highlighted row

@@ -71,6 +71,9 @@ class TimeRange:
 
 class ViewerApp(ChordMixin, App):
     TITLE = "tracct"
+    # the tab bar takes no focus, so Textual's own would land in the first tab and switch to it;
+    # on_mount focuses the tab asked for instead
+    AUTO_FOCUS = None
     CSS = """
     .find { display: none; }
     .find.shown { display: block; }
@@ -108,6 +111,7 @@ class ViewerApp(ChordMixin, App):
     def on_mount(self) -> None:
         # tabs are switched by their letters or a click; focus stays in the tab's content
         self.query_one(TabbedContent).query_one(Tabs).can_focus = False
+        self.focus_pane()
         self.describe()
         self.set_interval(REFRESH_SECONDS, self.refresh_if_live)
 
