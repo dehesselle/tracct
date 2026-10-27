@@ -20,9 +20,8 @@ classifiers = [
 picosnitch = "picosnitch.cli:start_picosnitch"
 
 [project.urls]
-Homepage = "https://github.com/elesiuta/picosnitch"
-Documentation = "https://elesiuta.github.io/picosnitch/"
-Repository = "https://github.com/elesiuta/picosnitch"
+Homepage = "https://github.com/dehesselle/picosnitch"
+Repository = "https://github.com/dehesselle/picosnitch"
 
 [tool.hatch.version]
 path = "src/picosnitch/__init__.py"

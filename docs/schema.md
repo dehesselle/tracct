@@ -1,5 +1,7 @@
 # Database schema
 
+This document describes the tables of the connection database and how to query them.
+
 Picosnitch stores connection logs in an SQLite database at
 `$STATE_DIRECTORY/picosnitch.db` (`/var/lib/picosnitch/picosnitch.db`
 under the unit). The schema is split into four
