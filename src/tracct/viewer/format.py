@@ -14,6 +14,7 @@ from rich.text import Text
 
 from tracct.utils import sanitize_log_line
 
+FIND_PLACEHOLDER = "find in the rows shown (Enter keeps it, Escape clears)"
 # what `u` cycles through; auto picks a unit per value
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")
 _FACTORS = {"kB": 10**3, "MB": 10**6, "GB": 10**9}

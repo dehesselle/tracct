@@ -14,12 +14,12 @@ from rich.text import Text
 from textual import work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, OptionList, Static
+from textual.widgets import DataTable, Input, OptionList, Static
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
 from tracct.query import QueryError
-from tracct.viewer.format import bytes_cell, display, moment, value_cell
+from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, display, moment, value_cell
 from tracct.viewer.timeline import Timeline
 
 if TYPE_CHECKING:
@@ -83,6 +83,7 @@ class HistoryPane(Vertical):
         return self.app
 
     def compose(self):
+        yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
         yield Static(classes="header")
         with Horizontal():
             yield OptionList(id="dimensions")

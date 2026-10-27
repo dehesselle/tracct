@@ -20,13 +20,13 @@ from tcoda.settings import config
 from tcoda.widgets import DataTable
 from textual import work
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.widgets import Static
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Input, Static
 from textual.widgets.data_table import RowKey
 from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
-from tracct.viewer.format import bytes_cell, clean, clock
+from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, clean, clock
 from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 
 # events waiting between the feed thread and the next redraw; fills only while the UI stalls
@@ -93,6 +93,8 @@ class LivePane(Vertical):
     DEFAULT_CSS = """
     LivePane .banner { height: auto; padding: 0 1; background: $foreground 8%; display: none; }
     LivePane .banner.-error { color: $text-error; }
+    LivePane .banner-text { width: 1fr; }
+    LivePane .banner-hint { width: auto; }
     /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
     LivePane DataTable { border: round $foreground 40%; }
     LivePane DataTable:focus { border: round $accent; }
@@ -129,7 +131,10 @@ class LivePane(Vertical):
         self._shown_recent: dict[str, dict] = {}
 
     def compose(self):
-        yield Static(classes="banner")
+        yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
+        with Horizontal(classes="banner"):
+            yield Static(classes="banner-text")
+            yield Static("[dim italic]press c to clear[/]", classes="banner-hint")
         yield DataTable(id="totals", cursor_type="row", zebra_stripes=True)
         yield DataTable(id="recent", cursor_type="row", zebra_stripes=True)
 
@@ -297,12 +302,15 @@ class LivePane(Vertical):
         notes = []
         if self.state != "connected":
             notes.append(self.state)
-        if self.find:
+        # while the find input is open, it says it already
+        kept = bool(self.find) and not self.query_one(".find", Input).has_class("shown")
+        if kept:
             notes.append(f"find: {self.find}")
-        banner = self.query_one(".banner", Static)
+        banner = self.query_one(".banner", Horizontal)
         banner.display = bool(notes)
         banner.set_class(self.state != "connected", "-error")
-        banner.update(Text(" · ".join(notes)))
+        self.query_one(".banner-text", Static).update(Text(" · ".join(notes)))
+        self.query_one(".banner-hint", Static).display = kept
         summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
         self.query_one("#totals", DataTable).border_title = f"{summary} · {int(time.time() - self.since)} s"
         recent = self.query_one("#recent", DataTable)

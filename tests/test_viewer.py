@@ -68,7 +68,8 @@ def test_tab_keys(tmp_path):
             # no daemon: the live tab's banner shows why, as an error
             banner = app.query_one(LivePane).query_one(".banner")
             await _until(pilot, lambda: banner.display and banner.has_class("-error"))
-            assert "live feed unavailable" in str(banner.render())
+            assert "live feed unavailable" in str(banner.query_one(".banner-text").render())
+            assert not banner.query_one(".banner-hint").display
             # p means Processes, even with the focus in the live tab
             await pilot.press("p")
             assert tabs.active == "processes"
@@ -170,8 +171,11 @@ def test_history_drill_down(tmp_path):
             # find narrows the rows shown, Escape clears it
             await pilot.press("slash", "h", "o", "s", "t")
             await _until(pilot, lambda: _values(processes) == ["host"])
+            # the input opens on the tab's own top line
+            assert processes.children[0].has_class("find", "shown")
             await pilot.press("escape")
             await _until(pilot, lambda: len(_values(processes)) == 2)
+            assert not processes.children[0].has_class("shown")
             # the interfaces tab shares the range
             await pilot.press("i")
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
@@ -229,10 +233,17 @@ def test_live_tab(tmp_path, monkeypatch):
             await _until(pilot, lambda: str(pane.query_one("#recent", DataTable).border_title) == "last 500 events · 3 total")
             # the seconds since the tab started go with the totals they were summed over
             assert re.fullmatch(r"summary · \d+ s", str(pane.query_one("#totals", DataTable).border_title))
-            pane.set_find("curl")
-            await _until(pilot, lambda: banner.display and str(banner.render()) == "find: curl")
-            pane.set_find("")
+            # typing a find (c types, it does not clear): the input says it; kept with Enter, the
+            # banner on the same line does, with a hint that c clears it
+            await pilot.press("slash", "c", "u", "r", "l")
+            await _until(pilot, lambda: pane.find == "curl")
+            assert not banner.display
+            await pilot.press("enter")
+            await _until(pilot, lambda: banner.display and str(banner.query_one(".banner-text").render()) == "find: curl")
+            assert banner.query_one(".banner-hint").display
+            await pilot.press("c")
             await _until(pilot, lambda: not banner.display)
+            assert pane.find == "" and pane.query_one(".find").value == ""
             await _until(pilot, lambda: pane.query_one("#totals", DataTable).row_count == 2 and pane.query_one("#recent", DataTable).row_count == 3)
             # by executable, newest event first
             totals, recent = pane.query_one("#totals", DataTable), pane.query_one("#recent", DataTable)

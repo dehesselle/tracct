@@ -45,7 +45,7 @@ the table shows the highlighted row, or all rows after `a`, in buckets of a roun
 from 10 seconds up; dimmed buckets come from rollups. In the timeline, `←` and `→` pick a
 bucket and `Enter` narrows the range to it, `z` goes back. `t` cycles the span (last
 hour, last day, ...), `h` and `H` step back and forward by a whole span, `u` cycles the byte
-units, `/` finds text in the rows shown, `r` refreshes. A range that ends now refreshes
+units, `/` finds text in the rows shown (on every tab; `c` clears it), `r` refreshes. A range that ends now refreshes
 every 10 seconds.
 
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
