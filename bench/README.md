@@ -14,11 +14,11 @@ Each configuration runs alone.
 
 Versions are read from each installed tool during the run and published in the Versions table of the generated report.
 Pinned versions are set in `lib/adapters.py`; Ubuntu package versions are whatever the archive ships on the run date, and are recorded rather than pinned.
-picosnitch is installed from PyPI, not from the source tree in this repository.
+picosnitch is built from the source tree in this repository and run by its systemd unit.
 
 | Tool | Install | Extraction path |
 | --- | --- | --- |
-| picosnitch | pinned (PyPI via pipx) | SQLite `/var/lib/picosnitch/picosnitch.db` (`connections`) |
+| picosnitch | source tree (uv, into /opt/picosnitch) | SQLite `/var/lib/picosnitch/picosnitch.db` (`connections`) |
 | OpenSnitch | pinned (release .deb) | connection log via journald (`journalctl -t opensnitch`) |
 | bandwhich | pinned (release binary) | `--raw --total-utilization --no-resolve --show-dns` stdout |
 | NetHogs | pinned (built from source) | `-t -C -v 2 -a -d 1 vbench0 lo` trace stdout |
@@ -157,7 +157,7 @@ As root it installs packages, replaces the configuration of every monitor it tes
 It is not safe on a workstation.
 
 The only prerequisites beyond a stock Ubuntu 26.04 install are internet access for the pinned downloads and the compiled helpers.
-`lib/run.py` preflights the rest — `pipx`, `docker` with the `alpine:3.20` image (s17), the kernel SCTP module (s08) — and aborts before the matrix if any of it is missing, rather than letting a missing prerequisite score as a tool result.
+`lib/run.py` preflights the rest — `uv` (for picosnitch), `docker` with the `alpine:3.20` image (s17), the kernel SCTP module (s08) — and aborts before the matrix if any of it is missing, rather than letting a missing prerequisite score as a tool result.
 `lib/build.sh` installs its own build dependencies.
 
 On Ubuntu 26.04 (kernel 7.0):
@@ -166,3 +166,25 @@ On Ubuntu 26.04 (kernel 7.0):
 sudo bash lib/build.sh                  # compile helpers
 sudo python3 lib/run.py --tools all     # install, run matrix, score, report
 ```
+
+## Load test
+
+`lib/loadtest.py` measures picosnitch alone under sustained load, rather than scoring it
+against other tools: its CPU and PSS, connection rows written per second, how much of the
+generated traffic it recorded, and the warnings it logged. It drives the installed unit
+(install it first, e.g. with one `run.py --tools picosnitch` pass) and has three phases:
+
+| Phase | Load |
+| --- | --- |
+| steady | 300 client processes with ~4 KB command lines, one TCP connection each, 8 bytes every 500 ms |
+| churn | one process sending 30 000 UDP datagrams per second to 30 000 distinct ports, a connection each |
+| exec | short-lived processes, up to 300 per second, one datagram each |
+
+```sh
+sudo python3 lib/loadtest.py --out results/loadtest.json   # see --help for the knobs
+```
+
+Steady and churn count recorded bytes by the generator's command line, which is read when
+the kernel maps are drained; bytes from a client's last second, drained after it exited,
+are therefore missing from that count (about 1 % for steady, 2 % for churn). Exec counts by
+destination port instead and also shows which executable the bytes were attributed to.

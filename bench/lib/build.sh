@@ -19,6 +19,7 @@ gcc $CFLAGS -o bin/benchicmp   gen/benchicmp.c
 gcc $CFLAGS -o bin/benchraw    gen/benchraw.c
 gcc $CFLAGS -o bin/benchpacket gen/benchpacket.c
 gcc $CFLAGS -o bin/benchuring  gen/benchuring.c -luring
+gcc $CFLAGS -o bin/benchload   gen/benchload.c
 # static build for the in-container scenario (runs on any base image)
 gcc $CFLAGS -static -o bin/benchgen_static gen/benchgen.c || echo "WARN: static build failed (s17 in-container will record errors)"
 echo "built: $(ls bin/)"

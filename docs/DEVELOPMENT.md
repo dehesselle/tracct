@@ -82,4 +82,7 @@ git diff upstream/master -- src/picosnitch/bpf/picosnitch.bpf.c src/picosnitch/b
 
 `bench/` generates known traffic in many hard-to-attribute ways and scores each tool's
 detection and byte counts; see [bench/README.md](../bench/README.md). Its picosnitch
-adapter still installs upstream's PyPI release, not this tree.
+adapter builds the checked-out tree into `/opt/picosnitch` and runs the unit, replacing
+any existing install and its database, so run it on a disposable machine. Running only
+picosnitch (`--tools picosnitch`) regenerates `bench/reports/` with that tool alone; keep
+those files out of commits unless the full matrix ran.

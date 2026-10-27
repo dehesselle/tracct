@@ -41,7 +41,7 @@ MONITOR_SERVICES = ("picosnitch", "opensnitch", "littlesnitch")
 # pgrep -f cmdline signatures to confirm each daemon is actually gone. None may
 # start with '-' or pgrep parses it as an option.
 _MONITOR_SIG = {
-    "picosnitch": "picosnitch start-no-daemon",  # service-worker cmdline
+    "picosnitch": "picosnitch run",  # the unit's cmdline
     "opensnitch": "opensnitchd",
     "littlesnitch": "littlesnitch --daemon",
 }
@@ -52,7 +52,7 @@ def preflight(tools, scenarios):
 
     A stock cloud image has none of this. Without the check a missing prerequisite
     surfaces hours in and reads as a result: no docker turns s17 into ERROR cells
-    for every tool, no pipx makes picosnitch's install fail, an unbuilt bin/ fails
+    for every tool, no uv makes picosnitch's install fail, an unbuilt bin/ fails
     every generator. Only what the SELECTED tools and scenarios need is required, so
     a subset run on a lesser box still works. Loud and up front: missing
     prerequisites are collected and the run aborts before the first tool."""
@@ -64,10 +64,8 @@ def preflight(tools, scenarios):
         if not (BIN / b).exists():
             missing.append(f"bin/{b} (compile the helpers first: sudo bash lib/build.sh)")
 
-    if "picosnitch" in tools and sh("command -v pipx").returncode != 0:
-        sh("apt-get install -y pipx", timeout=600)
-        if sh("command -v pipx").returncode != 0:
-            missing.append("pipx (picosnitch is installed with it)")
+    if "picosnitch" in tools and sh("command -v uv").returncode != 0:
+        missing.append("uv on root's PATH (picosnitch is built from the source tree with it)")
 
     if "s17" in sids:  # in-container egress
         if sh("command -v docker").returncode != 0:

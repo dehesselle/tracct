@@ -159,46 +159,42 @@ def _systemd_mainpid(service):
 
 
 # --------------------------------------------------------------------------- #
-# picosnitch: installed from PyPI via pipx, NOT the source tree
+# picosnitch: built from this source tree into /opt/picosnitch, run by its unit
 # --------------------------------------------------------------------------- #
 class Picosnitch(ToolAdapter):
     name = "picosnitch"
-    VERSION = "2.2.1"
-    VERSION_CMD = "picosnitch version"
-    VERSION_SOURCE = "pinned (PyPI via pipx)"
+    PREFIX = "/opt/picosnitch"
+    VERSION_CMD = f"{PREFIX}/bin/picosnitch version"
+    VERSION_SOURCE = "source tree"
     layer = "socket"
     settle = 2.0  # small; collect() polls until the DB flush stabilizes
-    DB = "/var/lib/picosnitch/picosnitch.db"
+    DB = "/var/lib/picosnitch/picosnitch.db"  # the unit's StateDirectory, a symlink into /var/lib/private
+    SRC = BENCH.parent
 
     def install(self):
-        # config first, unconditionally: local DB, fine time resolution, no
-        # notifications / geoip download -- a pre-existing install must not run
-        # the benchmark under different settings.
-        Path("/etc/picosnitch").mkdir(parents=True, exist_ok=True)
-        Path("/etc/picosnitch/config.toml").write_text(
-            "[database]\nenabled = true\nretention_days = 30\n"
-            "write_limit_seconds = 1\ntext_log = false\n\n"
-            "[log]\naddresses = true\ncommands = true\nports = true\n\n"
-            "[desktop]\nnotifications = false\ngeoip_lookup = false\n\n"
-            "[monitoring]\nevery_exe = false\n"
+        # config first, unconditionally: local DB, fine time resolution -- a
+        # pre-existing install must not run the benchmark under different settings.
+        Path("/etc/opt/picosnitch").mkdir(parents=True, exist_ok=True)
+        Path("/etc/opt/picosnitch/config.toml").write_text(
+            "[database]\nenabled = true\nretention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
-        # early return only for the PINNED version (any other install would be
-        # silently benchmarked while the report claims the pinned one)
-        if self.version() == self.VERSION and Path("/usr/local/bin/picosnitch").exists():
-            return
-        if sh("command -v pipx").returncode != 0:
-            sh("apt-get install -y pipx")
-        r = sh(f"pipx install 'picosnitch=={self.VERSION}' --global", timeout=600)
+        # always rebuild: the tree under test is whatever is checked out
+        if not Path(f"{self.PREFIX}/bin/python").exists():
+            r = sh(f"uv venv {self.PREFIX}", timeout=600)
+            if r.returncode != 0:
+                raise RuntimeError(f"picosnitch venv failed: {r.stderr}\n{r.stdout}")
+        r = sh(f"VIRTUAL_ENV={self.PREFIX} uv pip install --reinstall-package picosnitch {self.SRC}", timeout=900)
         if r.returncode != 0:
             raise RuntimeError(f"picosnitch install failed: {r.stderr}\n{r.stdout}")
+        sh(f"install -m 644 {self.SRC}/systemd/picosnitch.service /etc/systemd/system/picosnitch.service")
+        sh(f"install -m 644 {self.SRC}/systemd/picosnitch.sysusers /etc/sysusers.d/picosnitch.conf")
+        sh("systemd-sysusers")
+        sh("systemctl daemon-reload")
 
     def start(self):
-        # Fresh DB each run so this run's rows are unambiguous (names repeat
-        # across runs, and a connection can split across hash/no-hash exe rows).
+        # Fresh DB each run so this run's rows are unambiguous (names repeat across runs).
         sh("systemctl stop picosnitch")
-        sh(f"rm -f {self.DB}")
-        sh("picosnitch systemd")  # writes the unit
-        sh("systemctl daemon-reload")
+        sh("rm -f /var/lib/private/picosnitch/picosnitch.db /var/lib/private/picosnitch/picosnitch.db-wal /var/lib/private/picosnitch/picosnitch.db-shm")
         sh("systemctl restart picosnitch")
         # wait for the daemon + DB to come up
         for _ in range(40):
@@ -244,8 +240,7 @@ class Picosnitch(ToolAdapter):
 
     def collect(self, gt: GT) -> Observation:
         snap = self._snap["rowid"]
-        # picosnitch flushes a connection's bytes across MULTIPLE executable rows
-        # (e.g. a hash-pending row then the hashed row) over several seconds, so
+        # picosnitch flushes a connection's bytes across several write windows, so
         # the sum can look "stable" mid-flush and a single stable read can miss a
         # late-flushing row. Wait until it has plainly captured everything
         # (reached ~the known amount, since its hooks count app bytes) OR has
@@ -257,8 +252,8 @@ class Picosnitch(ToolAdapter):
         names, attributed, elsewhere = [], False, False
         # Poll cadence + thresholds. picosnitch eventually reports the full byte
         # count, but its flush-to-SQLite latency after a transfer is bursty and long
-        # (measured up to ~10s on a full-duplex trial: the writer pipeline plus
-        # first-sight executable hashing). The target fast-path below breaks in a
+        # (measured up to ~10s on a full-duplex trial with upstream's writer pipeline
+        # and executable hashing). The target fast-path below breaks in a
         # few seconds once the known amount is on disk, so the "settled" plateau
         # must OUT-WAIT that flush tail -- a short (~5s) plateau snapshots a slow
         # trial mid-flush and spuriously undercounts. ~15s comfortably clears the
