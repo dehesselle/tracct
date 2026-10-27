@@ -215,6 +215,7 @@ def test_live_tab(tmp_path, monkeypatch):
             publisher.publish(event)
             await _until(pilot, lambda: pane.events == 4)
             assert len(pane.recent) == 3
+            assert recent.border_subtitle == "PAUSED"
             await pilot.press("r")
             await _until(pilot, lambda: pane.events == 0 and not pane.totals)
 
@@ -247,17 +248,21 @@ def test_live_limits(tmp_path, monkeypatch):
             publisher.publish_many([{"name": f"new{i}", "exe": f"/bin/new{i}", "send": 1} for i in range(10)])
             await _until(pilot, lambda: pane.events == 12)
             assert pane.dropped == 2 and len(pane.totals) == 10
+            await _until(pilot, lambda: pane.query_one("#totals", DataTable).border_title == "summary (2 dropped)")
+            assert pane.query_one("#recent", DataTable).border_title == "last 12 events"
             assert not any(name.startswith("old") for name, _ in pane.totals)
             assert pane.query_one("#totals", DataTable).row_count == 10
             assert len(pane.recent) == 12
             # a lowered limit applies on the next redraw and keeps the newest events
             config.set(settings.LIVE_EVENTS, 10)
             await _until(pilot, lambda: pane.recent.maxlen == 10)
+            await _until(pilot, lambda: pane.query_one("#recent", DataTable).border_title == "last 10 events")
             assert [event["name"] for event in pane.recent] == [f"new{i}" for i in range(9, -1, -1)]
             await _until(pilot, lambda: pane.query_one("#recent", DataTable).row_count == 10)
             pane.query_one("#totals", DataTable).focus()
             await pilot.press("r")
             await _until(pilot, lambda: pane.dropped == 0)
+            await _until(pilot, lambda: pane.query_one("#totals", DataTable).border_title == "summary")
 
     try:
         asyncio.run(drive())

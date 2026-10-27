@@ -22,11 +22,11 @@ class Timeline(Widget, can_focus=True):
     DEFAULT_CSS = """
     Timeline {
         height: 8;
-        border: round $border-blurred;
+        border: round $foreground 40%;
         padding: 0 1;
     }
     Timeline:focus {
-        border: round $border;
+        border: round $accent;
     }
     /* TODO: restyle; was bold yellow before the default theme */
     Timeline > .timeline--cursor {

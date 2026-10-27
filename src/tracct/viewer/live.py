@@ -93,6 +93,9 @@ class LivePane(Vertical):
     DEFAULT_CSS = """
     LivePane .header { height: 1; padding: 0 1; background: $foreground 8%; }
     LivePane .header.-error { color: $text-error; }
+    /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
+    LivePane DataTable { border: round $foreground 40%; }
+    LivePane DataTable:focus { border: round $accent; }
     LivePane #totals { height: 2fr; }
     LivePane #recent { height: 3fr; }
     """
@@ -294,9 +297,6 @@ class LivePane(Vertical):
         header = Text()
         header.append("Live ", style="bold")
         header.append(f"(socket bytes)  {self.events} events in {int(elapsed)} s")
-        if self.paused:
-            # TODO: restyle; was bold reverse before the default theme
-            header.append("  PAUSED", style="bold")
         if self.find:
             header.append(f"  find: {self.find}")
         if self.state != "connected":
@@ -304,6 +304,10 @@ class LivePane(Vertical):
         widget = self.query_one(".header", Static)
         widget.set_class(self.state != "connected", "-error")
         widget.update(header)
+        self.query_one("#totals", DataTable).border_title = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
+        recent = self.query_one("#recent", DataTable)
+        recent.border_title = f"last {config.get(LIVE_EVENTS)} events"
+        recent.border_subtitle = "PAUSED" if self.paused else ""
 
     def action_pause(self) -> None:
         self.paused = not self.paused
