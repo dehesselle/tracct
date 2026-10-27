@@ -47,7 +47,7 @@ except Exception:
     pass
 ST_DEV_MASK: typing.Final[int] = st_dev_mask
 
-# database schema version and table definitions, see docs/schema.md
+# database schema version and table definitions, see "Storage" in docs/DESIGN.md
 # id 0 in each lookup table is the "empty/unknown" sentinel.
 # `family` is AF_INET (2), AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown.
 # `protocol` is an IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown.

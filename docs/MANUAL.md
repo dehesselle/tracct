@@ -118,7 +118,5 @@ When a variable lists several directories separated by colons, the first one is 
 options of `view` override both sockets. Outside socket activation, `query-server` creates its
 socket itself and runs until stopped.
 
-## Querying the database
-
-The database is plain SQLite; see [schema.md](schema.md) for the tables and example queries.
-Open it read-only (`file:…?mode=ro`) while the daemon runs.
+The database is read through `view`. Its tables are internal and change between versions
+without migration (see [DESIGN.md](DESIGN.md#storage)).

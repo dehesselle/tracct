@@ -6,10 +6,11 @@ and keeps the history in SQLite, for traffic accounting on servers, not security
 ## Where to look
 
 - Read [docs/DESIGN.md](docs/DESIGN.md) before architectural changes and respect its core
-  principles; it also says which files are tracked against upstream.
+  principles; it also explains the database tables and says which files are tracked
+  against upstream.
 - Commands, configuration and paths: [docs/MANUAL.md](docs/MANUAL.md).
 - The unit, capabilities, logs and failure behavior: [docs/OPERATIONS.md](docs/OPERATIONS.md).
-- Database tables: [docs/schema.md](docs/schema.md).
+- Measured cost under load: [docs/performance.md](docs/performance.md).
 
 @docs/DEVELOPMENT.md
 

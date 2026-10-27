@@ -11,6 +11,15 @@ many bytes with which remote address, domain and port, in which time window; nex
 totals of every interface, and the flows the host only forwards. Security is out of scope:
 there is no tamper evidence, no alerting, and a program is identified by its path.
 
+The tool exists because no existing one records all of this together, on a headless server,
+and keeps it. Interface counters such as vnstat show that a spike happened, not who caused
+it. Live monitors such as nethogs and bandwhich show only the present. Per-process counters
+with history (atop with netatop, Netdata, systemd's `IPAccounting=`) do not keep the peer;
+flow accounting (ntopng, pmacct, conntrack with ulogd2) does not know the process.
+Application firewalls such as OpenSnitch and Little Snitch are built for filtering on
+desktops. Upstream picosnitch came closest, with per-process history including peers, but it
+is a desktop security tool; this project started as a fork of it and drops that part.
+
 ## Data sources
 
 Per-process traffic comes from one BPF CO-RE program, `src/picosnitch/bpf/picosnitch.bpf.c`,
@@ -151,18 +160,44 @@ subvolumes, the device check is masked off (`st_dev_mask`).
 ## Storage
 
 SQLite at `$STATE_DIRECTORY/picosnitch.db`, in WAL mode so that readers never block the
-writer; every start switches a database made without it. Executables, domains, addresses,
-units and interfaces are interned into lookup tables so traffic rows stay small; see
-[schema.md](schema.md). Rows are written every `write_limit_seconds`, one row per distinct
-connection and window, plus the window's interface counters and forwarded flows; a window
-that reaches 65 536 connections is written early, so memory follows connections and not
-events. The schema version sits in `PRAGMA user_version`; there are no migrations.
+writer; every start switches a database made without it. The tables are defined in
+`constants.py` (`TABLES`, `SENTINELS`, `INDEXES`), all `STRICT`. The database is an internal
+format: the writer is its only writer and the query server its only reader, so its layout
+changes whenever the design needs it, with a new `DB_VERSION` in `PRAGMA user_version` and
+no migrations.
+
+The tables come in three kinds:
+
+- **Lookup tables** intern text so traffic rows stay small; id 0 in each is the
+  empty/unknown entry. `executables` has a row per (path, comm, command line), so a binary
+  run with other arguments gets a new one. `domains` holds names in reversed notation
+  (`com.example.www`): the name the program looked up, else the reverse DNS name, else the
+  address itself. `units` holds the innermost systemd unit of a process's cgroup, `addresses`
+  the canonical text of an address. `interfaces` is keyed by (namespace inode, name, kind),
+  as every namespace has its own `lo` and several may have a `tun0`. `netns` names the
+  namespaces found in `/run/netns` and `/run/docker/netns`, and the daemon's own as `host`;
+  unnamed ones keep their inode, and as inodes are reused once a namespace is gone, a name
+  holds only for the time it was seen.
+- **Raw tables**, a row per write window, one per kind of byte (principle 4):
+  `connections` holds socket bytes per process and peer, `interface_traffic` interface bytes
+  per interface, `forwarded` IP bytes per routed flow. In `forwarded`, `src` is the side that
+  opened the flow and `dst` the side that answered (after any destination NAT); `orig` counts
+  src to dst, `reply` the other way.
+- **Rollups**, `connections_rollup`, `interface_traffic_rollup` and `forwarded_rollup`, a row
+  per period, plus `meta`, which holds the rollup watermark.
+
+Rows are written every `write_limit_seconds`, one row per distinct connection and window,
+plus the window's interface counters and forwarded flows; a window that reaches 65 536
+connections is written early, so memory follows connections and not events.
 
 History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
 spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
 who, which unit, which service port and which domain but drop addresses and ephemeral
 ports, so they stay small for a year. Forwarded flows keep their source address, the peer
-behind an exit node or NAT, which is the "who" there.
+behind an exit node or NAT, which is the "who" there. A port at or above the start of the
+kernel's ephemeral range (`net.ipv4.ip_local_port_range`) is kept as 0, so a server keeps its
+service port as `lport` and a client the server's port as `rport`; ICMP rows, whose ports
+carry the echo id, keep none.
 
 Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
 each period that has closed since the watermark in `meta`, then deletes rows past their
