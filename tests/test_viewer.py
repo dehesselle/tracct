@@ -195,6 +195,20 @@ def test_live_tab(tmp_path, monkeypatch):
             await _until(pilot, lambda: pane.events == 3)
             assert pane.totals[("curl", "/usr/bin/curl")][:3] == [101, 4000, 2]
             await _until(pilot, lambda: pane.query_one("#totals", DataTable).row_count == 2 and pane.query_one("#recent", DataTable).row_count == 3)
+            # by executable, newest event first
+            totals, recent = pane.query_one("#totals", DataTable), pane.query_one("#recent", DataTable)
+            assert _keys(totals) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
+            assert _keys(recent) == ["3", "2", "1"]
+            # by the number behind the text: 5 B before 4.0 kB, where the text would rank the other way
+            totals.sort_by("received")
+            assert _keys(totals) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
+            # a refill keeps the sort, and the cursor stays on its executable as it moves up
+            totals.move_cursor(row=1)
+            pane.totals[("curl", "/usr/bin/curl")][1] = 0
+            pane.render_tables()
+            assert _keys(totals) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"] and totals.cursor_row == 0
+            recent.sort_by("sent")
+            assert _keys(recent)[0] == "2"
             # paused, recent stops; reset clears
             pane.query_one("#totals", DataTable).focus()
             await pilot.press("p")
@@ -208,6 +222,10 @@ def test_live_tab(tmp_path, monkeypatch):
         asyncio.run(drive())
     finally:
         publisher.stop()
+
+
+def _keys(table: DataTable) -> list[str]:
+    return [row.key.value for row in table.ordered_rows]
 
 
 def test_live_limits(tmp_path, monkeypatch):

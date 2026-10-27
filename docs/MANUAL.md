@@ -29,7 +29,9 @@ tabs, switched with `1` to `4`:
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started and the ports each listens on (for processes the viewer's user may inspect, all of
   them as root). It keeps the newest 500 events and 100 executables; past that, the
-  executables idle the longest are dropped. `p` pauses the list, `r` resets.
+  executables idle the longest are dropped. Clicking a column's header sorts by it, clicking
+  it again reverses; the executables start sorted by path, the events newest first. `p`
+  pauses the list, `r` resets.
 - **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
   of routed flows): the history, grouped by the dimension chosen on the left, over the time
   range in the header. The three kinds of bytes are never added together.

@@ -17,10 +17,12 @@ from pathlib import Path
 
 from rich.text import Text
 from tcoda.settings import config
+from tcoda.widgets import DataTable
 from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import DataTable, Static
+from textual.widgets import Static
+from textual.widgets.data_table import RowKey
 from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
@@ -117,6 +119,11 @@ class LivePane(Vertical):
         self.find = ""
         self.state = "connecting"
         self._dirty = True
+        # numbers each event, so the events table has a row key and an order by time
+        self._seq = 0
+        # the rows in the tables by row key, for the columns that sort by the value behind the text
+        self._shown_totals: dict[str, tuple[tuple[str, str], list]] = {}
+        self._shown_recent: dict[str, dict] = {}
 
     def compose(self):
         yield Static(classes="header")
@@ -124,8 +131,31 @@ class LivePane(Vertical):
         yield DataTable(id="recent", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        self.query_one("#totals", DataTable).add_columns("executable", "name", "unit", Text("events", justify="right"), Text("sent", justify="right"), Text("received", justify="right"), "listening")
-        self.query_one("#recent", DataTable).add_columns("time", "name", "parent", "unit", Text("lport", justify="right"), "remote", Text("sent", justify="right"), Text("received", justify="right"))
+        totals = self.query_one("#totals", DataTable)
+        for key, label, by_value in (
+            ("exe", "executable", None),
+            ("name", "name", None),
+            ("unit", "unit", None),
+            ("events", Text("events", justify="right"), lambda entry: entry[1][2]),
+            ("sent", Text("sent", justify="right"), lambda entry: entry[1][0]),
+            ("received", Text("received", justify="right"), lambda entry: entry[1][1]),
+            ("listening", "listening", lambda entry: tuple(sorted(self.listening.get(entry[0][1], ())))),
+        ):
+            totals.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_totals, by_value))
+        totals.sort_by("exe")
+        recent = self.query_one("#recent", DataTable)
+        for key, label, by_value in (
+            ("time", "time", lambda event: event["_seq"]),
+            ("name", "name", None),
+            ("parent", "parent", None),
+            ("unit", "unit", None),
+            ("lport", Text("lport", justify="right"), lambda event: _int(event.get("lport"))),
+            ("remote", "remote", None),
+            ("sent", Text("sent", justify="right"), lambda event: _int(event.get("send"))),
+            ("received", Text("received", justify="right"), lambda event: _int(event.get("recv"))),
+        ):
+            recent.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_recent, by_value))
+        recent.sort_by("time", reverse=True)
         self.subscribe()
         self.scan_ports()
         self.set_interval(REDRAW_SECONDS, self.redraw)
@@ -177,6 +207,8 @@ class LivePane(Vertical):
             self._incoming.clear()
         for event in arrived:
             self.events += 1
+            self._seq += 1
+            event["_seq"] = self._seq
             key = (event.get("name") or "", event.get("exe") or "")
             row = self.totals.setdefault(key, [0, 0, 0, "", 0.0])
             row[0] += int(event.get("send", 0) or 0)
@@ -210,35 +242,52 @@ class LivePane(Vertical):
         needle = self.find.lower()
         return not needle or any(needle in str(field or "").lower() for field in fields)
 
+    @staticmethod
+    def _by_value(shown: dict, by_value):
+        """a column's sort key: the value behind its text, from the row shown under that row key;
+        None ranks by the text itself"""
+        if by_value is None:
+            return None
+        return lambda row_key: by_value(shown[row_key.value])
+
     def render_tables(self, recent: bool = True) -> None:
-        totals = self.query_one("#totals", DataTable)
-        ranked = sorted(self.totals.items(), key=lambda item: item[1][0], reverse=True)
+        self._shown_totals.clear()
         rows = []
-        for (name, exe), (sent, received, count, unit, _) in ranked:
+        for (name, exe), entry in self.totals.items():
+            sent, received, count, unit, _ = entry
             if self.matches(name, exe, unit):
+                row_key = f"{name}\0{exe}"
+                self._shown_totals[row_key] = ((name, exe), entry)
                 ports = ",".join(str(port) for port in sorted(self.listening.get(exe, ())))
-                rows.append((Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received), Text(ports)))
-        _replace_rows(totals, rows)
+                rows.append((row_key, (Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received), Text(ports))))
+        # the cursor stays on its executable as the rows move with the sort
+        _replace_rows(self.query_one("#totals", DataTable), rows, follow=True)
         if recent:
-            table = self.query_one("#recent", DataTable)
+            self._shown_recent.clear()
             rows = []
             for event in self.recent:
                 if not self.matches(event.get("name"), event.get("exe"), event.get("unit"), event.get("domain"), event.get("raddr")):
                     continue
+                row_key = str(event["_seq"])
+                self._shown_recent[row_key] = event
                 lport = event.get("lport", -1)
                 rows.append(
                     (
-                        clock(event.get("_t", 0)),
-                        Text(clean(event.get("name") or "")),
-                        Text(clean(event.get("pname") or "")),
-                        Text(clean(event.get("unit") or "")),
-                        Text(str(lport) if isinstance(lport, int) and lport > 0 else "", justify="right"),
-                        Text(clean(remote(event))),
-                        bytes_cell(event.get("send", 0)),
-                        bytes_cell(event.get("recv", 0)),
+                        row_key,
+                        (
+                            clock(event.get("_t", 0)),
+                            Text(clean(event.get("name") or "")),
+                            Text(clean(event.get("pname") or "")),
+                            Text(clean(event.get("unit") or "")),
+                            Text(str(lport) if isinstance(lport, int) and lport > 0 else "", justify="right"),
+                            Text(clean(remote(event))),
+                            bytes_cell(event.get("send", 0)),
+                            bytes_cell(event.get("recv", 0)),
+                        ),
                     )
                 )
-            _replace_rows(table, rows)
+            # the cursor keeps its place while new events push the rows along
+            _replace_rows(self.query_one("#recent", DataTable), rows, follow=False)
 
     def update_header(self) -> None:
         elapsed = max(1.0, time.time() - self.since)
@@ -273,10 +322,23 @@ class LivePane(Vertical):
         self._dirty = True
 
 
-def _replace_rows(table: DataTable, rows: list) -> None:
-    """new rows with the cursor kept where it was"""
+def _int(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _replace_rows(table: DataTable, rows: list[tuple[str, tuple]], follow: bool) -> None:
+    """new rows, in the table's sort order at once rather than on the next idle; the cursor
+    follows its row by key, or keeps its place"""
     cursor = table.cursor_row
+    followed: RowKey | None = None
+    if follow and 0 <= cursor < table.row_count:
+        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
     table.clear()
-    table.add_rows(rows)
+    for row_key, cells in rows:
+        table.add_row(*cells, key=row_key)
+    if table.sort_column is not None:
+        table.sort_by(table.sort_column, reverse=table.sort_reverse)
     if rows:
+        if followed is not None and followed in table.rows:
+            cursor = table.get_row_index(followed)
         table.move_cursor(row=min(cursor, len(rows) - 1))
