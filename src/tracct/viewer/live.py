@@ -4,13 +4,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """the live tab: connections as the daemon drains them, from events.sock, with totals per
-executable since the tab started (or was reset) and the ports each one listens on"""
+executable since the tab started (or was reset)"""
 
 from __future__ import annotations
 
 import collections
 import itertools
-import os
 import threading
 import time
 from pathlib import Path
@@ -33,54 +32,6 @@ from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 INCOMING_MAX = 10000
 REDRAW_SECONDS = 0.5
 RECONNECT_SECONDS = 3.0
-LISTEN_SCAN_SECONDS = 5.0
-
-
-def scan_listening_ports() -> dict[str, set[int]]:
-    """executable path -> its listening TCP and bound UDP ports, from /proc/net and the sockets in
-    /proc/<pid>/fd; processes this user cannot inspect are skipped"""
-    inode_to_port: dict[int, int] = {}
-    for proto in ("tcp", "tcp6", "udp", "udp6"):
-        try:
-            with open(f"/proc/net/{proto}") as f:
-                lines = f.readlines()[1:]
-        except OSError:
-            continue
-        for line in lines:
-            parts = line.split()
-            # tcp: only LISTEN (0A); udp: any bound socket
-            if len(parts) < 10 or (proto.startswith("tcp") and parts[3] != "0A"):
-                continue
-            try:
-                port = int(parts[1].rsplit(":", 1)[1], 16)
-                inode = int(parts[9])
-            except (ValueError, IndexError):
-                continue
-            if inode and port:
-                inode_to_port[inode] = port
-    exe_to_ports: dict[str, set[int]] = {}
-    if not inode_to_port:
-        return exe_to_ports
-    try:
-        pids = [name for name in os.listdir("/proc") if name.isdigit()]
-    except OSError:
-        return exe_to_ports
-    for pid in pids:
-        try:
-            exe = os.readlink(f"/proc/{pid}/exe")
-            fds = os.listdir(f"/proc/{pid}/fd")
-        except OSError:
-            continue
-        for fd in fds:
-            try:
-                target = os.readlink(f"/proc/{pid}/fd/{fd}")
-            except OSError:
-                continue
-            if target.startswith("socket:[") and target.endswith("]"):
-                port = inode_to_port.get(int(target[8:-1]) if target[8:-1].isdigit() else -1)
-                if port is not None:
-                    exe_to_ports.setdefault(exe, set()).add(port)
-    return exe_to_ports
 
 
 def remote(event: dict) -> str:
@@ -117,7 +68,6 @@ class LivePane(Vertical):
         self.totals: dict[tuple[str, str], list] = {}
         # executables dropped from totals for the limit, since the tab started or was reset
         self.dropped = 0
-        self.listening: dict[str, set[int]] = {}
         self.events = 0
         self.since = time.time()
         self.paused = False
@@ -147,7 +97,6 @@ class LivePane(Vertical):
             ("events", Text("events", justify="right"), lambda entry: entry[1][2]),
             ("sent", Text("sent", justify="right"), lambda entry: entry[1][0]),
             ("received", Text("received", justify="right"), lambda entry: entry[1][1]),
-            ("listening", "listening", lambda entry: tuple(sorted(self.listening.get(entry[0][1], ())))),
         ):
             totals.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_totals, by_value))
         totals.sort_by("exe")
@@ -165,9 +114,7 @@ class LivePane(Vertical):
             recent.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_recent, by_value))
         recent.sort_by("time", reverse=True)
         self.subscribe()
-        self.scan_ports()
         self.set_interval(REDRAW_SECONDS, self.redraw)
-        self.set_interval(LISTEN_SCAN_SECONDS, self.scan_ports)
 
     @work(thread=True, group="live-feed")
     def subscribe(self) -> None:
@@ -201,13 +148,6 @@ class LivePane(Vertical):
             deadline = time.monotonic() + RECONNECT_SECONDS
             while not worker.is_cancelled and time.monotonic() < deadline:
                 time.sleep(0.2)
-
-    @work(thread=True, exclusive=True, group="live-ports")
-    def scan_ports(self) -> None:
-        try:
-            self.listening = scan_listening_ports()
-        except Exception:
-            self.listening = {}
 
     def redraw(self) -> None:
         with self._lock:
@@ -266,8 +206,7 @@ class LivePane(Vertical):
             if self.matches(name, exe, unit):
                 row_key = f"{name}\0{exe}"
                 self._shown_totals[row_key] = ((name, exe), entry)
-                ports = ",".join(str(port) for port in sorted(self.listening.get(exe, ())))
-                rows.append((row_key, (Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received), Text(ports))))
+                rows.append((row_key, (Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received))))
         # the cursor stays on its executable as the rows move with the sort
         _replace_rows(self.query_one("#totals", DataTable), rows, follow=True)
         if recent:
