@@ -76,17 +76,8 @@ class ViewerApp(ChordMixin, App):
     #find.shown { display: block; }
     """
     BINDINGS = [
-        Binding("q", "quit", "quit"),
-        Binding("question_mark", "show_help_panel", "keys"),
         # a tab's first letter, highlighted in its title
         *(Binding(title[0].lower(), f"tab('{tab}')", show=False) for tab, (title, _) in TABS.items()),
-        Binding("t", "span(1)", "span"),
-        Binding("T", "span(-1)", show=False),
-        Binding("h", "earlier(1)", "earlier"),
-        Binding("H", "earlier(-1)", "later"),
-        Binding("z", "zoom_out", "zoom out"),
-        Binding("u", "units", "units"),
-        Binding("r", "refresh", "refresh"),
         Binding("slash", "find", "find"),
         # chords start with a comma; the ChordViewer lists them when the next key is slow to come
         Binding("comma s", "settings", "settings", show=False),
@@ -110,7 +101,7 @@ class ViewerApp(ChordMixin, App):
                 with TabPane(f"[$accent bold]{title[0]}[/]{title[1:]}", id=tab):
                     yield LivePane(self.events_socket) if not source else HistoryPane(source)
         yield Input(id="find", placeholder="find in the rows shown (Enter keeps it, Escape clears)")
-        yield Footer()
+        yield Footer(show_command_palette=False)
         yield ChordViewer()
 
     def on_mount(self) -> None:

@@ -49,6 +49,14 @@ class HistoryPane(Vertical):
     HistoryPane DataTable { height: 1fr; }
     """
     BINDINGS = [
+        # the time range and units are the app's, shared by the history tabs
+        Binding("t", "app.span(1)", "span"),
+        Binding("T", "app.span(-1)", show=False),
+        Binding("h", "app.earlier(1)", "earlier"),
+        Binding("H", "app.earlier(-1)", "later"),
+        Binding("z", "app.zoom_out", "zoom out"),
+        Binding("u", "app.units", "units"),
+        Binding("r", "app.refresh", "refresh"),
         Binding("e", "filter(True)", "exclude row"),
         Binding("backspace", "pop_filter", "pop filter"),
         Binding("a", "toggle_subject", "timeline of all rows"),

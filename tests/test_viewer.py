@@ -63,6 +63,8 @@ def test_tab_keys(tmp_path):
             tabs = app.query_one(TabbedContent)
             assert [pane.id for pane in tabs.query(TabPane)] == ["forwarded", "interfaces", "live", "processes"]
             assert not tabs.query_one(Tabs).can_focus
+            # Textual's own ctrl+q quits; no single key does
+            assert "ctrl+q" in app.screen.active_bindings and not {"q", "question_mark"} & set(app.screen.active_bindings)
             # no daemon: the live tab's banner shows why, as an error
             banner = app.query_one(LivePane).query_one(".banner")
             await _until(pilot, lambda: banner.display and banner.has_class("-error"))
@@ -70,9 +72,14 @@ def test_tab_keys(tmp_path):
             # p means Processes, even with the focus in the live tab
             await pilot.press("p")
             assert tabs.active == "processes"
+            # the time range and units belong to the history tabs only
+            await _until(pilot, lambda: {"t", "h", "z", "u"} <= set(app.screen.active_bindings))
             for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
                 await pilot.press(key)
                 assert tabs.active == tab
+            await _until(pilot, lambda: not {"t", "h", "z", "u"} & set(app.screen.active_bindings))
+            await pilot.press("u")
+            assert app.unit == "auto"
 
     asyncio.run(drive())
 
