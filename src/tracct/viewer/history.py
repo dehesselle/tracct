@@ -19,8 +19,9 @@ from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
 from tracct.query import QueryError
+from tracct.viewer.banner import Banner
 from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, display, moment, value_cell
-from tracct.viewer.plot import ALL_ROWS, TrafficPlot
+from tracct.viewer.plot import ALL_ROWS, PEAK_SECONDS, TrafficPlot
 
 if TYPE_CHECKING:
     from tracct.viewer.app import ViewerApp
@@ -32,9 +33,6 @@ TIMELINE_DELAY = 0.25
 # timeline bucket lengths; none is shorter than the default write window, whose rows would
 # otherwise leave every other bucket empty
 BUCKET_STEPS = (10, 30, 60, 120, 300, 600, 900, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 86400, 7 * 86400, 30 * 86400, 365 * 86400)
-# the stretch, in seconds, whose highest rate a plot's point shows; the default write window,
-# which the query server lengthens it to if the daemon writes less often
-PEAK_SECONDS = 10
 # how long a fetch has to take before the plot's title says so; most answer within
 # milliseconds, and the glyph would flicker on every refresh
 BUSY_DELAY = 0.3
@@ -47,10 +45,8 @@ def bucket_step(span: int, columns: int) -> int:
 
 class HistoryPane(Vertical):
     DEFAULT_CSS = """
-    HistoryPane .header { height: 1; padding: 0 1; background: $foreground 8%; }
     /* TODO: restyle; was $text-muted before the default theme */
     HistoryPane .status { height: 2; padding: 0 1; }
-    HistoryPane .status.-error { color: $text-error; }
     HistoryPane OptionList { width: 30; height: 1fr; }
     HistoryPane DataTable { height: 1fr; }
     """
@@ -95,7 +91,7 @@ class HistoryPane(Vertical):
 
     def compose(self):
         yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
-        yield Static(classes="header")
+        yield Banner()
         with Horizontal():
             yield OptionList(id="dimensions")
             with Vertical():
@@ -163,10 +159,10 @@ class HistoryPane(Vertical):
         subject = self._plot_subject = self.subject()
         filters = [list(f) for f in self.filters] + ([[subject[0], subject[1], False]] if subject else [])
         label = f"{self.labels().get(subject[0], subject[0])} = {display(*subject)}" if subject else ALL_ROWS
-        self._load_timeline(start, end, origin, step, filters, label)
+        self._load_timeline(start, end, origin, step, filters, label, self.heading(start, end))
 
     @work(thread=True, exclusive=True, group="history-timeline")
-    def _load_timeline(self, start: int, end: int, origin: int, step: int, filters: list, label: str) -> None:
+    def _load_timeline(self, start: int, end: int, origin: int, step: int, filters: list, label: str, heading: str) -> None:
         worker = get_current_worker()
         try:
             result = self.viewer.ask("timeline", source=self.source, filters=filters, start=origin, end=end, step=step, peak=PEAK_SECONDS)
@@ -176,7 +172,7 @@ class HistoryPane(Vertical):
             return
         if not worker.is_cancelled:
             labels = tuple(self.info.get("values", ["sent", "received"]))
-            self.app.call_from_thread(self.show_timeline, start, end, origin, step, result, label, labels)
+            self.app.call_from_thread(self.show_timeline, start, end, origin, step, result, heading, label, labels)
 
     def schedule_timeline(self) -> None:
         if self._timeline_timer is not None:
@@ -205,19 +201,18 @@ class HistoryPane(Vertical):
 
     # ── showing results ─────────────────────────────────────────────
 
-    def show_timeline(self, start: int, end: int, origin: int, step: int, result: dict, label: str, labels: tuple[str, str]) -> None:
+    def show_timeline(self, start: int, end: int, origin: int, step: int, result: dict, heading: str, label: str, labels: tuple[str, str]) -> None:
         self.fetching("plot", False)
-        self.query_one(TrafficPlot).show(start, end, origin, step, result["peak"], result["split"], result["buckets"], label, labels)
+        self.query_one(TrafficPlot).show(start, end, origin, step, result["peak"], result["split"], result["buckets"], heading, label, labels)
 
     def show_error(self, message: str) -> None:
         self.fetching("rows", False)
         self.fetching("plot", False)
         self.error = message
-        status = self.query_one(".status", Static)
-        status.add_class("-error")
-        status.update(Text(message))
+        self.update_banner()
 
     def show_rows(self, result: dict) -> None:
+        self.error = ""
         self.result = result
         self.rows = result["rows"]
         self.render_rows()
@@ -242,25 +237,37 @@ class HistoryPane(Vertical):
         index = next((i for i, row in enumerate(self.shown) if row[0] == previous), 0)
         if self.shown:
             table.move_cursor(row=index)
-        self.update_header()
+        self.update_banner()
         self.update_status()
 
-    def update_header(self) -> None:
-        start, end = self.bounds()
-        crumbs = " > ".join(f"{'!' if exclude else ''}{self.labels().get(dimension, dimension)}={display(dimension, value)}" for dimension, value, exclude in self.filters)
-        header = Text()
-        header.append(f"{self.info.get('label', self.source)} ", style="bold")
-        header.append(f"({self.info.get('kind', '')})  ")
-        header.append(f"{self.viewer.time_range.label()}: {moment(start)} to {moment(min(end, int(time.time())))}")
-        if crumbs:
-            header.append("   filter: ", style="bold")
-            header.append(crumbs)
-        self.query_one(".header", Static).update(header)
+    def update_banner(self) -> None:
+        """a problem, the filters and a kept find, as on the live tab; nothing to say, no banner"""
+        notes, keys = [], []
+        if self.error:
+            notes.append(self.error)
+        if self.filters:
+            labels = self.labels()
+            notes.append("filter: " + " > ".join(f"{'!' if exclude else ''}{labels.get(dimension, dimension)}={display(dimension, value)}" for dimension, value, exclude in self.filters))
+            keys.append("⌫ to pop a filter")
+        # while the find input is open, it says it already
+        if self.find and not self.query_one(".find", Input).has_class("shown"):
+            notes.append(f"find: {self.find}")
+            keys.insert(0, "c to clear")
+        self.query_one(Banner).say(notes, f"press {' · '.join(keys)}" if keys else "", error=bool(self.error))
+
+    def heading(self, start: int, end: int) -> str:
+        """the range as the plot's title begins: a span by its name, a zoom by its ends, which
+        name the day once if both fall on it"""
+        time_range = self.viewer.time_range
+        if not time_range.zooms:
+            return time_range.label()
+        clock = "%H:%M" if end - start >= 3600 else "%H:%M:%S"
+        first, last = time.localtime(start), time.localtime(end)
+        tail = time.strftime(clock if first[:3] == last[:3] else f"%b %d {clock}", last)
+        return f"{time.strftime(f'%b %d {clock}', first)} – {tail}"
 
     def update_status(self) -> None:
-        self.error = ""
         status = self.query_one(".status", Static)
-        status.remove_class("-error")
         result, unit = self.result, self.viewer.unit
         if not result:
             status.update("")

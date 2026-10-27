@@ -31,6 +31,9 @@ HINT = "[dim italic]wheel or +/- zooms · drag or ←/→ pans · r resets[/]"
 ALL_ROWS = "all rows"
 # in the title while the tab is updating, as snakecam shows it
 BUSY = "↻"
+# the stretch, in seconds, whose highest rate a point shows; the default write window, which
+# the query server lengthens it to if the daemon writes less often
+PEAK_SECONDS = 10
 # lengths between the time axis' ticks, in seconds
 _TIME_STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 3600, 86400, 2 * 86400, 7 * 86400, 14 * 86400, 30 * 86400, 91 * 86400, 365 * 86400)
 
@@ -134,6 +137,7 @@ class TrafficPlot(PlotWidget):
         self.values: dict[int, tuple[int, int]] = {}
         self.peaks: dict[int, tuple[float, float]] = {}
         self.labels = ("sent", "received")
+        self.heading = ""
         self.subject = ""
         # the tab is fetching rows or this plot's data, and has been for a moment
         self.busy = False
@@ -165,11 +169,12 @@ class TrafficPlot(PlotWidget):
         """how many buckets the lines have room for: braille has two dots across a cell"""
         return 2 * self.columns()
 
-    def show(self, start: int, end: int, origin: int, step: int, peak: int, split: int, buckets: list, subject: str, labels: tuple[str, str]) -> None:
-        """the range start to end of the row named subject, in buckets of step seconds counted from
-        origin, each with its sums and the highest rate of a stretch of peak seconds in it"""
+    def show(self, start: int, end: int, origin: int, step: int, peak: int, split: int, buckets: list, heading: str, subject: str, labels: tuple[str, str]) -> None:
+        """the range start to end, named heading, of the row named subject, in buckets of step
+        seconds counted from origin, each with its sums and the highest rate of a stretch of peak
+        seconds in it"""
         self.start, self.end, self.origin, self.step, self.peak, self.split = start, end, origin, step, peak, split
-        self.subject, self.labels = subject, labels
+        self.heading, self.subject, self.labels = heading, subject, labels
         # the lines show the peaks: averaged over a wide bucket, a short spike would flatten into
         # the traffic around it
         self.values = {t: (a, b) for t, a, b, _, _ in buckets}
@@ -208,20 +213,22 @@ class TrafficPlot(PlotWidget):
             self.update_title()
 
     def update_title(self) -> None:
-        """the colors' key, where it takes no height from the lines, then what the rate is and
-        whether the tab is updating; the highlighted row says which row is drawn, so only the plot
-        of all rows names itself. what does not fit goes from the end, the glyph last"""
+        """the range drawn, then the colors' key, where it takes no height from the lines, and
+        whether the tab is updating, which comes and goes at the end where it moves nothing. the
+        highlighted row says which row is drawn, so only the plot of all rows names itself; the
+        stretch of the peaks only when the daemon's write window made it longer than asked for,
+        and that goes first when the title does not fit"""
         out_label, in_label = self.labels
-        key = Content.assemble(("━━", self._style("sent")), f" {out_label} ", ("━━", self._style("received")), f" {in_label}")
+        head = Content(f"{self.heading} · " if self.heading else "")
         if self.subject == ALL_ROWS:
-            key = Content.assemble(f"{ALL_ROWS} · ", key)
-        # the stretch is the query server's to say, once it has answered
-        rate = Content(f" · peak {duration(self.peak)} rate" if self.end else "")
+            head = Content.assemble(head, f"{ALL_ROWS} · ")
+        key = Content.assemble(("━━", self._style("sent")), f" {out_label} ", ("━━", self._style("received")), f" {in_label}")
+        rate = Content(f" · peak {duration(self.peak)} rate" if self.end and self.peak != PEAK_SECONDS else "")
         busy = Content(f" · {BUSY}" if self.busy else "")
         # the corners and a border cell either side
-        if key.cell_length + rate.cell_length + busy.cell_length > self.size.width - 4:
+        if head.cell_length + key.cell_length + rate.cell_length + busy.cell_length > self.size.width - 4:
             rate = Content("")
-        self.border_title = Content.assemble(key, rate, busy)
+        self.border_title = Content.assemble(head, key, rate, busy)
 
     def _style(self, part: str) -> str:
         return str(self.get_component_rich_style(f"trafficplot--{part}", partial=True))

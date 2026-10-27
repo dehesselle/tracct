@@ -66,7 +66,7 @@ class TimeRange:
         name = SPANS[self.span][0]
         if self.back:
             return f"{name}, {self.back} back"
-        return "all" if name == "all" else f"last {name}"
+        return "all history" if name == "all" else f"last {name}"
 
 
 class ViewerApp(ChordMixin, App):
@@ -242,6 +242,7 @@ class ViewerApp(ChordMixin, App):
             find.value = pane.find
             find.add_class("shown")
             find.focus()
+            pane.update_banner()
 
     def action_close_find(self) -> None:
         pane = self.active_pane()
@@ -251,6 +252,7 @@ class ViewerApp(ChordMixin, App):
                 find.value = ""
                 pane.set_find("")
                 find.remove_class("shown")
+                pane.update_banner()
                 self.focus_pane()
 
     def action_clear_find(self) -> None:
@@ -265,8 +267,11 @@ class ViewerApp(ChordMixin, App):
             pane.set_find(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.has_class("find"):
+        pane = event.input.parent
+        if event.input.has_class("find") and isinstance(pane, HistoryPane | LivePane):
             event.input.remove_class("shown")
+            # a kept find goes to the banner, on the line the input leaves
+            pane.update_banner()
             self.focus_pane()
 
     def on_unmount(self) -> None:

@@ -23,6 +23,7 @@ from textual.widgets import DataTable, TabbedContent, TabPane, Tabs  # noqa: E40
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
 from tracct.viewer.app import TimeRange, ViewerApp  # noqa: E402
+from tracct.viewer.banner import Banner  # noqa: E402
 from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
@@ -173,8 +174,13 @@ def test_history_drill_down(tmp_path):
             assert sum(a for a, _ in plot.values.values()) == 1111
             # Enter keeps the highlighted row, e excludes it, Backspace pops the filter
             processes.query_one(DataTable).focus()
+            # no filter, no find, no problem: no banner
+            banner = processes.query_one(Banner)
+            assert not banner.display
             await pilot.press("down", "enter")
             await _until(pilot, lambda: processes.filters == [("exe", "/usr/sbin/nginx", False)] and _values(processes) == ["/usr/sbin/nginx"])
+            # the filters are in the banner, with the key that pops them
+            assert banner.display and _banner(processes) == ("filter: executable=/usr/sbin/nginx", "press ⌫ to pop a filter")
             await pilot.press("backspace")
             await _until(pilot, lambda: not processes.filters and len(_values(processes)) == 2)
             # the highlight stayed on nginx through the refresh
@@ -186,14 +192,22 @@ def test_history_drill_down(tmp_path):
             processes.select_dimension("netns")
             processes.reload()
             await _until(pilot, lambda: set(_values(processes)) == {"host", str(VPN)})
-            # find narrows the rows shown, Escape clears it
+            assert not banner.display
+            # find narrows the rows shown; kept with Enter, the banner says it, and c clears it
             await pilot.press("slash", "h", "o", "s", "t")
             await _until(pilot, lambda: _values(processes) == ["host"])
             # the input opens on the tab's own top line
-            assert processes.children[0].has_class("find", "shown")
+            assert processes.children[0].has_class("find", "shown") and not banner.display
+            await pilot.press("enter")
+            await _until(pilot, lambda: _banner(processes) == ("find: host", "press c to clear"))
+            await pilot.press("c")
+            await _until(pilot, lambda: len(_values(processes)) == 2 and not banner.display)
+            # Escape clears an open one
+            await pilot.press("slash", "h")
+            await _until(pilot, lambda: _values(processes) == ["host"])
             await pilot.press("escape")
             await _until(pilot, lambda: len(_values(processes)) == 2)
-            assert not processes.children[0].has_class("shown")
+            assert not processes.children[0].has_class("shown") and not banner.display
             # the interfaces tab shares the range
             await pilot.press("i")
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
@@ -245,8 +259,9 @@ def test_plot_title_and_busy(tmp_path):
             await _until(pilot, lambda: bool(plot.values) and not pane._fetching)
             # answers within milliseconds never show the glyph
             assert True not in shown and BUSY not in _title(plot)
-            # the highlighted row is in the table; the title only has the key and the rate
-            assert _title(plot) == "━━ sent ━━ received · peak 10 s rate"
+            # the range, then the key; the highlighted row is in the table, and the peaks' stretch
+            # is the usual one
+            assert _title(plot) == "all history · ━━ sent ━━ received"
             # a slow answer shows it until the rows and the plot are both in
             slow.set()
             app.action_refresh()
@@ -255,7 +270,11 @@ def test_plot_title_and_busy(tmp_path):
             await _until(pilot, lambda: not plot.busy and BUSY not in _title(plot))
             # the plot of all rows says so, as no row in the table stands for it
             await pilot.press("a")
-            await _until(pilot, lambda: _title(plot).startswith(f"{ALL_ROWS} · "))
+            await _until(pilot, lambda: _title(plot).startswith(f"all history · {ALL_ROWS} · "))
+            # a zoom is named by its ends
+            plot.focus()
+            await pilot.press("plus")
+            await _until(pilot, lambda: bool(app.time_range.zooms) and " – " in _title(plot))
 
     try:
         asyncio.run(drive())
@@ -270,7 +289,9 @@ def test_history_without_query_server(tmp_path):
             pane = app.query_one("#processes HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(pane.error))
             assert "query server unavailable" in pane.error
-            assert pane.query_one(".status").has_class("-error")
+            # in the banner, as on the live tab, and with nothing to undo no hint
+            banner = pane.query_one(Banner)
+            assert banner.display and banner.has_class("-error") and _banner(pane) == (pane.error, "")
 
     asyncio.run(drive())
 
@@ -340,6 +361,13 @@ def test_live_tab(tmp_path, monkeypatch):
 
 def _keys(table: DataTable) -> list[str]:
     return [row.key.value for row in table.ordered_rows]
+
+
+def _banner(pane) -> tuple[str, str]:
+    """the banner's text and its hint, or "" for a hidden hint"""
+    banner = pane.query_one(Banner)
+    hint = banner.query_one(".banner-hint")
+    return str(banner.query_one(".banner-text").render()), str(hint.render()) if hint.display else ""
 
 
 def _title(plot: TrafficPlot) -> str:

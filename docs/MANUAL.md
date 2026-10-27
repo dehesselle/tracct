@@ -36,14 +36,17 @@ tabs in alphabetical order, switched with the letter highlighted in their title 
   newest first. `Space` pauses the events table, `r` resets both.
 - **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
   of routed flows): the history, grouped by the dimension chosen on the left, over the time
-  range in the header. The three kinds of bytes are never added together.
+  range named at the start of the plot's title. The three kinds of bytes are never added
+  together.
 
 In a history tab, `Enter` keeps only the highlighted row's value and `e` excludes it; the
-filters stack up in the header, and `Backspace` takes the last one off. The plot above the
-table draws the highlighted row, or all rows after `a`, as a line each for sent and
-received. A point is the highest rate of any 10 seconds within its bucket (longer if the
-daemon writes less often, a whole period in the rollups), so a short spike keeps its height
-at any zoom; its title says so, and a vertical line marks where the rollups end. Hovering
+filters stack up in a line above the tab, and `Backspace` takes the last one off. As on the
+live tab, that line also holds a kept find and any problem with the query server, and it
+appears only while there is one of them. The plot above the table draws the highlighted row,
+or all rows after `a`, as a line each for sent and received. A point is the highest rate of
+any 10 seconds within its bucket (a whole period in the rollups), so a short spike keeps its
+height at any zoom; if the daemon writes less often than every 10 seconds, the stretch is its
+write window and the title says so. A vertical line marks where the rollups end. Hovering
 shows a bucket's bytes and peaks in the bottom border.
 
 The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
