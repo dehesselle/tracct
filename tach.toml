@@ -52,8 +52,20 @@ path = "picosnitch.reverse_dns"
 depends_on = []
 
 [[modules]]
+path = "picosnitch.rtnetlink"
+depends_on = []
+
+[[modules]]
+path = "picosnitch.netinfo"
+depends_on = ["picosnitch.rtnetlink"]
+
+[[modules]]
+path = "picosnitch.conntrack"
+depends_on = []
+
+[[modules]]
 path = "picosnitch.writer"
-depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.reverse_dns", "picosnitch.types", "picosnitch.utils"]
+depends_on = ["picosnitch.config", "picosnitch.conntrack", "picosnitch.constants", "picosnitch.netinfo", "picosnitch.reverse_dns", "picosnitch.types", "picosnitch.utils"]
 
 [[modules]]
 path = "picosnitch.main_loop"

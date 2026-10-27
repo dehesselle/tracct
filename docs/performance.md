@@ -20,17 +20,21 @@ notes on what that count misses).
 
 | Phase | Load | CPU avg (p95) | PSS avg / peak | Rows/s | Recorded | Warnings |
 | --- | --- | --- | --- | --- | --- | --- |
-| steady | 300 idle TCP clients, 4 KB command lines | 4.2 % (6.0 %) | 27 / 29 MB | 70 | 99.99 % | none |
-| churn | 30 000 new connections per second | 71 % (102 %) | 83 / 105 MB | 3 677 | 99.4 % | none |
-| churn | 50 000 new connections per second | 100 % (121 %) | 136 / 160 MB | 6 198 | 99.3 % | none |
-| exec | ~250 short-lived processes per second | 4.1 % (6.0 %) | 73 / 75 MB | 240 | 99.99 % | none |
+| steady | 300 idle TCP clients, 4 KB command lines | 5.2 % (8.7 %) | 30 / 30 MB | 72 | 100 % | none |
+| churn | 30 000 new connections per second | 72 % (116 %) | 89 / 100 MB | 3 502 | 100 % | none |
+| churn | 50 000 new connections per second | 100 % (119 %) | 135 / 160 MB | 5 835 | 100 % | none |
+| exec | ~250 short-lived processes per second | 7.1 % (15 %) | 29 / 32 MB | 237 | 99.99 % | none |
 
-The phases ran in this order in one daemon, so the exec phase starts with the memory the
-churn phase left allocated. Above one core under churn, the reader and writer threads run
-at the same time; neither the ring buffers nor the connection maps overflowed, and the
-remaining gap in the churn counts is the generator's last second (see the load test's notes).
-The small gap in the steady and exec counts is bytes drained after their process exited,
-recorded under the right executable but with an empty command line.
+The steady and 30 000/s churn phases ran in this order in one daemon, the others each in a
+fresh one. Under 30 000/s churn the reader thread takes 65 % of a core and the writer 14 %;
+above one core they run at the same time. Neither the ring buffers nor the connection maps
+overflowed. Reading each new process's command line and systemd unit at exec time costs
+the exec phase about 3 points of CPU over not doing so, and is what keeps the command line
+of a process whose last bytes are drained after it exited.
+
+All of it ran with connection tracking read every window, besides a forwarded test flow
+and a userspace TUN device; turning conntrack off made no measurable difference under
+churn, with the kernel's table full at its 65 536 entries.
 
 Memory under churn follows the distinct connections of a window, since the writer sums
 events as they arrive; when it still held every event of a window, the 30 000/s phase

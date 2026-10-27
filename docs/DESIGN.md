@@ -6,14 +6,16 @@ and cannot see, and the principles the code must keep.
 ## Goal
 
 Record traffic per process detailed enough to explain a spike after the fact: which program
-(path, command line, parent, user, network namespace) exchanged how many bytes with which
-remote address, domain and port, in which time window. Security is out of scope: there is no
-tamper evidence, no alerting, and a program is identified by its path.
+(path, command line, parent, user, systemd unit, network namespace, interface) exchanged how
+many bytes with which remote address, domain and port, in which time window; next to it the
+totals of every interface, and the flows the host only forwards. Security is out of scope:
+there is no tamper evidence, no alerting, and a program is identified by its path.
 
 ## Data sources
 
-All of them live in one BPF CO-RE program, `src/picosnitch/bpf/picosnitch.bpf.c`, loaded
-through the ctypes libbpf wrapper in `bpf_wrapper.py`.
+Per-process traffic comes from one BPF CO-RE program, `src/picosnitch/bpf/picosnitch.bpf.c`,
+loaded through the ctypes libbpf wrapper in `bpf_wrapper.py`; interfaces and forwarded
+traffic come from netlink.
 
 - **Socket byte counters.** fexit programs on `inet_sendmsg`, `inet_recvmsg`,
   `inet6_sendmsg`, `inet6_recvmsg` and `sock_common_recvmsg`, plus `tcp_splice_read` /
@@ -36,8 +38,28 @@ through the ctypes libbpf wrapper in `bpf_wrapper.py`.
 - **Startup seed.** Connections open before the daemon started are read from `/proc/net`
   and matched to processes by socket inode, so they appear with zero bytes until traffic
   flows.
+- **Process context.** The reader reads each process's command line and systemd unit (the
+  innermost unit of `/proc/<pid>/cgroup`) when it drains its connections, once per process
+  and drain, and at exec time. The last values read per pid answer for a process that has
+  exited before its last bytes were drained.
+- **Interfaces** (`netinfo.py`, `rtnetlink.py`). Once per write window the writer lists every
+  interface with its kind and byte counters (`RTM_GETLINK`, `IFLA_STATS64`) and every address
+  (`RTM_GETADDR`), in the daemon's namespace, the named ones (`/run/netns`,
+  `/run/docker/netns`) and those a recorded process lives in. Another namespace is queried
+  from a short-lived thread that joins it (`setns`), so no other thread changes namespace and
+  no file descriptor keeps a namespace alive. The counter deltas become `interface_traffic`;
+  the addresses tell which interface each connection's local address is on, and a process's
+  `/dev/net/tun` descriptors which TUN device its raw reads and writes went through.
+- **Forwarded flows** (`conntrack.py`). Once per write window the writer dumps the kernel's
+  connection tracking table (ctnetlink) and turns each flow's cumulative counters into the
+  bytes moved since the last dump; a listener thread on the destroy group catches the final
+  counters of flows that end in between. Counters are only read, never zeroed, so nothing
+  else that reads them is disturbed. Flows with a local address at either end are skipped,
+  first by comparing the raw addresses at their fixed offsets in the message, which keeps a
+  busy host's local flows cheap. Needs `nf_conntrack_acct = 1`.
 
-Ring buffer drops and near-full aggregation maps are detected and logged, not silent.
+Ring buffer drops, near-full aggregation maps, lost conntrack events and namespaces that
+cannot be queried are detected and logged, not silent.
 
 ## What is and isn't counted
 
@@ -50,24 +72,33 @@ Ring buffer drops and near-full aggregation maps are detected and logged, not si
 - **Layers.** On a VPN host the same download can appear up to three times: the program's
   socket inside the tunnel (inner), the VPN client's TUN read (tunnel), and the VPN client's
   encrypted socket (outer). Each row is correct for its layer; totals must not add layers.
-- **Forwarded traffic is not seen.** Packets the kernel routes through the host (an exit
-  node, NAT) never touch a local socket. Only the VPN client's TUN bytes show up, without
-  destinations.
+  Every row carries its interface, which tells the layers apart: a socket whose local address
+  is on a `tun` interface is inner, an `AF_PACKET` row on a `tun` interface is tunnel, the
+  rest is outer or direct.
+- **Forwarded traffic** that the kernel routes through the host (an exit node, NAT for
+  containers) touches no local socket. It is recorded from connection tracking in the
+  daemon's namespace, as IP bytes, in its own table; forwarding inside other namespaces is
+  not recorded yet. Traffic of a container behind NAT appears twice, once as the container's
+  sockets and once forwarded by the host.
+- **Interface totals.** Per-interface counters are the baseline every other number can be
+  held against: socket bytes attributed to processes, the remainder that no socket explains
+  (forwarding, kernel traffic), per namespace.
 - **Network namespaces.** Every row carries the namespace inode, so processes in separate
-  namespaces stay apart.
+  namespaces stay apart; named namespaces get their name in `netns`.
 
 ## Threads
 
 The daemon (`picosnitch run`) is one process with three worker threads, supervised by the
-main thread (`main_loop.py`), and a few reverse DNS workers owned by the writer:
+main thread (`main_loop.py`), and helper threads owned by the writer:
 
 ```mermaid
 flowchart LR
     BPF["BPF program<br/>counters, exec and dns events"] --> R
     R["reader<br/>drain, attribution"] -- bounded queue --> W
     R -- bounded queue,<br/>only with viewers --> F
-    W["writer<br/>aggregation, SQLite, retention"] --> DB[(picosnitch.db)]
+    W["writer<br/>aggregation, SQLite, rollups, retention"] --> DB[(picosnitch.db)]
     W <-- cache --> DNS["reverse DNS<br/>workers"]
+    NL["netlink<br/>interfaces, conntrack"] --> W
     F["feed<br/>JSON for viewers"] --> LIVE([events.sock])
     LIVE --> TOP["top / tui live"]
     DB -. read-only .-> TUI["tui history"]
@@ -75,9 +106,11 @@ flowchart LR
 
 - **reader** attaches the BPF program, polls the ring buffers, drains the maps every
   second and attributes each entry to an executable (`monitor.py`).
-- **writer** sums the batches per connection as they arrive, filters them per `[log]`,
-  writes one row per connection and window to SQLite, and runs the retention purge
-  (`writer.py`).
+- **writer** sums the batches per connection as they arrive, filters them per `[log]`, and
+  once per window reads the interfaces and forwarded flows and writes everything to SQLite;
+  it also rolls up and purges (`writer.py`).
+- **conntrack listener** collects the final counters of ended flows for the writer, and
+  short-lived **netns-query** threads read the interfaces of other namespaces.
 - **reverse DNS workers** (four) answer PTR queries for the writer into a shared cache
   (`reverse_dns.py`). `getnameinfo` blocks as long as the system resolver takes; several
   workers keep one slow server from holding up the rest, and the writer never waits for
@@ -115,18 +148,26 @@ subvolumes, the device check is masked off (`st_dev_mask`).
 ## Storage
 
 SQLite at `$STATE_DIRECTORY/picosnitch.db`, in WAL mode so that readers never block the
-writer; every start switches a database made without it. Executables, domains and addresses
-are interned into lookup tables so connection rows stay small; see [schema.md](schema.md).
-Rows are written every `write_limit_seconds`, one row per distinct connection and window;
-a window that reaches 65 536 connections is written early, so memory follows connections
-and not events. The schema version sits in `PRAGMA user_version`; there are no migrations.
+writer; every start switches a database made without it. Executables, domains, addresses,
+units and interfaces are interned into lookup tables so traffic rows stay small; see
+[schema.md](schema.md). Rows are written every `write_limit_seconds`, one row per distinct
+connection and window, plus the window's interface counters and forwarded flows; a window
+that reaches 65 536 connections is written early, so memory follows connections and not
+events. The schema version sits in `PRAGMA user_version`; there are no migrations.
 
-Retention runs in the writer at start and every `maintenance_interval_minutes`: rows older
-than `retention_days` are deleted in chunks of 10 000, with any due write in between, and
-afterwards the lookup entries nothing refers to any more. Only the writer inserts, so no
-new row can refer to an entry while it is deleted; the writer then drops its cached ids.
-The purge is skipped while the wall clock is ahead of the newest row, which would
-otherwise wipe the database.
+History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
+spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
+who, which unit, which service port and which domain but drop addresses and ephemeral
+ports, so they stay small for a year.
+
+Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
+each period that has closed since the watermark in `meta`, then deletes rows past their
+retention in chunks of 10 000, with any due write in between, and afterwards the lookup
+entries nothing refers to any more. A raw row is only deleted once its period is rolled up.
+Only the writer inserts, so no new row can refer to an entry while it is deleted; the writer
+then drops its cached ids. The purge is skipped while the wall clock is ahead of the newest
+row, which would otherwise wipe the database, and the rollup never passes the newest row's
+period.
 
 ## Viewers
 
@@ -171,5 +212,6 @@ to upstream so fixes can still be carried over by hand.
 9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,
    which `[log] reverse_dns = false` turns off.
 10. **Everything held in memory is bounded,** so months of uptime look like the first day:
-    the hand-off queues by events, a write window by connections, the retry buffer by
-    rows, every cache by entries. A new buffer or cache comes with its bound.
+    the hand-off queues by events, a write window by connections, the retry buffers by
+    rows, every cache by entries, the remembered namespaces by count, the conntrack view by
+    the kernel's own table size. A new buffer or cache comes with its bound.

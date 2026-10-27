@@ -73,7 +73,7 @@ def start_picosnitch(extra_config_toml: str = "") -> subprocess.Popen:
     config_toml = f"""\
 [database]
 enabled = true
-retention_days = 1
+raw_retention_days = 1
 write_limit_seconds = {DB_WRITE_LIMIT}
 
 [log]

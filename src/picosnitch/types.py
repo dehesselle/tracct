@@ -19,6 +19,8 @@ class BpfEvent(typing.TypedDict):
     pino: int
     pexe: str
     pcmdline: str
+    # systemd unit the process ran in, '' outside any unit or when unknown
+    unit: str
     uid: int
     send: int
     recv: int

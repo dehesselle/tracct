@@ -47,12 +47,12 @@ except Exception:
     pass
 ST_DEV_MASK: typing.Final[int] = st_dev_mask
 
-# database schema version and table definitions
+# database schema version and table definitions, see docs/schema.md
 # id 0 in each lookup table is the "empty/unknown" sentinel.
 # `family` is AF_INET (2), AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown.
 # `protocol` is an IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown.
-# `netns` is the inode of the socket's network namespace.
-DB_VERSION: typing.Final[int] = 5
+# `netns` is the inode of a network namespace.
+DB_VERSION: typing.Final[int] = 6
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -65,6 +65,18 @@ SCHEMA_DOMAINS: typing.Final[str] = """
 SCHEMA_ADDRESSES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     addr TEXT NOT NULL UNIQUE"""
+SCHEMA_UNITS: typing.Final[str] = """
+    id INTEGER PRIMARY KEY,
+    unit TEXT NOT NULL UNIQUE"""
+SCHEMA_INTERFACES: typing.Final[str] = """
+    id INTEGER PRIMARY KEY,
+    netns INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    UNIQUE(netns, name, kind)"""
+SCHEMA_NETNS: typing.Final[str] = """
+    inode INTEGER PRIMARY KEY,
+    name TEXT NOT NULL"""
 SCHEMA_CONNECTIONS: typing.Final[str] = """
     contime INTEGER NOT NULL,
     send INTEGER NOT NULL,
@@ -72,6 +84,7 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     events INTEGER NOT NULL,
     exe_id INTEGER NOT NULL REFERENCES executables(id),
     pexe_id INTEGER NOT NULL REFERENCES executables(id),
+    unit_id INTEGER NOT NULL REFERENCES units(id),
     uid INTEGER NOT NULL,
     family INTEGER NOT NULL,
     protocol INTEGER NOT NULL,
@@ -80,4 +93,95 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     laddr_id INTEGER NOT NULL REFERENCES addresses(id),
     raddr_id INTEGER NOT NULL REFERENCES addresses(id),
     domain_id INTEGER NOT NULL REFERENCES domains(id),
-    netns INTEGER NOT NULL"""
+    netns INTEGER NOT NULL,
+    iface_id INTEGER NOT NULL REFERENCES interfaces(id)"""
+SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
+    period INTEGER NOT NULL,
+    exe_id INTEGER NOT NULL REFERENCES executables(id),
+    pexe_id INTEGER NOT NULL REFERENCES executables(id),
+    unit_id INTEGER NOT NULL REFERENCES units(id),
+    uid INTEGER NOT NULL,
+    family INTEGER NOT NULL,
+    protocol INTEGER NOT NULL,
+    lport INTEGER NOT NULL,
+    rport INTEGER NOT NULL,
+    domain_id INTEGER NOT NULL REFERENCES domains(id),
+    netns INTEGER NOT NULL,
+    iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    send INTEGER NOT NULL,
+    recv INTEGER NOT NULL,
+    events INTEGER NOT NULL,
+    rows INTEGER NOT NULL"""
+SCHEMA_INTERFACE_TRAFFIC: typing.Final[str] = """
+    contime INTEGER NOT NULL,
+    iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    rx INTEGER NOT NULL,
+    tx INTEGER NOT NULL"""
+SCHEMA_INTERFACE_TRAFFIC_ROLLUP: typing.Final[str] = """
+    period INTEGER NOT NULL,
+    iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    rx INTEGER NOT NULL,
+    tx INTEGER NOT NULL"""
+SCHEMA_FORWARDED: typing.Final[str] = """
+    contime INTEGER NOT NULL,
+    netns INTEGER NOT NULL,
+    protocol INTEGER NOT NULL,
+    src_id INTEGER NOT NULL REFERENCES addresses(id),
+    sport INTEGER NOT NULL,
+    dst_id INTEGER NOT NULL REFERENCES addresses(id),
+    dport INTEGER NOT NULL,
+    domain_id INTEGER NOT NULL REFERENCES domains(id),
+    orig_bytes INTEGER NOT NULL,
+    reply_bytes INTEGER NOT NULL,
+    orig_packets INTEGER NOT NULL,
+    reply_packets INTEGER NOT NULL"""
+SCHEMA_FORWARDED_ROLLUP: typing.Final[str] = """
+    period INTEGER NOT NULL,
+    netns INTEGER NOT NULL,
+    protocol INTEGER NOT NULL,
+    src_id INTEGER NOT NULL REFERENCES addresses(id),
+    dport INTEGER NOT NULL,
+    domain_id INTEGER NOT NULL REFERENCES domains(id),
+    orig_bytes INTEGER NOT NULL,
+    reply_bytes INTEGER NOT NULL,
+    orig_packets INTEGER NOT NULL,
+    reply_packets INTEGER NOT NULL,
+    rows INTEGER NOT NULL"""
+SCHEMA_META: typing.Final[str] = """
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL"""
+# every table with its schema, in creation order, and the sentinel row of each lookup table
+TABLES: typing.Final[tuple[tuple[str, str], ...]] = (
+    ("executables", SCHEMA_EXECUTABLES),
+    ("domains", SCHEMA_DOMAINS),
+    ("addresses", SCHEMA_ADDRESSES),
+    ("units", SCHEMA_UNITS),
+    ("interfaces", SCHEMA_INTERFACES),
+    ("netns", SCHEMA_NETNS),
+    ("connections", SCHEMA_CONNECTIONS),
+    ("connections_rollup", SCHEMA_CONNECTIONS_ROLLUP),
+    ("interface_traffic", SCHEMA_INTERFACE_TRAFFIC),
+    ("interface_traffic_rollup", SCHEMA_INTERFACE_TRAFFIC_ROLLUP),
+    ("forwarded", SCHEMA_FORWARDED),
+    ("forwarded_rollup", SCHEMA_FORWARDED_ROLLUP),
+    ("meta", SCHEMA_META),
+)
+SENTINELS: typing.Final[tuple[str, ...]] = (
+    "INSERT INTO executables(id, exe, name, cmdline) VALUES (0, '', '', '')",
+    "INSERT INTO domains(id, domain) VALUES (0, '')",
+    "INSERT INTO addresses(id, addr) VALUES (0, '')",
+    "INSERT INTO units(id, unit) VALUES (0, '')",
+    "INSERT INTO interfaces(id, netns, name, kind) VALUES (0, 0, '', '')",
+)
+INDEXES: typing.Final[tuple[str, ...]] = (
+    "CREATE INDEX idx_contime ON connections(contime)",
+    "CREATE INDEX idx_exe_id_contime ON connections(exe_id, contime)",
+    "CREATE INDEX idx_pexe_id_contime ON connections(pexe_id, contime)",
+    "CREATE INDEX idx_rollup_period ON connections_rollup(period)",
+    "CREATE INDEX idx_rollup_exe_id_period ON connections_rollup(exe_id, period)",
+    "CREATE INDEX idx_rollup_pexe_id_period ON connections_rollup(pexe_id, period)",
+    "CREATE INDEX idx_interface_traffic_contime ON interface_traffic(contime)",
+    "CREATE INDEX idx_interface_traffic_rollup_period ON interface_traffic_rollup(period)",
+    "CREATE INDEX idx_forwarded_contime ON forwarded(contime)",
+    "CREATE INDEX idx_forwarded_rollup_period ON forwarded_rollup(period)",
+)

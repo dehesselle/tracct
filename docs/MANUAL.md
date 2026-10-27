@@ -33,9 +33,11 @@ defaults.
 ```toml
 [database]
 enabled = true              # write connections to SQLite
-retention_days = 30         # purge older rows; 0 keeps everything
+raw_retention_days = 30     # keep the rows of every write window this long; 0 keeps them forever
+rollup_retention_days = 365 # keep the rollups this long; 0 keeps them forever
+rollup_period_minutes = 60  # the rows of each period are summed into rollups once it has closed
 write_limit_seconds = 10    # length of a write window: traffic is summed per connection and window
-maintenance_interval_minutes = 60  # how often the retention purge runs, besides at startup
+maintenance_interval_minutes = 60  # how often rollups and purges run, besides at startup
 
 [log]
 addresses = true            # store remote addresses and domains
@@ -52,14 +54,19 @@ mmap_ring_rx = false        # count AF_PACKET/AF_XDP mmap-ring receives; adds a 
 exec_ring_buffer_pages = 256  # size of the exec event ring buffer, a power of two up to 16384
 conn_map_max_entries = 65536  # connections the kernel can hold between drains, up to 1048576
 # st_dev_mask = 0           # mask for device numbers in inode checks; auto-detected (0 on btrfs)
+conntrack = true            # record forwarded traffic from connection tracking (needs nf_conntrack_acct = 1)
 
 [viewer]
 group = ""                  # group that gets the daemon's sockets; empty keeps the daemon's own
 ```
 
 Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
-`retention_days`, `write_limit_seconds`, `maintenance_interval_minutes` and `st_dev_mask`
-are replaced by their defaults with a warning. Invalid `ignore_*` entries are dropped. A `[viewer] group` that does not
+`raw_retention_days`, `rollup_retention_days`, `rollup_period_minutes` (1 to 1440),
+`write_limit_seconds`, `maintenance_interval_minutes` and `st_dev_mask` are replaced by
+their defaults with a warning.
+
+Raw rows past `raw_retention_days` are only deleted once their period is rolled up. A change
+of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries are dropped. A `[viewer] group` that does not
 exist is ignored.
 
 Domains in the database are stored in reversed notation (`com.example.www`), which is what

@@ -14,7 +14,10 @@ from picosnitch.constants import CONFIG_PATH
 @dataclasses.dataclass
 class DatabaseConfig:
     enabled: bool = True
-    retention_days: int = 30
+    # rows per write window; rollups per period, which outlive them
+    raw_retention_days: int = 30
+    rollup_retention_days: int = 365
+    rollup_period_minutes: int = 60
     write_limit_seconds: int = 10
     maintenance_interval_minutes: int = 60
 
@@ -39,6 +42,8 @@ class MonitoringConfig:
     exec_ring_buffer_pages: int = 256
     conn_map_max_entries: int = 65536
     st_dev_mask: int | None = None
+    # forwarded traffic from the kernel's connection tracking (needs CAP_NET_ADMIN, nf_conntrack_acct)
+    conntrack: bool = True
 
 
 @dataclasses.dataclass
@@ -117,10 +122,15 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         logging.warning(f"monitoring.st_dev_mask must be in [0, 4294967295], got {dev_mask!r}, ignoring")
         config.monitoring.st_dev_mask = None
     # reject only negatives (a negative retention makes the cutoff a future time -> wipes the db)
-    retention = config.database.retention_days
-    if retention < 0:
-        logging.warning(f"database.retention_days must not be negative, got {retention}, using 30")
-        config.database.retention_days = 30
+    for key, default in (("raw_retention_days", 30), ("rollup_retention_days", 365)):
+        retention = getattr(config.database, key)
+        if retention < 0:
+            logging.warning(f"database.{key} must not be negative, got {retention}, using {default}")
+            setattr(config.database, key, default)
+    period = config.database.rollup_period_minutes
+    if not 1 <= period <= 1440:
+        logging.warning(f"database.rollup_period_minutes must be in [1, 1440], got {period}, using 60")
+        config.database.rollup_period_minutes = 60
     write_limit = config.database.write_limit_seconds
     if write_limit < 0:
         logging.warning(f"database.write_limit_seconds must not be negative, got {write_limit}, using 10")

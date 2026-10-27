@@ -28,6 +28,7 @@ def _event(**fields) -> BpfEvent:
         "pino": 3,
         "pexe": "/usr/bin/bash",
         "pcmdline": "bash\0",
+        "unit": "session-1.scope",
         "uid": 1000,
         "send": 100,
         "recv": 2000,
@@ -69,11 +70,12 @@ def test_window_leaves_events_alone():
     assert events == before
     # both events are the same connection: one row with their sums
     assert len(window) == 1
-    rows = window.take_rows()
-    assert len(rows) == 1 and len(window) == 0
-    contime, send, recv, n_events, exe_key, pexe_key, *_ = rows[0]
+    rows, flows = window.take_rows()
+    assert len(rows) == 1 and not flows and len(window) == 0
+    contime, send, recv, n_events, exe_key, pexe_key, unit, *_ = rows[0]
     assert (send, recv, n_events) == (101, 2001, 5)
     assert exe_key == ("/usr/bin/curl", "curl", "curl https://example.com")
+    assert unit == "session-1.scope"
 
 
 class _FakeDns:
@@ -98,8 +100,41 @@ def test_window_fills_domains_at_write():
     window.add([_event(), _event(domain="", raddr="192.0.2.1", rport=80)])
     assert dns.asked == ["93.184.215.14", "192.0.2.1"]
     dns.names = {"93.184.215.14": "com.example", "192.0.2.1": "org.ignored.www"}
-    rows = window.take_rows()
-    assert [(send, recv, n_events, domain) for _, send, recv, n_events, *_, domain, _ in rows] == [(201, 4001, 9, "com.example")]
+    rows, _ = window.take_rows()
+    assert [(send, recv, n_events, domain) for _, send, recv, n_events, *_, domain, _, _ in rows] == [(201, 4001, 9, "com.example")]
+
+
+class _FakeNetInfo:
+    def __init__(self) -> None:
+        self.noted: list[tuple[int, int]] = []
+
+    def interface_of(self, netns: int, laddr: str) -> tuple[str, str]:
+        return ("eth0", "") if laddr == "10.0.0.2" else ("", "")
+
+    def tun_of(self, pid: int) -> str:
+        return "tailscale0" if pid == 77 else ""
+
+    def note(self, netns: int, pid: int) -> None:
+        self.noted.append((netns, pid))
+
+
+def test_window_interfaces_and_flows():
+    """a row carries the interface of its local address, a TUN row the device of its process;
+    forwarded flows are summed per flow and named by reverse DNS of the answering side"""
+    from picosnitch.conntrack import Flow
+    from picosnitch.netinfo import NetInfo
+
+    netinfo = _FakeNetInfo()
+    dns = _FakeDns()
+    dns.names = {"198.51.100.7": "org.example.cdn"}
+    window = writer.WriteWindow(Config(), typing.cast(ReverseDns, dns), typing.cast(NetInfo, netinfo))
+    window.add([_event(), _event(laddr="10.9.9.9", lport=50001), _event(pid=77, family=17, protocol=0, laddr="", raddr="", lport=0, rport=0, domain="")])
+    flow = Flow(4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40)
+    window.add_flows([flow, flow])
+    rows, flows = window.take_rows()
+    assert sorted(row[-1] for row in rows) == [(0, "", ""), (4026531840, "eth0", ""), (4026531840, "tailscale0", "tun")]
+    assert netinfo.noted == [(4026531840, 4242)] * 2 + [(4026531840, 77)]
+    assert [flow_row[1:] for flow_row in flows] == [(4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, "org.example.cdn", 2000, 100000, 20, 80)]
 
 
 def _init_database(tmp_path, monkeypatch):

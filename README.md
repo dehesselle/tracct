@@ -1,9 +1,11 @@
 # picosnitch (traffic accounting fork)
 
-A Linux daemon that records network traffic per process: which program (and its parent and
-user) exchanged how many bytes with which remote address, domain and port, and when. It counts
-bytes in the kernel with [BPF](https://ebpf.io/) and keeps the history in SQLite, so a traffic
-spike seen in `vnstat` can be traced back to who caused it, after the fact.
+A Linux daemon that records network traffic per process: which program (and its parent, user
+and systemd unit) exchanged how many bytes with which remote address, domain and port, and
+when. Next to that it keeps the totals of every interface in every network namespace and the
+flows the host only forwards. It counts bytes in the kernel with [BPF](https://ebpf.io/) and
+netlink and keeps the history in SQLite, so a traffic spike can be traced back to who caused
+it, after the fact.
 
 This is a fork of [elesiuta/picosnitch](https://github.com/elesiuta/picosnitch) for headless
 servers. It drops upstream's desktop and security features (notifications, executable hashes,
@@ -24,6 +26,9 @@ install -d /etc/opt/picosnitch
 printf '[viewer]\ngroup = "picosnitch-viewer"\n' > /etc/opt/picosnitch/config.toml
 systemctl daemon-reload && systemctl enable --now picosnitch
 ```
+
+To record traffic the host forwards (an exit node, NAT), also set
+`net.netfilter.nf_conntrack_acct = 1`; see [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
 
 Then watch live traffic as root or as a member of `picosnitch-viewer`:
 

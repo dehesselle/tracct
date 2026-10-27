@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from picosnitch.constants import ST_DEV_MASK
-from picosnitch.monitor import ExeResolver, _classify_inode_fallback
+from picosnitch.monitor import ExeResolver, _classify_inode_fallback, _read_proc_unit, unit_of_cgroup
 
 
 def _dev_ino(path: str) -> tuple[int, int]:
@@ -117,3 +117,20 @@ def test_resolver_keeps_no_fds(child):
     child.wait()
     resolver.resolve(dev, ino, child.pid, "python")
     assert set(os.listdir("/proc/self/fd")) == before
+
+
+def test_unit_of_cgroup_takes_the_innermost_unit():
+    assert unit_of_cgroup("/system.slice/nginx.service") == "nginx.service"
+    assert unit_of_cgroup("/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@1.service") == "app-firefox@1.service"
+    assert unit_of_cgroup("/system.slice/docker-0123abcd.scope") == "docker-0123abcd.scope"
+    # a delegated subtree below the unit
+    assert unit_of_cgroup("/system.slice/tailscaled.service/sub") == "tailscaled.service"
+    assert unit_of_cgroup("/") == ""
+    assert unit_of_cgroup("/user.slice") == ""
+
+
+def test_read_proc_unit_of_self():
+    # whatever runs the tests runs in some unit or none, but never fails while it lives
+    assert isinstance(_read_proc_unit(os.getpid()), str)
+    with pytest.raises(OSError):
+        _read_proc_unit(2**22 + 1)

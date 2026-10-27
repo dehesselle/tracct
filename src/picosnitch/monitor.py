@@ -75,6 +75,44 @@ def _read_proc_status_uid(pid: int) -> int:
     return 0
 
 
+# suffixes of the systemd units processes run in
+UNIT_SUFFIXES: typing.Final[tuple[str, ...]] = (".service", ".scope", ".socket", ".mount", ".swap")
+
+
+def unit_of_cgroup(path: str) -> str:
+    """the innermost systemd unit in a cgroup path, e.g. 'nginx.service' for
+    /system.slice/nginx.service, '' for a process outside any unit"""
+    for part in reversed(path.split("/")):
+        if part.endswith(UNIT_SUFFIXES):
+            return part
+    return ""
+
+
+def _read_proc_file(path: str) -> str:
+    """the whole of a /proc file, decoded with errors replaced; plain reads, as a text-mode open
+    costs more than the read itself and this runs per exec and per process and drain"""
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        chunks = []
+        while chunk := os.read(fd, 65536):
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode(errors="replace")
+
+
+def _read_proc_unit(pid: int) -> str:
+    """the systemd unit of pid from its cgroup v2 path (or the v1 name=systemd hierarchy); raises
+    OSError once the process is gone"""
+    path = ""
+    for line in _read_proc_file(f"/proc/{pid}/cgroup").splitlines():
+        hierarchy, _, rest = line.partition(":")
+        controllers, _, cgroup = rest.partition(":")
+        if (hierarchy == "0" and not controllers) or controllers == "name=systemd":
+            path = cgroup.strip()
+    return unit_of_cgroup(path)
+
+
 def _cache_get(cache: collections.OrderedDict[str, str], key: str) -> str:
     try:
         cache.move_to_end(key)
@@ -394,21 +432,35 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
     resolver = ExeResolver(log_error)
 
-    # PID-only caching survives execve and PID reuse, so read the current value.
-    def get_cmdline(pid: int) -> str:
-        try:
-            # errors="replace": a non-utf-8 argv must not blank the whole cmdline
-            with open(f"/proc/{pid}/cmdline", "r", errors="replace") as f:
-                return f.read()
-        except Exception:
-            return ""
+    # the cmdline and unit last read per pid, for the drains after the process has exited: a
+    # connection's last bytes are often drained once their process is gone
+    last_read: collections.OrderedDict[int, tuple[str, str]] = collections.OrderedDict()
 
-    def get_cmdline_cached(pid: int, cache: dict[int, str]) -> str:
-        """get_cmdline once per pid per drain rather than once per drained entry, so a process
+    def read_process(pid: int) -> tuple[str, str]:
+        """cmdline and systemd unit of pid, read now; once the process is gone (or a zombie,
+        whose cmdline reads empty), what was read last while it ran. the current value wins
+        while it lasts, so an execve or a reused pid is never answered from the past"""
+        try:
+            # errors replaced: a non-utf-8 argv must not blank the whole cmdline
+            cmdline = _read_proc_file(f"/proc/{pid}/cmdline")
+            unit = _read_proc_unit(pid)
+        except Exception:
+            cmdline = unit = ""
+        if not cmdline:
+            # kernel threads have no cmdline either, and are never in last_read with one
+            return last_read.get(pid, (cmdline, unit))
+        last_read[pid] = (cmdline, unit)
+        last_read.move_to_end(pid)
+        if len(last_read) > LOOKUP_CACHE_MAX:
+            last_read.popitem(last=False)
+        return cmdline, unit
+
+    def read_process_cached(pid: int, cache: dict[int, tuple[str, str]]) -> tuple[str, str]:
+        """read_process once per pid per drain rather than once per drained entry, so a process
         with a huge (crafted) cmdline flooding connections cannot stall the drain. A pid in one
         drain snapshot is a single process, and the cache is rebuilt each drain."""
         if pid not in cache:
-            cache[pid] = get_cmdline(pid)
+            cache[pid] = read_process(pid)
         return cache[pid]
 
     # get current connections
@@ -417,8 +469,8 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
         try:
             stat = os.stat(f"/proc/{proc['pid']}/exe")
             pstat = os.stat(f"/proc/{proc['ppid']}/exe")
-            cmd = get_cmdline(proc["pid"])
-            pcmd = get_cmdline(proc["ppid"])
+            cmd, unit = read_process(proc["pid"])
+            pcmd, _ = read_process(proc["ppid"])
             st_dev, st_ino, exe = resolver.resolve(stat.st_dev, stat.st_ino, proc["pid"], proc["name"])
             pst_dev, pst_ino, pexe = resolver.resolve(pstat.st_dev, pstat.st_ino, proc["ppid"], proc["pname"])
             if EVERY_EXE or proc["rport"] != -1:
@@ -436,6 +488,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                         "pino": pst_ino,
                         "pexe": pexe,
                         "pcmdline": pcmd,
+                        "unit": unit,
                         "uid": proc["uid"],
                         "send": 0,
                         "recv": 0,
@@ -611,13 +664,13 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             # raise here would drop the rest of this (now unrecoverable) batch -- keep
             # per-entry failures isolated so one bad entry can't lose its siblings.
             outgoing: list[BpfEvent] = []
-            cmdline_cache: dict[int, str] = {}
+            process_cache: dict[int, tuple[str, str]] = {}
             for key, val in entries:
                 try:
                     st_dev, st_ino, exe = resolver.resolve(val.dev, val.ino, key.pid, val.comm.decode(errors="replace"))
                     pst_dev, pst_ino, pexe = resolver.resolve(val.pdev, val.pino, val.ppid, val.pcomm.decode(errors="replace"))
-                    cmd = get_cmdline_cached(key.pid, cmdline_cache)
-                    pcmd = get_cmdline_cached(val.ppid, cmdline_cache)
+                    cmd, unit = read_process_cached(key.pid, process_cache)
+                    pcmd, _ = read_process_cached(val.ppid, process_cache)
                     if family == socket.AF_INET:
                         laddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.saddr))
                         raddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.daddr))
@@ -644,6 +697,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                             "pino": pst_ino,
                             "pexe": pexe,
                             "pcmdline": pcmd,
+                            "unit": unit,
                             "uid": val.uid,
                             "send": int(val.send_bytes),
                             "recv": int(val.recv_bytes),
@@ -672,6 +726,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
         # connections fall back on once a short-lived process has exited
         st_dev, st_ino, exe = resolver.resolve(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
         pst_dev, pst_ino, pexe = resolver.resolve(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
+        cmd, unit = read_process(event.pid)
         if EVERY_EXE:
             publish(
                 [
@@ -681,13 +736,14 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                         "dev": st_dev,
                         "ino": st_ino,
                         "exe": exe,
-                        "cmdline": get_cmdline(event.pid),
+                        "cmdline": cmd,
                         "ppid": event.ppid,
                         "pname": event.pcomm.decode(errors="replace"),
                         "pdev": pst_dev,
                         "pino": pst_ino,
                         "pexe": pexe,
-                        "pcmdline": get_cmdline(event.ppid),
+                        "pcmdline": read_process(event.ppid)[0],
+                        "unit": unit,
                         "uid": event.uid,
                         "send": 0,
                         "recv": 0,

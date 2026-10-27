@@ -15,8 +15,8 @@ RestartSec=5
 # an unprivileged dynamic user holding only the capabilities `picosnitch run` checks for,
 # plus CAP_SYSLOG to read kernel symbol addresses (else io_uring zero-copy receives go uncounted)
 DynamicUser=yes
-AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SYSLOG
-CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SYSLOG
+AmbientCapabilities=CAP_BPF CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SYSLOG
+CapabilityBoundingSet=CAP_BPF CAP_DAC_READ_SEARCH CAP_NET_ADMIN CAP_PERFMON CAP_SYS_ADMIN CAP_SYS_PTRACE CAP_SYSLOG
 NoNewPrivileges=yes
 # lets the daemon hand its sockets to the static group from picosnitch.sysusers; set
 # [viewer] group = "picosnitch-viewer" in config.toml and add viewers to the group; it can't

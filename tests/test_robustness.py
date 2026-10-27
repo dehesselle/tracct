@@ -36,13 +36,16 @@ def test_non_utf8_config_falls_back_to_defaults(tmp_path):
 
 def test_config_numeric_clamps(tmp_path):
     (tmp_path / "config.toml").write_text(
-        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nretention_days = -1\nwrite_limit_seconds = -1\nmaintenance_interval_minutes = 0\n"
+        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nraw_retention_days = -1\nrollup_retention_days = -1\nrollup_period_minutes = 0\n"
+        "write_limit_seconds = -1\nmaintenance_interval_minutes = 0\n"
     )
     config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 256  # non-power-of-two clamped to default
     assert config.monitoring.conn_map_max_entries == 65536  # < 1 clamped to default
     assert config.monitoring.st_dev_mask is None
-    assert config.database.retention_days == 30
+    assert config.database.raw_retention_days == 30
+    assert config.database.rollup_retention_days == 365
+    assert config.database.rollup_period_minutes == 60
     assert config.database.write_limit_seconds == 10
     assert config.database.maintenance_interval_minutes == 60
 
@@ -93,7 +96,7 @@ def test_config_unknown_options_warn(tmp_path, caplog):
     """removed sections and typos must be reported, not silently ignored."""
     (tmp_path / "config.toml").write_text('[virustotal]\napi_key = "x"\n[database]\nretention_dayz = 7\n')
     config = load_config(tmp_path / "config.toml")
-    assert config.database.retention_days == 30
+    assert config.database.raw_retention_days == 30
     assert "config.virustotal: unknown section" in caplog.text
     assert "config.database.retention_dayz: unknown option" in caplog.text
 
@@ -152,31 +155,61 @@ def _purge_db(tmp_path):
     """a database with the real schema, its sentinels, and ids 1 (kept) and 2 (to be orphaned)"""
     import sqlite3
 
-    from picosnitch.constants import DB_VERSION, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES
+    from picosnitch.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
 
     con = sqlite3.connect(tmp_path / "picosnitch.db")
-    con.execute(f"CREATE TABLE executables ({SCHEMA_EXECUTABLES}) STRICT")
-    con.execute(f"CREATE TABLE domains ({SCHEMA_DOMAINS}) STRICT")
-    con.execute(f"CREATE TABLE addresses ({SCHEMA_ADDRESSES}) STRICT")
-    con.execute(f"CREATE TABLE connections ({SCHEMA_CONNECTIONS}) STRICT")
-    con.execute("CREATE INDEX idx_contime ON connections(contime)")
-    con.execute("INSERT INTO executables VALUES (0, '', '', ''), (1, '/bin/live', 'live', 'live'), (2, '/bin/old', 'old', 'old --token-999')")
-    con.execute("INSERT INTO domains VALUES (0, ''), (1, 'live.example'), (2, 'old.example')")
-    con.execute("INSERT INTO addresses VALUES (0, ''), (1, '10.0.0.1'), (2, '10.0.0.2')")
+    for table, schema in TABLES:
+        con.execute(f"CREATE TABLE {table} ({schema}) STRICT")
+    for statement in SENTINELS + INDEXES:
+        con.execute(statement)
+    con.execute("INSERT INTO executables VALUES (1, '/bin/live', 'live', 'live'), (2, '/bin/old', 'old', 'old --token-999')")
+    con.execute("INSERT INTO domains VALUES (1, 'live.example'), (2, 'old.example')")
+    con.execute("INSERT INTO addresses VALUES (1, '10.0.0.1'), (2, '10.0.0.2')")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
     return con
 
 
 def _insert_connections(con, *rows):
-    # each row (contime, ref) refers to ref as exe, parent, both addresses and domain
-    con.executemany("INSERT INTO connections VALUES (?, 0, 0, 1, ?, ?, 0, 2, 6, 0, 443, ?, ?, ?, 0)", [(contime, ref, ref, ref, ref, ref) for contime, ref in rows])
+    # each row (contime, ref[, lport, rport]) refers to ref as exe, parent, both addresses and domain
+    con.executemany(
+        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, 0, 0)",
+        [(row[0], row[1], row[1], *(row[2:] or (50000, 443)), row[1], row[1], row[1]) for row in rows],
+    )
     con.commit()
 
 
+def _config(raw_days=7, rollup_days=365):
+    config = Config()
+    config.database.raw_retention_days = raw_days
+    config.database.rollup_retention_days = rollup_days
+    return config
+
+
+def test_roll_up_sums_closed_periods(tmp_path):
+    """each closed period becomes one rollup row per identity, without ephemeral ports; the
+    open period and the newest row's period wait, and a second pass finds nothing new"""
+    import picosnitch.writer as writer
+
+    con = _purge_db(tmp_path)
+    hour = 3600
+    now = int(time.time())
+    first = now // hour * hour - 3 * hour
+    # a client row (ephemeral local port) twice in one period, a server row (ephemeral peer
+    # port), and a row in the current period
+    _insert_connections(con, (first + 10, 1), (first + 20, 1, 50001, 443), (first + hour + 5, 1, 443, 50002), (now, 1))
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
+    rows = con.execute("SELECT period, lport, rport, send, recv, events, rows FROM connections_rollup ORDER BY period").fetchall()
+    assert rows == [(first, 0, 443, 20, 40, 2, 2), (first + hour, 443, 0, 10, 20, 1, 1)]
+    assert con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[0] == now // hour * hour
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    con.close()
+
+
 def test_purge_database_in_chunks(tmp_path, monkeypatch):
-    """rows past the retention window go in chunks with a hook between them, and the lookup
-    entries only they referred to go with them; recent rows, their entries and the sentinels stay"""
+    """raw rows past their window go in chunks once rolled up, rollups past theirs too, with a
+    hook between chunks; then the lookup entries nothing refers to any more. recent rows,
+    their entries and the sentinels stay"""
     import picosnitch.writer as writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
@@ -184,15 +217,38 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     now = int(time.time())
     _insert_connections(con, *[(now - 10 * 86400, 2)] * 5, (now, 1))
     calls = []
-    assert writer.purge_database(con, 7, lambda: calls.append(1) or False) == (5, 3)
-    assert len(calls) == 2  # after the two full chunks; the third came back short
+    # one period rolled up, 5 raw rows and that period's rollup row deleted, 3 orphans
+    assert writer.purge_database(con, _config(7, 8), lambda: calls.append(1) or False) == (1, 6, 3)
+    # after the rolled-up period and after the two full chunks of raw rows
+    assert len(calls) == 3
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
     for table in ("executables", "domains", "addresses"):
         assert [r[0] for r in con.execute(f"SELECT id FROM {table} ORDER BY id")] == [0, 1]
     con.close()
 
 
-def test_purge_database_stops_and_guards(tmp_path, monkeypatch):
+def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
+    """raw rows past their window stay until their period is rolled up, and the rollup keeps
+    their entries referenced"""
+    import picosnitch.writer as writer
+
+    con = _purge_db(tmp_path)
+    now = int(time.time())
+    # two old rows an hour apart, both past the raw window
+    _insert_connections(con, (now - 10 * 86400, 2), (now - 10 * 86400 + 3600, 2), (now, 1))
+    # the hook stops the rollup after the first period: only that period's raw row may go
+    assert writer.purge_database(con, _config(), lambda: True) == (1, 1, 0)
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 2
+    assert con.execute("SELECT count(*) FROM connections_rollup").fetchone()[0] == 1
+    assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
+    # the second period follows, and exe 2 lives on in the rollup once its raw rows are gone
+    assert writer.purge_database(con, _config(), lambda: False)[:2] == (1, 1)
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
+    assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
+    con.close()
+
+
+def test_purge_database_guards(tmp_path, monkeypatch):
     """a hook returning True ends the purge before the orphan cleanup; retention 0 keeps
     everything; a clock ahead of the newest row deletes nothing"""
     import picosnitch.writer as writer
@@ -201,11 +257,11 @@ def test_purge_database_stops_and_guards(tmp_path, monkeypatch):
     con = _purge_db(tmp_path)
     now = int(time.time())
     _insert_connections(con, *[(now - 10 * 86400, 2)] * 4, (now - 3 * 86400, 2))
-    assert writer.purge_database(con, 0, lambda: False) == (0, 0)
-    assert writer.purge_database(con, 7, lambda: True) == (2, 0)
+    assert writer.purge_database(con, _config(0, 0), lambda: False)[1:] == (0, 0)
+    assert writer.purge_database(con, _config(7, 0), lambda: True)[1:] == (2, 0)
     assert con.execute("SELECT count(*) FROM executables").fetchone()[0] == 3
     # the newest row is 3 days old, so a 1 day window would delete everything: clock ahead
-    assert writer.purge_database(con, 1, lambda: False) == (0, 0)
+    assert writer.purge_database(con, _config(1, 0), lambda: False)[1:] == (0, 0)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 3
     con.close()
 
@@ -252,16 +308,14 @@ def test_db_is_corrupt(tmp_path):
     import sqlite3
 
     from picosnitch.cli import _db_is_corrupt
-    from picosnitch.constants import DB_VERSION
+    from picosnitch.constants import DB_VERSION, TABLES
 
-    def mkdb(name, connections_cols="contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER", tables=True, version=DB_VERSION):
+    def mkdb(name, connections_cols=None, tables=True, version=DB_VERSION):
         p = tmp_path / name
         con = sqlite3.connect(p)
         if tables:
-            con.execute(f"CREATE TABLE connections ({connections_cols})")
-            con.execute("CREATE TABLE domains (id INTEGER)")
-            con.execute("CREATE TABLE addresses (id INTEGER)")
-            con.execute("CREATE TABLE executables (id INTEGER, exe TEXT, name TEXT, cmdline TEXT)")
+            for table, schema in TABLES:
+                con.execute(f"CREATE TABLE {table} ({connections_cols if table == 'connections' and connections_cols else schema})")
         con.execute(f"PRAGMA user_version = {version}")
         con.commit()
         con.close()

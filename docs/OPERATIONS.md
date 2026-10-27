@@ -30,6 +30,23 @@ journalctl -u picosnitch -f
 systemctl restart picosnitch     # after a config change
 ```
 
+## Forwarded traffic
+
+Flows the host only routes (an exit node, NAT for containers) are read from connection
+tracking, whose entries carry byte counters only with `nf_conntrack_acct` on. The setting
+exists only once the `nf_conntrack` module is loaded, which at boot happens after
+`sysctl.d` is applied unless the module is loaded early. Turn both on persistently, then
+restart the unit; flows that started before keep having no counters:
+
+```sh
+echo nf_conntrack > /etc/modules-load.d/picosnitch.conf
+printf 'net.netfilter.nf_conntrack_acct = 1\n' > /etc/sysctl.d/90-picosnitch.conf
+modprobe nf_conntrack && sysctl -p /etc/sysctl.d/90-picosnitch.conf
+```
+
+Without it, or without the `nf_conntrack` module loaded, the forwarded tables stay empty
+and the journal says why. `[monitoring] conntrack = false` turns the reading off.
+
 ## Capabilities
 
 `picosnitch run` checks these at startup and exits if one is missing; the unit grants
@@ -38,9 +55,11 @@ exactly these.
 | Capability | Why |
 | --- | --- |
 | `CAP_BPF` | load the BPF program and maps |
+| `CAP_DAC_READ_SEARCH` | list `/proc/<pid>/fd` of other users' processes, a plain permission check `CAP_SYS_PTRACE` does not override: matching connections open before the start to their processes, finding a process's TUN device |
+| `CAP_NET_ADMIN` | read the conntrack table and its events (forwarded traffic), and size netlink receive buffers |
 | `CAP_PERFMON` | attach kprobes, uprobes and fexit programs |
-| `CAP_SYS_ADMIN` | attach the `getaddrinfo` uprobe; the kernel refuses its perf event without it, at any `perf_event_paranoid` (seen on Ubuntu's 7.0 kernel). Without it, domains come from reverse DNS only |
-| `CAP_SYS_PTRACE` | read `/proc/<pid>/exe`, `/proc/<pid>/fd` and `/proc/<pid>/ns/net` of other users' processes |
+| `CAP_SYS_ADMIN` | attach the `getaddrinfo` uprobe, whose perf event the kernel refuses without it at any `perf_event_paranoid` (seen on Ubuntu's 7.0 kernel; without it, domains come from reverse DNS only); join other network namespaces (`setns`) to read their interfaces |
+| `CAP_SYS_PTRACE` | read `/proc/<pid>/exe` and open `/proc/<pid>/ns/net` of other users' processes |
 | `CAP_SYSLOG` | not checked; reads kernel symbol addresses, without which io_uring zero-copy receives go uncounted |
 
 ## Logs
@@ -60,8 +79,15 @@ capture side are logged under `picosnitch.error`, among them:
 - `live feed: dropped N subscriber(s)`: a viewer fell more than 8 MiB behind
 - `hardlink multi-call inode …`: informational, once per multi-call binary
 - `SQLite execute … will retry N entries`: a failed write, retried on the next window
-- `retention purge: deleted N connection(s) …` (info): a maintenance pass that deleted
-  rows, with how long it took
+- `maintenance: rolled up N period(s), deleted N row(s) …` (info): a maintenance pass that
+  did something, with how long it took
+- `conntrack: not available (…)`: no `nf_conntrack` module or no `CAP_NET_ADMIN`; forwarded
+  traffic goes unrecorded
+- `conntrack: net.netfilter.nf_conntrack_acct is 0 …`: see [Forwarded traffic](#forwarded-traffic)
+- `conntrack: N ended flow event(s) lost`: the kernel dropped destroy events under load;
+  those flows miss their last window's bytes
+- `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
+  its interfaces go unrecorded until it can
 
 ## Resource use
 
@@ -80,11 +106,17 @@ keeps the rest allocated; see [performance.md](performance.md) for measured peak
 
 The database grows with the number of distinct connections per write window (process,
 addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, larger rows.
-Retention keeps it at roughly `retention_days` worth of rows; deleted pages are reused, so
-the file stays at its largest size without shrinking. Each maintenance pass that deletes
-rows also scans all of them for unreferenced lookup entries, about half a second per
-million rows, during which writes wait and the queue fills; raise
-`maintenance_interval_minutes` for a very large database.
+Retention keeps it at roughly `raw_retention_days` worth of raw rows plus
+`rollup_retention_days` worth of rollups, which hold one row per program, peer domain and
+service port per period; deleted pages are reused, so the file stays at its largest size
+without shrinking. Each maintenance pass that deletes rows also scans all of them for
+unreferenced lookup entries, about half a second per million rows, during which writes wait
+and the queue fills; raise `maintenance_interval_minutes` for a very large database.
+
+Every write window the writer also reads the interfaces of each namespace it knows and
+dumps the conntrack table. The dump walks every tracked flow, local ones included, but
+skips local ones without parsing them; with a full table of 65 536 flows under load it made
+no measurable difference (see [performance.md](performance.md)).
 
 Reverse DNS sends a PTR query through the system resolver for every remote address no
 program looked up by name, port scanners included. Four workers handle the queries, with
@@ -96,8 +128,9 @@ again in a later window. `[log] reverse_dns = false` turns it off.
 - **Database write fails** (locked, disk full): rows are kept and retried each window; past
   100 000 pending rows the oldest are dropped and the drop is logged.
 - **Corrupt database**: moved to `picosnitch.db.bad` (with its `-wal` and `-shm` files) in
-  the state directory and recreated on the next start. When the writer finds it while running, the daemon exits so that the unit
-  restarts it on a new database; the window being written is lost.
+  the state directory and recreated on the next start. When the writer finds it while
+  running, the daemon exits so that the unit restarts it on a new database; the window
+  being written is lost.
 - **Database of another schema version**: the daemon refuses to start, leaving the file
   untouched (see [Upgrades](#upgrades)).
 - **Malformed config**: defaults are used and the problem is logged.
@@ -108,11 +141,16 @@ again in a later window. `[log] reverse_dns = false` turns it off.
   the BPF program and loads it again.
   `systemctl kill -s SIGUSR1 --kill-whom=main picosnitch` forces the same.
 - **Clock ahead of the data** (booted before NTP): the retention purge is skipped rather
-  than wiping the database, and tried again on the next pass.
+  than wiping the database, and tried again on the next pass; the rollup does not pass the
+  newest row's period.
 - **Maintenance fails** (locked, disk full): logged, and retried on the next pass.
+- **Restart**: interface counters and conntrack start from a new baseline, so the traffic
+  of the minutes the daemon was down is not attributed to the first window.
 
-Retention runs at daemon start and then every `maintenance_interval_minutes`: rows older
-than `retention_days` and lookup entries nothing refers to any more are deleted.
+Maintenance runs at daemon start and then every `maintenance_interval_minutes`: closed
+periods are rolled up, raw rows older than `raw_retention_days` (once rolled up) and
+rollups older than `rollup_retention_days` are deleted, then lookup entries nothing refers
+to any more.
 
 ## Upgrades
 
@@ -127,6 +165,8 @@ start it again to get a new one.
   installed version; copy `systemd/picosnitch.service` again and `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
+- **No forwarded rows on an exit node**: check `sysctl net.netfilter.nf_conntrack_acct` and
+  the journal for `conntrack:` lines; flows that started while it was 0 never get counters.
 - **`BPF requirements not met`**: the kernel lacks BTF (`CONFIG_DEBUG_INFO_BTF=y`), the bpf
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
 - **`top`: socket not accessible**: the user is not in the viewer group (log in again after

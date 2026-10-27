@@ -11,7 +11,7 @@ import textwrap
 from pathlib import Path
 
 from picosnitch.config import load_config
-from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, RUN_DIR, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES, STATE_DIR, VERSION
+from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR, SENTINELS, STATE_DIR, TABLES, VERSION
 from picosnitch.main_loop import run_main_loop
 from picosnitch.ui.top import top_init
 from picosnitch.ui.tui import tui_init
@@ -19,9 +19,14 @@ from picosnitch.utils import connect_db_readonly, quarantine_database, sqlite_er
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
 REQUIRED_CAPABILITIES: dict[str, int] = {
-    "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe and list /proc/<pid>/fd of other users' processes
+    # list /proc/<pid>/fd of other users' processes (mode 0500, a plain permission check that
+    # CAP_SYS_PTRACE does not override): the startup seed and the TUN devices of a process
+    "CAP_DAC_READ_SEARCH": 2,
+    "CAP_NET_ADMIN": 12,  # read the conntrack table and its events for forwarded traffic
+    "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe and open /proc/<pid>/ns/net of other users' processes
     # attach the getaddrinfo uprobe: its perf event is refused without, at any perf_event_paranoid
-    # (checked on Ubuntu's kernel 7.0); without the uprobe, domains come from reverse DNS only
+    # (checked on Ubuntu's kernel 7.0); without the uprobe, domains come from reverse DNS only.
+    # also joins other network namespaces (setns) to read their interfaces
     "CAP_SYS_ADMIN": 21,
     "CAP_PERFMON": 38,  # attach kprobes, uprobes and fexit programs
     "CAP_BPF": 39,  # load BPF programs and maps
@@ -119,10 +124,10 @@ def _db_is_corrupt(db_path: Path) -> bool:
             # right table names but wrong columns (partial migration / foreign db sharing the
             # version) passes a name-only check yet crashes the secondary. LIMIT 0 validates the
             # columns without reading any rows; a missing table or column raises here.
-            cur.execute("SELECT contime, domain_id, laddr_id, raddr_id FROM connections LIMIT 0")
-            cur.execute("SELECT id FROM domains LIMIT 0")
-            cur.execute("SELECT id FROM addresses LIMIT 0")
+            cur.execute("SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0")
             cur.execute("SELECT id, exe, name, cmdline FROM executables LIMIT 0")
+            for table, _ in TABLES:
+                cur.execute(f"SELECT * FROM {table} LIMIT 0")
             return False
         finally:
             con.close()
@@ -145,16 +150,10 @@ def init_database() -> None:
     if not db_path.exists():
         con = sqlite3.connect(db_path)
         cur = con.cursor()
-        cur.execute(f"CREATE TABLE executables ({SCHEMA_EXECUTABLES}) STRICT")
-        cur.execute(f"CREATE TABLE domains ({SCHEMA_DOMAINS}) STRICT")
-        cur.execute(f"CREATE TABLE addresses ({SCHEMA_ADDRESSES}) STRICT")
-        cur.execute(f"CREATE TABLE connections ({SCHEMA_CONNECTIONS}) STRICT")
-        cur.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (0, '', '', '')")
-        cur.execute("INSERT INTO domains(id, domain) VALUES (0, '')")
-        cur.execute("INSERT INTO addresses(id, addr) VALUES (0, '')")
-        cur.execute("CREATE INDEX idx_contime ON connections(contime)")
-        cur.execute("CREATE INDEX idx_exe_id_contime ON connections(exe_id, contime)")
-        cur.execute("CREATE INDEX idx_pexe_id_contime ON connections(pexe_id, contime)")
+        for table, schema in TABLES:
+            cur.execute(f"CREATE TABLE {table} ({schema}) STRICT")
+        for statement in SENTINELS + INDEXES:
+            cur.execute(statement)
         cur.execute(f"PRAGMA user_version = {DB_VERSION}")
         con.commit()
         con.close()
