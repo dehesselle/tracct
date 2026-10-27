@@ -24,14 +24,14 @@ of `tracct-query.socket`). Press `?` in it for its keys.
 ### The viewer
 
 `tracct view` needs the `tui` extra (`uv pip install 'tracct[tui]'`). It has four
-tabs, switched with `1` to `4`:
+tabs, switched with the letter highlighted in their title (`l`, `p`, `i`, `f`):
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started and the ports each listens on (for processes the viewer's user may inspect, all of
   them as root). It keeps the newest 500 events and 100 executables; past that, the
   executables idle the longest are dropped, and the summary's title counts them. Clicking a
   column's header sorts by it, clicking it again reverses; the executables start sorted by
-  path, the events newest first. `p` pauses the events table, `r` resets both.
+  path, the events newest first. `Space` pauses the events table, `r` resets both.
 - **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
   of routed flows): the history, grouped by the dimension chosen on the left, over the time
   range in the header. The three kinds of bytes are never added together.

@@ -16,7 +16,7 @@ pytest.importorskip("textual")
 from tcoda.dialogs import SettingsDialog  # noqa: E402
 from tcoda.settings import config, configure  # noqa: E402
 from test_query_server import P0, VPN, H, _db  # noqa: E402
-from textual.widgets import DataTable  # noqa: E402
+from textual.widgets import DataTable, TabbedContent, Tabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
@@ -51,6 +51,22 @@ def test_settings_chord(tmp_path):
             assert not isinstance(app.screen, SettingsDialog)
             await pilot.press("comma", "s")
             await _until(pilot, lambda: isinstance(app.screen, SettingsDialog))
+
+    asyncio.run(drive())
+
+
+def test_tab_keys(tmp_path):
+    async def drive():
+        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+        async with app.run_test(size=(120, 40)) as pilot:
+            tabs = app.query_one(TabbedContent)
+            assert not tabs.query_one(Tabs).can_focus
+            # p means Processes, even with the focus in the live tab
+            await pilot.press("p")
+            assert tabs.active == "processes"
+            for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
+                await pilot.press(key)
+                assert tabs.active == tab
 
     asyncio.run(drive())
 
@@ -144,7 +160,7 @@ def test_history_drill_down(tmp_path):
             await pilot.press("escape")
             await _until(pilot, lambda: len(_values(processes)) == 2)
             # the interfaces tab shares the range
-            await pilot.press("3")
+            await pilot.press("i")
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(interfaces.result))
             assert _values(interfaces) == ["host/eth0", f"{VPN}/tun0"]
@@ -211,7 +227,7 @@ def test_live_tab(tmp_path, monkeypatch):
             assert _keys(recent)[0] == "2"
             # paused, recent stops; reset clears
             pane.query_one("#totals", DataTable).focus()
-            await pilot.press("p")
+            await pilot.press("space")
             publisher.publish(event)
             await _until(pilot, lambda: pane.events == 4)
             assert len(pane.recent) == 3

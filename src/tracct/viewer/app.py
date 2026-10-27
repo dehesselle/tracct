@@ -17,7 +17,7 @@ from tcoda.widgets import ChordViewer
 from textual import work
 from textual.app import App
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
+from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane, Tabs
 
 from tracct.query import QueryClient, QueryError
 from tracct.viewer import TABS
@@ -78,10 +78,8 @@ class ViewerApp(ChordMixin, App):
     BINDINGS = [
         Binding("q", "quit", "quit"),
         Binding("question_mark", "show_help_panel", "keys"),
-        Binding("1", "tab('live')", show=False),
-        Binding("2", "tab('processes')", show=False),
-        Binding("3", "tab('interfaces')", show=False),
-        Binding("4", "tab('forwarded')", show=False),
+        # a tab's first letter, highlighted in its title
+        *(Binding(title[0].lower(), f"tab('{tab}')", show=False) for tab, (title, _) in TABS.items()),
         Binding("t", "span(1)", "span"),
         Binding("T", "span(-1)", show=False),
         Binding("h", "earlier(1)", "earlier"),
@@ -109,13 +107,15 @@ class ViewerApp(ChordMixin, App):
     def compose(self):
         with TabbedContent(initial=self.initial_tab):
             for tab, (title, source) in TABS.items():
-                with TabPane(title, id=tab):
+                with TabPane(f"[$accent bold]{title[0]}[/]{title[1:]}", id=tab):
                     yield LivePane(self.events_socket) if not source else HistoryPane(source)
         yield Input(id="find", placeholder="find in the rows shown (Enter keeps it, Escape clears)")
         yield Footer()
         yield ChordViewer()
 
     def on_mount(self) -> None:
+        # tabs are switched by their letters or a click; focus stays in the tab's content
+        self.query_one(TabbedContent).query_one(Tabs).can_focus = False
         self.describe()
         self.set_interval(REFRESH_SECONDS, self.refresh_if_live)
 

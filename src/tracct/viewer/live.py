@@ -100,7 +100,7 @@ class LivePane(Vertical):
     LivePane #recent { height: 3fr; }
     """
     BINDINGS = [
-        Binding("p,space", "pause", "pause"),
+        Binding("space", "pause", "pause", key_display="␣"),
         Binding("r", "reset", "reset"),
     ]
 
