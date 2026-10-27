@@ -8,6 +8,7 @@
 import os
 import platform
 import subprocess
+import sys
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
@@ -25,6 +26,9 @@ class BPFBuildHook(BuildHookInterface):
         if version == "editable" or os.environ.get("TRACCT_SKIP_BPF_BUILD"):
             return
 
+        if sys.platform != "linux":
+            self.app.abort(f"tracct builds on Linux only, not on {sys.platform}")
+
         # The wheel has no C extension linked against glibc -- it ships a
         # precompiled BPF object (kernel bytecode, no userspace linkage) plus
         # pure-Python code that dlopen's libbpf.so via ctypes at runtime.
@@ -34,7 +38,7 @@ class BPFBuildHook(BuildHookInterface):
             "aarch64": "manylinux_2_34_aarch64",
         }
         if arch not in plat_tags:
-            raise RuntimeError(f"Unsupported arch for BPF build: {arch}")
+            self.app.abort(f"Unsupported arch for BPF build: {arch}")
         build_data["pure_python"] = False
         build_data["tag"] = f"py3-none-{plat_tags[arch]}"
 
