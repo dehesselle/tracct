@@ -13,15 +13,46 @@ import pytest
 
 pytest.importorskip("textual")
 
+from tcoda.dialogs import SettingsDialog  # noqa: E402
+from tcoda.settings import config, configure  # noqa: E402
 from test_query_server import P0, VPN, H, _db  # noqa: E402
 from textual.widgets import DataTable  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
+from tracct.viewer import settings  # noqa: E402
 from tracct.viewer.app import TimeRange, ViewerApp  # noqa: E402
 from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
 from tracct.viewer.timeline import Timeline  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def settings_file(tmp_path):
+    """the viewer's settings in a file of the test's own, never the user's"""
+    configure(path=tmp_path / "settings.json")
+
+
+def test_settings():
+    assert settings._limit("10") == 10
+    for text in ("5", "100001", "x"):
+        with pytest.raises(ValueError):
+            settings._limit(text)
+    config.set(settings.LIVE_EVENTS, 20)
+    configure(path=config.path)
+    assert config.get(settings.LIVE_EVENTS) == 20 and config.get(settings.LIVE_EXECUTABLES) == 100
+
+
+def test_settings_chord(tmp_path):
+    async def drive():
+        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("s")
+            assert not isinstance(app.screen, SettingsDialog)
+            await pilot.press("comma", "s")
+            await _until(pilot, lambda: isinstance(app.screen, SettingsDialog))
+
+    asyncio.run(drive())
 
 
 def test_format():
@@ -172,6 +203,43 @@ def test_live_tab(tmp_path, monkeypatch):
             assert len(pane.recent) == 3
             await pilot.press("r")
             await _until(pilot, lambda: pane.events == 0 and not pane.totals)
+
+    try:
+        asyncio.run(drive())
+    finally:
+        publisher.stop()
+
+
+def test_live_limits(tmp_path, monkeypatch):
+    socket_path = tmp_path / "events.sock"
+    monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)
+    publisher = live_feed.LiveFeedPublisher()
+    publisher.start()
+    config.set(settings.LIVE_EXECUTABLES, 10)
+    config.set(settings.LIVE_EVENTS, 12)
+
+    async def drive():
+        app = ViewerApp(socket_path, tmp_path / "missing.sock", "live")
+        async with app.run_test(size=(140, 45)) as pilot:
+            pane = app.query_one(LivePane)
+            await _until(pilot, lambda: pane.state == "connected" and publisher.has_subscribers())
+            # two executables go idle, ten more arrive after them: the idle two make room
+            publisher.publish_many([{"name": f"old{i}", "exe": f"/bin/old{i}", "send": 1} for i in range(2)])
+            await _until(pilot, lambda: pane.events == 2)
+            publisher.publish_many([{"name": f"new{i}", "exe": f"/bin/new{i}", "send": 1} for i in range(10)])
+            await _until(pilot, lambda: pane.events == 12)
+            assert pane.dropped == 2 and len(pane.totals) == 10
+            assert not any(name.startswith("old") for name, _ in pane.totals)
+            assert pane.query_one("#totals", DataTable).row_count == 10
+            assert len(pane.recent) == 12
+            # a lowered limit applies on the next redraw and keeps the newest events
+            config.set(settings.LIVE_EVENTS, 10)
+            await _until(pilot, lambda: pane.recent.maxlen == 10)
+            assert [event["name"] for event in pane.recent] == [f"new{i}" for i in range(9, -1, -1)]
+            await _until(pilot, lambda: pane.query_one("#recent", DataTable).row_count == 10)
+            pane.query_one("#totals", DataTable).focus()
+            await pilot.press("r")
+            await _until(pilot, lambda: pane.dropped == 0)
 
     try:
         asyncio.run(drive())

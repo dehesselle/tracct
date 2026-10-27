@@ -11,6 +11,9 @@ import threading
 import time
 from pathlib import Path
 
+from tcoda.chords import ChordMixin
+from tcoda.dialogs import SettingsDialog
+from tcoda.widgets import ChordViewer
 from textual import work
 from textual.app import App
 from textual.binding import Binding
@@ -66,7 +69,7 @@ class TimeRange:
         return "all" if name == "all" else f"last {name}"
 
 
-class ViewerApp(App):
+class ViewerApp(ChordMixin, App):
     TITLE = "tracct"
     CSS = """
     #find { dock: bottom; display: none; }
@@ -87,6 +90,8 @@ class ViewerApp(App):
         Binding("u", "units", "units"),
         Binding("r", "refresh", "refresh"),
         Binding("slash", "find", "find"),
+        # chords start with a comma; the ChordViewer lists them when the next key is slow to come
+        Binding("comma s", "settings", "settings", show=False),
         Binding("escape", "close_find", show=False),
     ]
 
@@ -108,6 +113,7 @@ class ViewerApp(App):
                     yield LivePane(self.events_socket) if not source else HistoryPane(source)
         yield Input(id="find", placeholder="find in the rows shown (Enter keeps it, Escape clears)")
         yield Footer()
+        yield ChordViewer()
 
     def on_mount(self) -> None:
         self.describe()
@@ -224,6 +230,9 @@ class ViewerApp(App):
 
     def action_refresh(self) -> None:
         self.reload_active()
+
+    def action_settings(self) -> None:
+        self.push_screen(SettingsDialog())
 
     def action_find(self) -> None:
         find = self.query_one("#find", Input)

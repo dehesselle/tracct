@@ -9,12 +9,14 @@ executable since the tab started (or was reset) and the ports each one listens o
 from __future__ import annotations
 
 import collections
+import itertools
 import os
 import threading
 import time
 from pathlib import Path
 
 from rich.text import Text
+from tcoda.settings import config
 from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -23,13 +25,10 @@ from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
 from tracct.viewer.format import bytes_cell, clean, clock
+from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 
-# events kept for the recent table, and how many of them it shows
-RECENT_KEPT = 10000
-RECENT_SHOWN = 500
-# executables shown in the totals table, and kept: past the bound the smaller half is dropped
-TOTALS_SHOWN = 500
-TOTALS_KEPT = 10000
+# events waiting between the feed thread and the next redraw; fills only while the UI stalls
+INCOMING_MAX = 10000
 REDRAW_SECONDS = 0.5
 RECONNECT_SECONDS = 3.0
 LISTEN_SCAN_SECONDS = 5.0
@@ -97,7 +96,6 @@ class LivePane(Vertical):
     """
     BINDINGS = [
         Binding("p,space", "pause", "pause"),
-        Binding("s", "sort", "sort"),
         Binding("r", "reset", "reset"),
     ]
 
@@ -105,15 +103,17 @@ class LivePane(Vertical):
         super().__init__(id=id)
         self.events_socket = events_socket
         self._lock = threading.Lock()
-        self._incoming: collections.deque[dict] = collections.deque(maxlen=RECENT_KEPT)
-        self.recent: collections.deque[dict] = collections.deque(maxlen=RECENT_KEPT)
-        # (name, exe) -> [sent, received, events, unit]
+        self._incoming: collections.deque[dict] = collections.deque(maxlen=INCOMING_MAX)
+        # newest first
+        self.recent: collections.deque[dict] = collections.deque(maxlen=config.get(LIVE_EVENTS))
+        # (name, exe) -> [sent, received, events, unit, last seen]
         self.totals: dict[tuple[str, str], list] = {}
+        # executables dropped from totals for the limit, since the tab started or was reset
+        self.dropped = 0
         self.listening: dict[str, set[int]] = {}
         self.events = 0
         self.since = time.time()
         self.paused = False
-        self.sort_received = False
         self.find = ""
         self.state = "connecting"
         self._dirty = True
@@ -178,14 +178,13 @@ class LivePane(Vertical):
         for event in arrived:
             self.events += 1
             key = (event.get("name") or "", event.get("exe") or "")
-            row = self.totals.setdefault(key, [0, 0, 0, ""])
+            row = self.totals.setdefault(key, [0, 0, 0, "", 0.0])
             row[0] += int(event.get("send", 0) or 0)
             row[1] += int(event.get("recv", 0) or 0)
             row[2] += 1
             row[3] = event.get("unit") or row[3]
-        if len(self.totals) > TOTALS_KEPT:
-            ranked = sorted(self.totals.items(), key=lambda item: item[1][0] + item[1][1], reverse=True)
-            self.totals = dict(ranked[: TOTALS_KEPT // 2])
+            row[4] = event["_t"]
+        self.apply_limits()
         if not self.paused:
             self.recent.extendleft(arrived)
         if arrived or self._dirty:
@@ -193,16 +192,30 @@ class LivePane(Vertical):
             self.render_tables(recent=not self.paused)
         self.update_header()
 
+    def apply_limits(self) -> None:
+        """the limits from the settings, read on every redraw so a change applies at once"""
+        executables = config.get(LIVE_EXECUTABLES)
+        if len(self.totals) > executables:
+            # the executables idle the longest make room
+            ranked = sorted(self.totals.items(), key=lambda item: item[1][4], reverse=True)
+            self.dropped += len(ranked) - executables
+            self.totals = dict(ranked[:executables])
+            self._dirty = True
+        events = config.get(LIVE_EVENTS)
+        if self.recent.maxlen != events:
+            self.recent = collections.deque(itertools.islice(self.recent, events), maxlen=events)
+            self._dirty = True
+
     def matches(self, *fields: object) -> bool:
         needle = self.find.lower()
         return not needle or any(needle in str(field or "").lower() for field in fields)
 
     def render_tables(self, recent: bool = True) -> None:
         totals = self.query_one("#totals", DataTable)
-        ranked = sorted(self.totals.items(), key=lambda item: item[1][1 if self.sort_received else 0], reverse=True)
+        ranked = sorted(self.totals.items(), key=lambda item: item[1][0], reverse=True)
         rows = []
-        for (name, exe), (sent, received, count, unit) in ranked:
-            if self.matches(name, exe, unit) and len(rows) < TOTALS_SHOWN:
+        for (name, exe), (sent, received, count, unit, _) in ranked:
+            if self.matches(name, exe, unit):
                 ports = ",".join(str(port) for port in sorted(self.listening.get(exe, ())))
                 rows.append((Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received), Text(ports)))
         _replace_rows(totals, rows)
@@ -210,8 +223,6 @@ class LivePane(Vertical):
             table = self.query_one("#recent", DataTable)
             rows = []
             for event in self.recent:
-                if len(rows) >= RECENT_SHOWN:
-                    break
                 if not self.matches(event.get("name"), event.get("exe"), event.get("unit"), event.get("domain"), event.get("raddr")):
                     continue
                 lport = event.get("lport", -1)
@@ -233,7 +244,7 @@ class LivePane(Vertical):
         elapsed = max(1.0, time.time() - self.since)
         header = Text()
         header.append("Live ", style="bold")
-        header.append(f"(socket bytes)  {self.events} events in {int(elapsed)} s, sorted by {'received' if self.sort_received else 'sent'}")
+        header.append(f"(socket bytes)  {self.events} events in {int(elapsed)} s")
         if self.paused:
             # TODO: restyle; was bold reverse before the default theme
             header.append("  PAUSED", style="bold")
@@ -249,13 +260,10 @@ class LivePane(Vertical):
         self.paused = not self.paused
         self._dirty = True
 
-    def action_sort(self) -> None:
-        self.sort_received = not self.sort_received
-        self._dirty = True
-
     def action_reset(self) -> None:
         self.totals.clear()
         self.recent.clear()
+        self.dropped = 0
         self.events = 0
         self.since = time.time()
         self._dirty = True

@@ -28,7 +28,8 @@ tabs, switched with `1` to `4`:
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started and the ports each listens on (for processes the viewer's user may inspect, all of
-  them as root). `p` pauses the list, `s` sorts by sent or received, `r` resets.
+  them as root). It keeps the newest 500 events and 100 executables; past that, the
+  executables idle the longest are dropped. `p` pauses the list, `r` resets.
 - **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
   of routed flows): the history, grouped by the dimension chosen on the left, over the time
   range in the header. The three kinds of bytes are never added together.
@@ -41,6 +42,11 @@ bucket and `Enter` narrows the range to it, `z` goes back. `t` cycles the span (
 hour, last day, ...), `h` and `H` step back and forward by a whole span, `u` cycles the byte
 units, `/` finds text in the rows shown, `r` refreshes. A range that ends now refreshes
 every 10 seconds.
+
+Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
+opens the viewer's settings, such as the live tab's limits. They are kept per user in
+`~/.config/tracct/settings.json` (under `$XDG_CONFIG_HOME` if set), which holds only the
+values changed from their defaults.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
 forwarded flow's source, ephemeral ports as 0. Dimensions marked "raw only" narrow the range
