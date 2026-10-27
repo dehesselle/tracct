@@ -143,6 +143,7 @@ def test_history_without_query_server(tmp_path):
             pane = app.query_one("#processes HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(pane.error))
             assert "query server unavailable" in pane.error
+            assert pane.query_one(".status").has_class("-error")
 
     asyncio.run(drive())
 

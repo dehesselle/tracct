@@ -18,14 +18,20 @@ _EIGHTHS = " ▁▂▃▄▅▆▇█"
 
 
 class Timeline(Widget, can_focus=True):
+    COMPONENT_CLASSES = {"timeline--cursor"}
     DEFAULT_CSS = """
     Timeline {
         height: 8;
-        border: round $panel;
+        border: round $border-blurred;
         padding: 0 1;
     }
     Timeline:focus {
-        border: round $accent;
+        border: round $border;
+    }
+    /* TODO: restyle; was bold yellow before the default theme */
+    Timeline > .timeline--cursor {
+        color: $accent;
+        text-style: bold;
     }
     """
     BINDINGS = [
@@ -101,6 +107,7 @@ class Timeline(Widget, can_focus=True):
         else:
             widths = [1] * len(columns)
         cursor_column = self.cursor // per_column if self.cursor >= 0 else -1
+        cursor_style = self.get_component_rich_style("timeline--cursor", partial=True)
         text = Text(no_wrap=True, overflow="crop")
         for row in range(rows):
             # eighths of this row that a bar must reach to fill it
@@ -112,7 +119,7 @@ class Timeline(Widget, can_focus=True):
                 glyph = _EIGHTHS[max(0, min(8, height - floor))]
                 bucket_time = self.start + column * per_column * self.step
                 cursor = column == cursor_column
-                style = "bold yellow" if cursor else ("dim" if bucket_time < self.split else "")
+                style = cursor_style if cursor else ("dim" if bucket_time < self.split else "")
                 if cursor and glyph == " ":
                     # a thin line marks the cursor above its bar
                     glyph = "│"

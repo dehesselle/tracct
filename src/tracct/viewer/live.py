@@ -90,7 +90,8 @@ def remote(event: dict) -> str:
 
 class LivePane(Vertical):
     DEFAULT_CSS = """
-    LivePane .header { height: 1; padding: 0 1; background: $boost; }
+    LivePane .header { height: 1; padding: 0 1; background: $foreground 8%; }
+    LivePane .header.-error { color: $text-error; }
     LivePane #totals { height: 2fr; }
     LivePane #recent { height: 3fr; }
     """
@@ -234,12 +235,15 @@ class LivePane(Vertical):
         header.append("Live ", style="bold")
         header.append(f"(socket bytes)  {self.events} events in {int(elapsed)} s, sorted by {'received' if self.sort_received else 'sent'}")
         if self.paused:
-            header.append("  PAUSED", style="bold reverse")
+            # TODO: restyle; was bold reverse before the default theme
+            header.append("  PAUSED", style="bold")
         if self.find:
             header.append(f"  find: {self.find}")
         if self.state != "connected":
-            header.append(f"  {self.state}", style="bold red")
-        self.query_one(".header", Static).update(header)
+            header.append(f"  {self.state}", style="bold")
+        widget = self.query_one(".header", Static)
+        widget.set_class(self.state != "connected", "-error")
+        widget.update(header)
 
     def action_pause(self) -> None:
         self.paused = not self.paused

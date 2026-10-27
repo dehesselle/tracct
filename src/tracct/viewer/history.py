@@ -41,9 +41,10 @@ def bucket_step(span: int, columns: int) -> int:
 
 class HistoryPane(Vertical):
     DEFAULT_CSS = """
-    HistoryPane .header { height: 1; padding: 0 1; background: $boost; }
-    HistoryPane .status { height: 2; padding: 0 1; color: $text-muted; }
-    HistoryPane .status.error { color: $error; }
+    HistoryPane .header { height: 1; padding: 0 1; background: $foreground 8%; }
+    /* TODO: restyle; was $text-muted before the default theme */
+    HistoryPane .status { height: 2; padding: 0 1; }
+    HistoryPane .status.-error { color: $text-error; }
     HistoryPane OptionList { width: 30; height: 1fr; }
     HistoryPane DataTable { height: 1fr; }
     """
@@ -163,7 +164,7 @@ class HistoryPane(Vertical):
     def show_error(self, message: str) -> None:
         self.error = message
         status = self.query_one(".status", Static)
-        status.add_class("error")
+        status.add_class("-error")
         status.update(Text(message))
 
     def show_rows(self, result: dict) -> None:
@@ -206,7 +207,7 @@ class HistoryPane(Vertical):
     def update_status(self) -> None:
         self.error = ""
         status = self.query_one(".status", Static)
-        status.remove_class("error")
+        status.remove_class("-error")
         result, unit = self.result, self.viewer.unit
         if not result:
             status.update("")
