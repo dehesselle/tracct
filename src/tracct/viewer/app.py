@@ -17,13 +17,12 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
 
 from tracct.query import QueryClient, QueryError
+from tracct.viewer import TABS
 from tracct.viewer.format import BYTE_UNITS, SPANS, moment
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
 from tracct.viewer.timeline import Timeline
 
-# tab id -> (title, query source)
-TABS = {"live": ("Live", ""), "processes": ("Processes", "connections"), "interfaces": ("Interfaces", "interfaces"), "forwarded": ("Forwarded", "forwarded")}
 # a range that ends now is asked again this often while its tab is shown
 REFRESH_SECONDS = 10.0
 

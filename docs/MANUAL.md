@@ -6,7 +6,7 @@ daemon and viewers use. Installing and running the unit is in [OPERATIONS.md](OP
 ## Commands
 
 ```text
-tracct run|view|query-server|version|help
+tracct [-h] [--version] {run,view,query-server}
 ```
 
 | Command | What it does | Needs |
@@ -14,8 +14,9 @@ tracct run|view|query-server|version|help
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
 | `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[tui]`, access to `events.sock` and the query socket |
 | `query-server` | answer the viewer's history queries; this is what `tracct-query.service` starts | read access to the database |
-| `version` | print the version (`--version` does the same) | |
-| `help` | print usage and the resolved paths | |
+
+`--version` prints the version. `-h` prints the usage, and on its own also the resolved
+paths; after a command it prints that command's options.
 
 `view` works for root and for members of the viewer group (`[viewer] group`, and the group
 of `tracct-query.socket`). Press `?` in it for its keys.

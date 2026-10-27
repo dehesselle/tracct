@@ -3,13 +3,13 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import argparse
 import fcntl
 import logging
 import os
 import sqlite3
 import stat
 import sys
-import textwrap
 from pathlib import Path
 
 from tracct.config import load_config
@@ -17,6 +17,8 @@ from tracct.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR,
 from tracct.main_loop import run_main_loop
 from tracct.query_server import run_query_server
 from tracct.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
+from tracct.viewer import add_arguments as add_viewer_arguments
+from tracct.viewer import run_viewer
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
 REQUIRED_CAPABILITIES: dict[str, int] = {
@@ -204,63 +206,34 @@ def start_tracct() -> int:
         logging.error("Did not detect a supported operating system")
         return 1
     configure_logging()
-    readme = textwrap.dedent(
-        f"""
-        Traffic accounting per process, unit and interface: recorded with BPF and kept
-        in SQLite.
-
-        tracct is based on picosnitch by Eric Lesiuta
-        (https://github.com/elesiuta/picosnitch). It comes with ABSOLUTELY NO
-        WARRANTY. This is free software, and you are welcome to redistribute it under
-        certain conditions. See version 3 of the GNU General Public License for details.
-
-        version: {VERSION}
-        entrypoint: {Path(sys.argv[0]).resolve()}
-        config: {CONFIG_PATH}
-        state: {STATE_DIR}
-        run: {RUN_DIR}
-
-        usage:
-            tracct run|view|query-server|version|help
-                        |   |    |            |       |--> this text
-                        |   |    |            |--> version number
-                        |   |    |--> answer history queries (used by tracct-query.service)
-                        |   |--> live and history viewer (needs tracct[tui]; view --help)
-                        |--> run the daemon in the foreground (used by tracct.service)
-
-            systemctl enable|disable|start|stop|restart|status tracct
-
-        paths follow $TRACCT_CONFIG (a file), else $CONFIGURATION_DIRECTORY,
-        $STATE_DIRECTORY and $RUNTIME_DIRECTORY as set by systemd; the query socket
-        follows $TRACCT_QUERY_SOCKET
-        """.lstrip("\n")
+    parser = argparse.ArgumentParser(
+        prog="tracct",
+        description="Traffic accounting per process, unit and interface, recorded with BPF and kept in SQLite. Based on picosnitch by Eric Lesiuta.",
+        epilog=(
+            f"config: {CONFIG_PATH}, state: {STATE_DIR}, run: {RUN_DIR}. "
+            "These follow $TRACCT_CONFIG (a file), else $CONFIGURATION_DIRECTORY, $STATE_DIRECTORY and $RUNTIME_DIRECTORY "
+            "as set by systemd; the query socket follows $TRACCT_QUERY_SOCKET."
+        ),
     )
-    if len(sys.argv) >= 2 and sys.argv[1] == "view":
-        try:
-            from tracct.viewer import run_viewer
-        except ImportError as e:
-            logging.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
-            return 1
-        return run_viewer(sys.argv[2:])
-    if len(sys.argv) != 2:
-        print(readme)
-        return 2
-    cmd = sys.argv[1]
-    if cmd == "help":
-        print(readme)
-        return 0
-    elif cmd in ("version", "--version"):
-        print(f"tracct {VERSION}")
-        return 0
-    elif cmd == "run":
+    parser.add_argument("--version", action="version", version=f"tracct {VERSION}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("run", help="run the daemon in the foreground (used by tracct.service)")
+    view = commands.add_parser("view", help="live and history viewer (needs tracct[tui])", description="Browse live and recorded traffic.")
+    add_viewer_arguments(view)
+    commands.add_parser("query-server", help="answer history queries (used by tracct-query.service)")
+    args = parser.parse_args()
+    if args.command == "run":
         if err := check_capabilities():
             return err
         return main()
-    elif cmd == "query-server":
-        return run_query_server()
+    elif args.command == "view":
+        try:
+            return run_viewer(args)
+        except ImportError as e:
+            logging.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
+            return 1
     else:
-        print(readme)
-        return 2
+        return run_query_server()
 
 
 if __name__ == "__main__":

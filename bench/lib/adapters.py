@@ -169,7 +169,7 @@ def _systemd_mainpid(service):
 class Tracct(ToolAdapter):
     name = "tracct"
     PREFIX = "/opt/tracct"
-    VERSION_CMD = f"{PREFIX}/bin/tracct version"
+    VERSION_CMD = f"{PREFIX}/bin/tracct --version"
     VERSION_SOURCE = "source tree"
     layer = "socket"
     settle = 2.0  # small; collect() polls until the DB flush stabilizes

@@ -222,7 +222,7 @@ def main() -> int:
     if not daemon_pids():
         print("the tracct unit is not running", file=sys.stderr)
         return 2
-    report = {"version": sh("/opt/tracct/bin/tracct version"), "write_limit_seconds": write_limit(), "phases": {}}
+    report = {"version": sh("/opt/tracct/bin/tracct --version"), "write_limit_seconds": write_limit(), "phases": {}}
     for name in args.phases.split(","):
         print(f"== {name} ({args.seconds:g}s) ...", flush=True)
         res = run_phase(name, args)
