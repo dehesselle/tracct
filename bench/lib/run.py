@@ -18,6 +18,7 @@ markdown scorecards.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -120,6 +121,28 @@ def quiesce_other_monitors(current):
         print(f"[{current}] isolation OK: no other monitor daemon running", flush=True)
 
 
+def host():
+    """Describe the machine the run is on, so the reports state it rather than assume it."""
+
+    def read(path):
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return ""
+
+    release = dict(line.split("=", 1) for line in read("/etc/os-release").splitlines() if "=" in line)
+    cpu = next((line.split(":", 1)[1].strip() for line in read("/proc/cpuinfo").splitlines() if line.startswith("model name")), "")
+    mem_kb = next((int(line.split()[1]) for line in read("/proc/meminfo").splitlines() if line.startswith("MemTotal:")), 0)
+    return {
+        "os": release.get("PRETTY_NAME", "").strip('"'),
+        "kernel": sh("uname -r").stdout.strip(),
+        "machine": " ".join(x for x in (read("/sys/class/dmi/id/sys_vendor"), read("/sys/class/dmi/id/product_name")) if x),
+        "cpu": cpu,
+        "vcpus": os.cpu_count(),
+        "mem_gb": round(mem_kb / 1024**2),
+    }
+
+
 def unscored(ad, gtd, note):
     """Trial the harness could not measure (its fault domain, e.g. dead monitor
     or broken ground truth): ERROR, never a tool verdict; N/A stays N/A."""
@@ -188,6 +211,7 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         "does_bandwidth": ad.does_bandwidth,
         "does_attribution": ad.does_attribution,
         "run_date": time.strftime("%Y-%m-%d"),
+        "host": host(),
         "version": "",
         "version_source": ad.VERSION_SOURCE,
         "scenarios": {},
@@ -208,6 +232,9 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         netlab.start_servers()
         print(f"[{toolname}] start ...", flush=True)
         ad.start()
+        # a monitor that died while starting would turn every trial into ERROR
+        if not ad.alive():
+            raise RuntimeError(f"monitor not running after start; see its log in results/{toolname}/")
     except Exception as e:
         # no scenarios run at all: flagged so the reports say "not measured" instead
         # of rendering the empty matrix as a tool that scored zero

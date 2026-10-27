@@ -46,6 +46,14 @@ def _load():
     return data
 
 
+def _host(d):
+    """The machine a tool ran on, as recorded by run.py."""
+    h = d.get("host")
+    if not h:
+        return "an unrecorded host"
+    return f"{h['os']} (kernel {h['kernel']}) on a {h['machine']} with {h['vcpus']} vCPUs ({h['cpu']}) and {h['mem_gb']} GB"
+
+
 def _broken(d):
     """Did this tool's setup fail, so it was never measured? Such a tool has no
     scenario rows at all, which must NOT read as a score of zero (or as N/A) --
@@ -245,6 +253,7 @@ def write_findings():
     C = {t: _counts(data[t], t) for t in tools}
     ntrials = max((len(r.get("trials", [])) for d in data.values() for r in d.get("scenarios", {}).values()), default=0)
     RUN_DATE = max(d.get("run_date", "") for d in data.values())  # the date the run finished
+    hosts = sorted({_host(d) for d in data.values()})
     # neutral ordering for the scoreboard: by detection then bandwidth PASS
     order = sorted(tools, key=lambda t: (-C[t]["det_pass"], -C[t]["bw_pass"]))
 
@@ -252,9 +261,7 @@ def write_findings():
     L = [
         "# Per-process network & bandwidth monitors on Linux\n",
         "<!-- --8<-- [start:overview] -->",
-        # hardcoded; update when running on another host
-        f"{len(scn)} scenarios × {ntrials} trials on Ubuntu 26.04 (kernel 7.0) on a GCP "
-        f"e2-standard-4 (4 vCPUs, 16 GB), run {RUN_DATE}. Detection = "
+        f"{len(scn)} scenarios × {ntrials} trials on {'; '.join(hosts)}, run {RUN_DATE}. Detection = "
         f"*seen and attributed to the right process*; Bandwidth = *bytes within "
         f"±10% (PASS) / ±25% (PARTIAL)* of the reference for the tool's layer. Method, "
         f"harness, versions, and how to reproduce: [the `bench/` directory]({REPO}).\n",

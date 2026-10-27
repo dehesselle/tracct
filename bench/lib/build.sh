@@ -8,9 +8,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p bin
-# build deps (idempotent): gcc + liburing for benchuring
+# build deps (idempotent): gcc + liburing for benchuring; a fresh image ships empty
+# package lists, so update them first
 { command -v gcc && dpkg -s liburing-dev; } >/dev/null 2>&1 || \
-    apt-get install -y build-essential liburing-dev
+    { apt-get update && apt-get install -y build-essential liburing-dev; }
 # -fno-strict-aliasing: the packet crafters (benchpacket/benchraw/benchicmp) cast a
 # byte buffer to packed header structs, store 32-bit addresses, then checksum through
 # a uint16_t*. Reading those stores through a differently-typed lvalue is undefined,

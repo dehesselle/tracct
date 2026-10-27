@@ -8,7 +8,7 @@ Rows show the first trial's numbers; verdicts combine all trials. \* = trials di
 
 | # | Scenario | Det | BW | reference s/r | reported s/r | ratio | note |
 |---|---|---|---|---|---|---|---|
-| s01 | TCP bulk download (control) | ✅ PASS | ✅ PASS | -/33554432 | 24/33488896 | ingress 0.998 | bpftrace tcp_sendmsg/tcp_cleanup_rbuf, summed per second |
+| s01 | TCP bulk download (control) | ✅ PASS | ✅ PASS | -/33554432 | 24/33554432 | ingress 1.0 | bpftrace tcp_sendmsg/tcp_cleanup_rbuf, summed per second |
 | s02 | TCP bulk upload | ✅ PASS | ✅ PASS | 33554456/- | 33554456/0 | egress 1.0 | bpftrace tcp_sendmsg/tcp_cleanup_rbuf, summed per second |
 | s03 | TCP full-duplex up+down | ✅ PASS | ✅ PASS | 25165872/25165824 | 25165872/25165824 | egress 1.0 ingress 1.0 | bpftrace tcp_sendmsg/tcp_cleanup_rbuf, summed per second |
 | s04 | UDP bulk up+down | ⬜ N/A | ⬜ N/A | -/- | -/- |  | this bpftrace probe hooks tcp_* only (TCP) |

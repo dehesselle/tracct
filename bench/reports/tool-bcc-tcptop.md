@@ -20,7 +20,7 @@ Rows show the first trial's numbers; verdicts combine all trials. \* = trials di
 | s10 | Raw IP socket (proto 253) egress | ⬜ N/A | ⬜ N/A | -/- | -/- |  | bcc tcptop is TCP-only |
 | s11 | Short-lived processes | ✅ PASS | ✅ PASS | 10486240/- | 10485760/0 | egress 1.0 | tcptop per-interval KB summed over the trial |
 | s12 | AF_PACKET raw-frame injection | ⬜ N/A | ⬜ N/A | -/- | -/- |  | bcc tcptop is TCP-only |
-| s13 | io_uring data path | ✅ PASS | ✅ PASS | 25165848/- | 25165824/0 | egress 1.0 | tcptop per-interval KB summed over the trial |
+| s13 | io_uring data path | ✅ PASS | ✅ PASS | 25165848/- | 25164800/0 | egress 1.0 | tcptop per-interval KB summed over the trial |
 | s14 | sendfile() zero-copy upload | ✅ PASS | ✅ PASS | 33554456/- | 33554432/0 | egress 1.0 | tcptop per-interval KB summed over the trial |
 | s15 | sendmmsg batched UDP | ⬜ N/A | ⬜ N/A | -/- | -/- |  | bcc tcptop is TCP-only |
 | s16 | Loopback-only transfer | ✅ PASS | ✅ PASS | -/25165824 | 0/25165824 | ingress 1.0 | tcptop per-interval KB summed over the trial |

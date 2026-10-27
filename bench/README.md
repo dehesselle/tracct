@@ -16,8 +16,8 @@ Nine projects are covered in ten configurations.
 
 ## Tools under test
 
-Environment: **Ubuntu 26.04, kernel 7.0** on a GCP **e2-standard-4** instance (4 vCPUs, 16 GB).
-Each configuration runs alone.
+Environment: **Ubuntu 26.04, kernel 7.0** on Hetzner Cloud **CPX32** instances (4 vCPUs, 8 GB), as recorded by each run in the generated report.
+Each configuration runs alone, on a machine of its own or one after another on a shared one.
 
 Versions are read from each installed tool during the run and published in the Versions table of the generated report.
 Pinned versions are set in `lib/adapters.py`; Ubuntu package versions are whatever the archive ships on the run date, and are recorded rather than pinned.
@@ -42,9 +42,9 @@ It is restarted before each trial, so the panel lists only that trial's traffic 
 Only what Sniffnet itself displays is scored; a scenario it does not list is scored as reported-nothing, like any other tool.
 ² Little Snitch's web UI is driven by an undocumented local WebSocket, which the harness reads directly for per-app connection rows and cumulative byte statistics.
 It attributes traffic to the top-level responsible application, so each generator is launched as its own detached transient systemd service, and the traffic history is cleared per run so names stay unique.
-³ The Ubuntu package fails to compile its programs against the 7.0 kernel headers; the pinned upstream build compiles and runs.
+³ The Ubuntu package (0.35.0) fails to compile its programs against the 7.0 kernel headers, also with the running kernel's headers installed; the pinned upstream build compiles and runs.
 These utilities hook TCP only, so non-TCP scenarios are N/A.
-⁴ Sysdig traces syscalls rather than kernel socket functions.
+⁴ Sysdig traces syscalls rather than kernel socket functions, here through its kernel module (`scap`, built by DKMS for the running kernel), since Ubuntu's build has no modern eBPF probe.
 Because packet-socket writes are ordinary `sendto`/`sendmsg` syscalls, it sees AF_PACKET traffic that INET socket-hook monitors miss; its filter matches INET sockets by `fd.type` and packet sockets by syscall name.
 Scenarios that move bytes without the send/recv syscalls it counts (io_uring in either direction, `sendfile()`, `splice()`) show the process but not those bytes.
 
@@ -62,7 +62,7 @@ host (default netns)                       peer netns "benchpeer"
 Two references, independent of the tools under test, are captured for each trial, because different monitors count at different layers:
 
 * **Application bytes**: counted by the traffic generators themselves (exact); the reference for socket-layer monitors.
-* **Wire bytes**: dedicated nftables counters in the peer namespace, which carries only benchmark traffic; the reference for packet-capturing monitors, adjusted per packet to the layer each one counts at.
+* **Wire bytes**: dedicated nftables counters where each packet arrives (the peer's veth ingress, the host's prerouting from `vbench0`), so the pair, which carries only benchmark traffic, is counted as it crossed. A counter on the sending side would see the GSO superpackets that TCP and SCTP hand the stack even with offloads off, one header per superpacket. This is the reference for packet-capturing monitors, adjusted per packet to the layer each one counts at; `lib/validate_gt.sh` checks it against a tcpdump capture on the host side.
 The loopback scenario has no peer namespace and therefore no wire measurement, so tools scored at a packet layer are N/A on its bandwidth.
 
 
@@ -71,7 +71,7 @@ The loopback scenario has no peer namespace and therefore no wire measurement, s
 Each (tool × scenario) cell is **PASS / PARTIAL / FAIL / N/A**, decided from **5 trials** (configurable).
 A footnote is attached to every PARTIAL or FAIL and to any cell whose trials did not all agree.
 A trial whose measurement could not be extracted (a failed screen read, an unreadable log or database) is retried once and otherwise recorded as ERROR, which is never outvoted by the trials that did produce a result; it is a harness failure, not a result for the tool.
-A tool whose setup fails (a build, download, or install that did not produce a working tool) is never measured at all: its scorecard column is marked ⚠️ *not measured*, the failure is published under **Run health** in the findings, and the run exits non-zero. That is a harness failure too, and is never published as zeros or as N/A.
+A tool whose setup fails (a build, download, or install that did not produce a working tool, or a monitor that is not running once started) is never measured at all: its scorecard column is marked ⚠️ *not measured*, the failure is published under **Run health** in the findings, and the run exits non-zero. That is a harness failure too, and is never published as zeros or as N/A.
 
 * **Detection** (was the activity seen and attributed to the right process?)
   * PASS: attributed to the correct executable.
@@ -152,6 +152,7 @@ bench/
   lib/       adapters (install/start/collect/stop per tool), scenarios,
              netlab (netns+veth+nft reference counters), runner, resource profiler,
              standalone smoke / reference validation scripts
+  downloads/ pinned tool downloads and the BCC source tree; not committed
   results/   per-run artifacts (raw results.json, tool logs, OCR screenshots); not committed,
              regenerated by running the matrix, the generated reports/ are the record
   reports/   generated markdown scorecards + findings
@@ -163,9 +164,9 @@ bench/
 As root it installs packages, replaces the configuration of every monitor it tests, deletes tracct and Little Snitch history, starts and stops system services, kills processes by name, and binds the peer server's ports.
 It is not safe on a workstation.
 
-The only prerequisites beyond a stock Ubuntu 26.04 install are internet access for the pinned downloads and the compiled helpers.
-`lib/run.py` preflights the rest — `uv` (for tracct), `docker` with the `alpine:3.20` image (s17), the kernel SCTP module (s08) — and aborts before the matrix if any of it is missing, rather than letting a missing prerequisite score as a tool result.
-`lib/build.sh` installs its own build dependencies.
+Beyond a stock Ubuntu 26.04 install, the run needs internet access and `uv` on root's `PATH`, which tracct is built with (for example `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+Everything else is installed by the scripts: `lib/build.sh` installs its compilers, `lib/run.py` installs docker and pulls the `alpine:3.20` image (s17), and each adapter installs its tool and what that needs, including the running kernel's headers for BCC and Sysdig.
+Before the matrix, `lib/run.py` checks for the compiled helpers, `uv`, docker and the kernel SCTP module (s08) and aborts if any is missing, rather than letting a missing prerequisite score as a tool result.
 
 On Ubuntu 26.04 (kernel 7.0):
 
@@ -178,8 +179,11 @@ sudo python3 lib/run.py --tools all     # install, run matrix, score, report
 
 `lib/loadtest.py` measures tracct alone under sustained load, rather than scoring it
 against other tools: its CPU and PSS, connection rows written per second, how much of the
-generated traffic it recorded, and the warnings it logged. It drives the installed unit
-(install it first, e.g. with one `run.py --tools tracct` pass) and has three phases:
+generated traffic it recorded, and the warnings it logged. It drives the installed unit,
+which must be running; one `run.py --tools tracct` pass installs it, but stops it when done
+and leaves its own `config.toml` with 1 s write windows, so remove that file to measure the
+defaults, as [docs/performance.md](../docs/performance.md) does, and start the unit. It has
+three phases:
 
 | Phase | Load |
 | --- | --- |
@@ -188,6 +192,7 @@ generated traffic it recorded, and the warnings it logged. It drives the install
 | exec | short-lived processes, up to 300 per second, one datagram each |
 
 ```sh
+sudo rm /etc/opt/tracct/config.toml && sudo systemctl start tracct
 sudo python3 lib/loadtest.py --out results/loadtest.json   # see --help for the knobs
 ```
 

@@ -183,6 +183,8 @@ class Tracct(ToolAdapter):
         Path("/etc/opt/tracct/config.toml").write_text(
             "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
+        # the build compiles the BPF object; libbpf1 comes with libbpf-dev
+        sh("apt-get install -y clang libbpf-dev", timeout=600)
         # always rebuild: the tree under test is whatever is checked out
         if not Path(f"{self.PREFIX}/bin/python").exists():
             r = sh(f"uv venv {self.PREFIX}", timeout=600)
@@ -196,6 +198,11 @@ class Tracct(ToolAdapter):
         sh(f"install -D -m 644 {self.SRC}/systemd/tracct.sysusers /etc/sysusers.d/tracct.conf")
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")
+
+    def version(self):
+        # the whole hatch-vcs version: cut at the third number, a dev build reads as a release
+        out = sh(self.VERSION_CMD).stdout.split()
+        return out[-1] if out else ""
 
     def start(self):
         # Fresh DB each run so this run's rows are unambiguous (names repeat across runs).
@@ -482,6 +489,7 @@ class Bandwhich(ToolAdapter):
 
     def start(self):
         self.log = self.sess / "bandwhich.log"
+        self._pos, self._done, self._cur = 0, [], None  # incremental parse state, see _blocks()
         self.proc = subprocess.Popen(["/usr/local/bin/bandwhich", "--raw", "--total-utilization", "--no-resolve", "--show-dns"], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
         time.sleep(3)
 
@@ -494,12 +502,11 @@ class Bandwhich(ToolAdapter):
     _re = re.compile(r'process: <\d+> "(.*?)" up/down Bps: (\d+)/(\d+)')
 
     @staticmethod
-    def parse_blocks(text):
-        """Return (complete refresh blocks, the block still filling). Rows for
-        duplicate process names are summed within their block because bandwhich
-        omits the PID."""
-        blocks, block = [], None
-        for line in text.splitlines():
+    def parse_lines(lines, blocks, block):
+        """Fold log lines into the complete refresh blocks and the block still
+        filling, returning the latter. Rows for duplicate process names are summed
+        within their block because bandwhich omits the PID."""
+        for line in lines:
             if line.startswith("Refreshing:"):
                 if block is not None:
                     blocks.append(block)
@@ -513,13 +520,30 @@ class Bandwhich(ToolAdapter):
             nm, s, r = m.group(1), int(m.group(2)), int(m.group(3))
             cs, cr = block.get(nm, (0, 0))
             block[nm] = (cs + s, cr + r)
+        return block
+
+    @staticmethod
+    def parse_blocks(text):
+        """Return (complete refresh blocks, the block still filling)."""
+        blocks = []
+        block = Bandwhich.parse_lines(text.splitlines(), blocks, None)
         return blocks, (block or {})
 
     def _blocks(self):
+        """Parse only what bandwhich appended since the last call. The log lists
+        every connection it has seen, cumulatively, once a second, so on a box
+        exposed to internet scanners it grows to hundreds of MB, and re-reading it
+        whole on every poll slows each trial down until the run stalls."""
         try:
-            return self.parse_blocks(open(self.log, errors="replace").read())
+            with open(self.log, "rb") as f:
+                f.seek(self._pos)
+                new = f.read()
         except FileNotFoundError:
             return [], {}
+        end = new.rfind(b"\n") + 1  # a line still being written is read next time
+        self._pos += end
+        self._cur = self.parse_lines(new[:end].decode(errors="replace").splitlines(), self._done, self._cur)
+        return self._done, (self._cur or {})
 
     @staticmethod
     def delta_from(now, snap, exe):
@@ -979,6 +1003,24 @@ class LittleSnitch(ToolAdapter):
 _BCC_BUILD_ERR = None  # both bcc configs share one source build (~tens of minutes)
 
 
+def _bcc_setup(version):
+    """Install what the tools of the bcc built here need at run time, and return
+    their environment: the running kernel's headers, which bcc compiles its
+    programs against, its libbcc, and its python bindings, installed as an egg in a
+    directory python3 does not search."""
+    r = sh("apt-get install -y linux-headers-$(uname -r)", timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError(f"kernel headers for the running kernel not installable: {r.stderr}")
+    eggs = sorted(Path("/usr/local/lib").glob(f"python3*/dist-packages/bcc-{version}-*.egg"))
+    if not eggs:
+        raise RuntimeError(f"bcc {version} python bindings not found under /usr/local/lib")
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"  # else tcplife's low-volume output stays buffered
+    env["LD_LIBRARY_PATH"] = "/usr/local/lib"
+    env["PYTHONPATH"] = str(eggs[-1])
+    return env
+
+
 def _build_bcc():
     """Build+install the pinned bcc, once per run. A failure is remembered so the
     second bcc config re-raises it immediately instead of repeating a doomed build,
@@ -1019,18 +1061,17 @@ class Bcc(ToolAdapter):
     # JIT-compile against the 7.0 kernel headers). That script pins the install
     # prefix to /usr/local -- bcc's own cmake defaults to /usr -- so libbcc.so is in
     # /usr/local/lib and the tools in /usr/local/share/bcc/tools. The tools are
-    # python scripts; their bindings come from the same prefix, which sorts ahead of
-    # the distro's python3-bpfcc on sys.path, so no PYTHONPATH override is needed.
+    # python scripts; their bindings are installed as an egg under
+    # /usr/local/lib/python3/dist-packages, which Ubuntu's python3 does not search,
+    # so the egg goes on PYTHONPATH (also ahead of a distro python3-bpfcc).
     UP_TOOLS = "/usr/local/share/bcc/tools"
 
     def install(self):
-        self.env = dict(os.environ)
-        self.env["PYTHONUNBUFFERED"] = "1"  # else tcplife's low-volume output stays buffered
-        self.env["LD_LIBRARY_PATH"] = "/usr/local/lib"
         if self.version() != self.VERSION or not Path(f"{self.UP_TOOLS}/tcplife").exists():
             _build_bcc()
             if self.version() != self.VERSION:
                 raise RuntimeError(f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}")
+        self.env = _bcc_setup(self.VERSION)
         self.tcplife = f"{self.UP_TOOLS}/tcplife"
         self.tcpconnect = f"{self.UP_TOOLS}/tcpconnect"
 
@@ -1146,14 +1187,12 @@ class BccTcptop(ToolAdapter):
     settle = 2.0
 
     def install(self):
-        self.env = dict(os.environ)
-        self.env["PYTHONUNBUFFERED"] = "1"
-        self.env["LD_LIBRARY_PATH"] = "/usr/local/lib"
         up = f"{Bcc.UP_TOOLS}/tcptop"
         if self.version() != self.VERSION or not Path(up).exists():
             _build_bcc()
             if self.version() != self.VERSION:
                 raise RuntimeError(f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}")
+        self.env = _bcc_setup(self.VERSION)
         self.tcptop = up
 
     def start(self):
@@ -1320,12 +1359,19 @@ class Sysdig(ToolAdapter):
         return "frame" if gt.proto == "afpacket" else self.layer
 
     def install(self):
-        if sh("command -v sysdig").returncode != 0:
-            sh("apt-get install -y sysdig", timeout=600)
+        # Ubuntu's sysdig captures through the scap kernel module (its build has no
+        # modern eBPF engine). DKMS builds the module for every kernel with headers;
+        # the package pulls in the newest kernel's, which a box that has not rebooted
+        # does not run, so the running kernel's headers are installed explicitly.
+        r = sh("apt-get install -y sysdig linux-headers-$(uname -r)", timeout=900)
+        if r.returncode != 0:
+            raise RuntimeError(f"sysdig install failed: {r.stderr}\n{r.stdout}")
+        r = sh("modprobe scap")
+        if r.returncode != 0:
+            raise RuntimeError(f"scap module not available for the running kernel: {r.stderr}")
 
     def start(self):
         self.log = self.sess / "sysdig.log"
-        # modern sysdig defaults to the CO-RE eBPF probe, no kmod build.
         self.proc = subprocess.Popen(["sysdig", "-p", self.FMT, self.FILTER], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
         time.sleep(8)
         self.broken = self._broken()
