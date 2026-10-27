@@ -67,7 +67,7 @@ class HistoryPane(Vertical):
 
     @property
     def viewer(self) -> ViewerApp:
-        return self.app  # ty: ignore[invalid-return-type]
+        return self.app
 
     def compose(self):
         yield Static(classes="header")

@@ -58,7 +58,5 @@ extend-select = ["I"]  # import sorting
 dev = [
     "pytest==9.1.1",
     "ruff==0.15.20",
-    "tach==0.35.0",
     "textual==8.2.8",
-    "ty==0.0.55",
 ]

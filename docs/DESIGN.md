@@ -261,6 +261,8 @@ is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on 
 and a history tab per source with one time range shared between them. A tab's timeline shows
 the highlighted row rather than the sum of all rows, so layers or interfaces are not added
 up unless asked for; choosing a bucket narrows the range to it, which every tab then shows.
+The viewer imports only `live_feed`, `query` and `utils`; it reaches the daemon through the
+two sockets alone.
 
 ## Relationship to upstream
 

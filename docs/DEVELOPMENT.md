@@ -50,12 +50,7 @@ reuses `src/picosnitch/bpf/picosnitch.bpf.o` while it is newer than the source.
 ```sh
 uv run ruff check
 uv run ruff format --check
-uv run tach check
-uv run ty check
 ```
-
-`tach.toml` declares which module may import which; update it when imports between
-modules change.
 
 ## Tests
 
