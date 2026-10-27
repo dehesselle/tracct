@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """a minimal rtnetlink client: the interfaces of the calling thread's network namespace, with
 their kind and byte counters, and their addresses. stdlib only"""
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """forwarded traffic from the kernel's connection tracking (ctnetlink), for the packets the host
 routes without any local socket: an exit node, NAT for containers or VMs. stdlib only.
 

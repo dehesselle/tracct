@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 [Unit]
 Description=picosnitch network monitor
 # the retention purge compares against the wall clock; it skips the purge rather than

@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2020 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -8,7 +13,10 @@ dynamic = ["version"]
 requires-python = ">=3.12"
 description = "Monitor network traffic per executable using BPF"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+# the whole is GPL-3.0-or-later; the BPF program is GPL-2.0-only and new files are 0BSD
+license = "GPL-3.0-or-later AND GPL-2.0-only AND 0BSD"
+license-files = ["LICENSES/*"]
+authors = [{ name = "René de Hesselle", email = "dehesselle@web.de" }]
 classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
@@ -36,6 +44,8 @@ include = [
     "/hatch_build.py",
     "/README.md",
     "/LICENSE",
+    "/LICENSES/",
+    "/REUSE.toml",
     "/systemd/",
 ]
 
@@ -57,6 +67,7 @@ extend-select = ["I"]  # import sorting
 [dependency-groups]
 dev = [
     "pytest==9.1.1",
+    "reuse==6.2.0",
     "ruff==0.15.20",
     "textual==8.2.8",
 ]

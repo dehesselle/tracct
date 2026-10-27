@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """reverse DNS (PTR) lookups in worker threads, so the writer never waits on a resolver"""
 
 from __future__ import annotations

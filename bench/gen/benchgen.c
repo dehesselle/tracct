@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchgen — versatile traffic generator (client side) for the benchmark.
  *
  * Transfers a requested number of application-layer bytes to/from benchserver

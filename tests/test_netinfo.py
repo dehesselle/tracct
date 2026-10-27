@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Tests for the interface and namespace information the writer records; the last test creates
 real namespaces, a veth pair and a TUN device and needs root."""
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # One-shot foundation smoke test: proves netlab + server + generators + the
 # dual-layer ground truth all agree. Runs entirely as root in one process so
 # the peer server is a normal child that is reaped on exit (no orphans).

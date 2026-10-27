@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Validate that the nft wire counter matches what a pcap tap on the interface
 # sees (i.e. what nethogs/bandwhich/sniffnet capture), and that peer-side
 # offloads are disabled. Also sums the captured frame (L2) bytes.

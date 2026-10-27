@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Build and install iovisor/bcc from source at the pinned tag below.
 #
 # The Ubuntu package fails to JIT-compile against the 7.0 kernel headers

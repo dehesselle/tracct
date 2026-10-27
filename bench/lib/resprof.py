@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Resource profiler for the benchmark: sample a tool's whole process tree
 (CPU + PSS memory) at a fixed cadence and report the mean, percentiles and peak.
 

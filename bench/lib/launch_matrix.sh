@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Clean slate + run the full benchmark matrix. Run via:
 #   sudo nohup bash lib/launch_matrix.sh > /tmp/fullmatrix.log 2>&1 &
 cd "$(dirname "$0")/.."

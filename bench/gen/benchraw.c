@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchraw: raw IP socket egress with a custom protocol number.
  *
  * socket(AF_INET, SOCK_RAW, proto) sends via inet_sendmsg -> raw_sendmsg, so a

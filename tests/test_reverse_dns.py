@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Tests for the reverse DNS workers, with a fake resolver. No root/BPF, no network."""
 
 import threading

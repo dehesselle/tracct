@@ -1,6 +1,7 @@
 # Development
 
-This document covers the code layout, building, the checks and tests, and the benchmark.
+This document covers the code layout, building, the checks, licensing, the tests and the
+benchmark.
 
 ## Layout
 
@@ -50,7 +51,28 @@ reuses `src/picosnitch/bpf/picosnitch.bpf.o` while it is newer than the source.
 ```sh
 uv run ruff check
 uv run ruff format --check
+uv run reuse lint
 ```
+
+## Licensing
+
+Every file states its copyright and license in the [REUSE](https://reuse.software) format:
+a header where the format allows comments, otherwise an entry in `REUSE.toml`. The license
+texts are in `LICENSES/`.
+
+```python
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+```
+
+- A new file names its author only and is `0BSD`.
+- A file holding code from upstream keeps Eric Lesiuta's line, with the year his header
+  had, and is `GPL-3.0-or-later`; the BPF program is `GPL-2.0-only`. Moving upstream code
+  into a file adds his line and changes its license to match.
+- Write each header for its file; never copy one from another file.
+
+The project as a whole is distributed under GPL-3.0-or-later.
 
 ## Tests
 

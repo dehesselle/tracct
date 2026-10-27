@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Tests for the query server: routing between raw rows and rollups, dimensions, filters,
 request validation and the socket. No root needed."""
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """the viewer app: a live tab from events.sock and a history tab per source of the query
 server, sharing one time range so a spike found in one tab can be taken apart in the next"""
 

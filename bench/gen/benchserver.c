@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchserver — controlled peer for the picosnitch benchmark.
  *
  * Runs inside the peer network namespace. Speaks a tiny framed protocol so a

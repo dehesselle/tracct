@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Load test for the picosnitch daemon: its cost and its losses under sustained load.
 
 Runs against the installed unit (it does not install or restart anything) and drives

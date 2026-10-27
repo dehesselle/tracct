@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """the protocol between the query server and its clients: one JSON object per message, preceded
 by its length as a 4-byte big-endian integer. each request gets one response, which has "ok" set
 and either the result or an "error"; requests and their fields are in query_server.py"""

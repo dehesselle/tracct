@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchuring — TCP transfer whose data path runs entirely through io_uring.
  *
  * Establishes a normal TCP connection to benchserver, sends the framed header,

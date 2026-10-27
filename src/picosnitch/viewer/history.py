@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """a history tab: one source of the query server, grouped by one dimension, narrowed by a stack
 of filters, over the viewer's time range, with the timeline of the highlighted row"""
 

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Benchmark orchestrator.
 
 Runs as root. For each tool (in isolation): install -> start -> smoke control ->

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchpacket: AF_PACKET raw-frame egress (bypasses the INET socket path).
  *
  * Crafts complete Ethernet+IP+UDP frames and injects them with a raw AF_PACKET

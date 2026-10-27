@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Generate markdown scorecards + per-tool detail from results/<tool>/results.json."""
 
 from __future__ import annotations

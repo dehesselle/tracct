@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """`picosnitch view`: the live feed and the history in one Textual app (picosnitch[tui]). it needs
 no capabilities, only access to the daemon's events.sock and the query server's socket"""
 

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """what the writer knows about network namespaces and their interfaces: their names, which
 interface owns a local address, the TUN device of a process, and the bytes each interface
 moved. a namespace other than the daemon's own is queried from a short-lived thread that

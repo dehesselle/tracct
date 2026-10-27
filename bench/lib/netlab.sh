@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # netlab.sh — isolated, reproducible network lab for the picosnitch benchmark.
 #
 # Builds a dedicated "remote peer" inside its own network namespace connected to

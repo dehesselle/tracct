@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Tests for the hand-off between the reader, writer and live feed threads. No root/BPF."""
 
 import copy

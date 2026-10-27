@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """the query server: answers the viewer's history requests from the database, opened read-only.
 it runs as picosnitch-query.service, which systemd starts on the first connection to
 picosnitch-query.socket, without capabilities, and exits once no viewer has been connected for a

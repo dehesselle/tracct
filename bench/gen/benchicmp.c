@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Eric Lesiuta
+//
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 /* benchicmp — ICMP echo traffic with a known payload volume.
  *
  * Sends N echo requests (payload P) to the peer; the peer kernel echoes them

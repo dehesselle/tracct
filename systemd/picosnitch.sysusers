@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 # install as /etc/sysusers.d/picosnitch.conf (or /usr/lib/sysusers.d/), then run systemd-sysusers
 # members of this group may use picosnitch view: events.sock and the query socket
 g picosnitch-viewer -

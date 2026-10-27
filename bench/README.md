@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2026 Eric Lesiuta
+SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+
+SPDX-License-Identifier: GPL-3.0-or-later
+-->
+
 # Per-process network & bandwidth monitor benchmark
 
 <!-- --8<-- [start:intro] -->

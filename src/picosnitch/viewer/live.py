@@ -1,5 +1,8 @@
+# SPDX-FileCopyrightText: 2020 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2020 Eric Lesiuta
+
 """the live tab: connections as the daemon drains them, from events.sock, with totals per
 executable since the tab started (or was reset) and the ports each one listens on"""
 

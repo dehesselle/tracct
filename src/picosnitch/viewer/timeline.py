@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """the bars of a history tab: bytes per bucket, one column each, with a cursor to pick a spike"""
 
 from __future__ import annotations

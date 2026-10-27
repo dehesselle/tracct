@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Minimal stdlib WebSocket reader for little-snitch's ws://127.0.0.1:3031/stream.
 
 little-snitch's web UI streams connection rows (each an app, keyed by rowId, with

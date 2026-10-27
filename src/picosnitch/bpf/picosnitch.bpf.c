@@ -1,5 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
-// Copyright (C) 2020 Eric Lesiuta
+// SPDX-FileCopyrightText: 2020 Eric Lesiuta
+// SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+//
+// SPDX-License-Identifier: GPL-2.0-only
+
 // BPF CO-RE program for picosnitch
 
 #include "vmlinux.h"

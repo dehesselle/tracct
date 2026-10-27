@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """Tests for the ctnetlink parser and the forwarded flow deltas; the last test routes real
 traffic between two network namespaces through the host and needs root."""
 

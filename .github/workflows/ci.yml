@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2020 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 name: CI
 
 on:
@@ -13,7 +18,7 @@ concurrency:
 
 jobs:
   lint:
-    name: Lint (ruff)
+    name: Lint (ruff, reuse)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -29,6 +34,7 @@ jobs:
       - run: uv sync
       - run: uv run ruff check
       - run: uv run ruff format --diff
+      - run: uv run reuse lint
 
   build:
     name: Build

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
 """text for the viewer's cells: byte counts, users, protocols, times and spans"""
 
 from __future__ import annotations

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """The scenario suite. Each scenario runs traffic with a known byte volume
 using a UNIQUE-PER-TRIAL executable name, and returns a GT (ground truth).
 

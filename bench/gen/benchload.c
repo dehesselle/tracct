@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+//
+// SPDX-License-Identifier: 0BSD
+
 /* benchload — load for lib/loadtest.py, all to 127.0.0.1.
  *
  *   benchload tcp <port> <interval_ms> <seconds> <tag>

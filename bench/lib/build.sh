@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Eric Lesiuta
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 # Compile all benchmark C helpers into bench/bin.
 set -euo pipefail
 cd "$(dirname "$0")/.."
