@@ -216,12 +216,25 @@ carry the echo id, keep none.
 
 Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
 each period that has closed since the watermark in `meta`, then deletes rows past their
-retention in chunks of 10 000, with any due write in between, and afterwards the lookup
-entries nothing refers to any more. A raw row is only deleted once its period is rolled up.
-Only the writer inserts, so no new row can refer to an entry while it is deleted; the writer
-then drops its cached ids. The purge is skipped while the wall clock is ahead of the newest
-row, which would otherwise wipe the database, and the rollup never passes the newest row's
-period.
+retention in chunks of 10 000, with any due write in between. A raw row is only deleted once
+its period is rolled up.
+
+Lookup entries nothing refers to any more are deleted at most once a day, or once per
+retention when that is shorter, after a purge that deleted rows. Finding them scans every row
+of the tables referring to them, minutes on a large database, while waiting only leaves a few
+unused entries. Each lookup table is cleaned in its own transaction with any due write in
+between. Only the writer inserts, so no row can refer to an entry while it is deleted, and
+the writer drops its cached ids before the next write.
+
+Maintenance follows the wall clock, which can be wrong:
+
+- a pass is skipped when the wall clock moved more than a minute apart from the boot clock
+  since the last pass, so a clock set wrong for less than an interval deletes nothing;
+- the purge is skipped while the wall clock is ahead of the newest row by more than the
+  retention, as after booting before NTP, which would otherwise wipe the database;
+- the rollup never passes the newest row's period, and a watermark ahead of the clock (rolled
+  up while the clock ran ahead) moves back to the current period, deleting the rollups from
+  there on, so the rows written since are rolled up too.
 
 ## Viewers
 
@@ -234,7 +247,9 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
   `tracct query-server` (`query_server.py`) on the first connection and exits after ten
   idle minutes. It runs as the daemon's dynamic user, so it shares the state directory and
   the WAL index, but it opens the database read-only and holds no capabilities. A heavy
-  query then grows the query server, which its own `MemoryMax=` stops, not the daemon. The
+  query then grows the query server, which its own `MemoryMax=` stops, not the daemon; SQLite
+  sorts into temp files in its cache directory, as the private `/var/tmp` of a dynamic user
+  can be a small tmpfs counted as memory. The
   socket lies outside `/run/tracct`, which systemd deletes whenever the daemon's unit
   stops; history stays readable while the daemon is down.
 

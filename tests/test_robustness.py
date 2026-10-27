@@ -215,8 +215,8 @@ def test_roll_up_sums_closed_periods(tmp_path):
 
 def test_purge_database_in_chunks(tmp_path, monkeypatch):
     """raw rows past their window go in chunks once rolled up, rollups past theirs too, with a
-    hook between chunks; then the lookup entries nothing refers to any more. recent rows,
-    their entries and the sentinels stay"""
+    hook between chunks; then the lookup entries nothing refers to any more, a table per hook
+    call. recent rows, their entries and the sentinels stay"""
     import tracct.writer as writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
@@ -224,13 +224,29 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     now = int(time.time())
     _insert_connections(con, *[(now - 10 * 86400, 2)] * 5, (now, 1))
     calls = []
-    # one period rolled up, 5 raw rows and that period's rollup row deleted, 3 orphans
-    assert writer.purge_database(con, _config(7, 8), lambda: calls.append(1) or False) == (1, 6, 3)
+    # one period rolled up, 5 raw rows and that period's rollup row deleted
+    assert writer.purge_database(con, _config(7, 8), lambda: calls.append(1) or False) == (1, 6)
     # after the rolled-up period and after the two full chunks of raw rows
     assert len(calls) == 3
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
+    calls.clear()
+    assert writer.delete_orphans(con, lambda: calls.append(1) or False) == 3
+    assert len(calls) == len(writer.ORPHAN_DELETES)
     for table in ("executables", "domains", "addresses"):
         assert [r[0] for r in con.execute(f"SELECT id FROM {table} ORDER BY id")] == [0, 1]
+    con.close()
+
+
+def test_delete_orphans_stops_between_tables(tmp_path):
+    """a hook returning True ends the cleanup after the table it follows, which is committed"""
+    import tracct.writer as writer
+
+    con = _purge_db(tmp_path)
+    _insert_connections(con, (int(time.time()), 1))
+    # executables come first: its orphan goes, the domain and address stay for the next cleanup
+    assert writer.delete_orphans(con, lambda: True) == 1
+    assert [r[0] for r in con.execute("SELECT id FROM executables ORDER BY id")] == [0, 1]
+    assert [r[0] for r in con.execute("SELECT id FROM domains ORDER BY id")] == [0, 1, 2]
     con.close()
 
 
@@ -244,33 +260,80 @@ def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
     # two old rows an hour apart, both past the raw window
     _insert_connections(con, (now - 10 * 86400, 2), (now - 10 * 86400 + 3600, 2), (now, 1))
     # the hook stops the rollup after the first period: only that period's raw row may go
-    assert writer.purge_database(con, _config(), lambda: True) == (1, 1, 0)
+    assert writer.purge_database(con, _config(), lambda: True) == (1, 1)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 2
     assert con.execute("SELECT count(*) FROM connections_rollup").fetchone()[0] == 1
     assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
     # the second period follows, and exe 2 lives on in the rollup once its raw rows are gone
-    assert writer.purge_database(con, _config(), lambda: False)[:2] == (1, 1)
+    assert writer.purge_database(con, _config(), lambda: False) == (1, 1)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
+    # only address 2 goes, rollups keep no addresses
+    assert writer.delete_orphans(con, lambda: False) == 1
     assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
+    assert sorted(r[0] for r in con.execute("SELECT id FROM addresses")) == [0, 1]
     con.close()
 
 
 def test_purge_database_guards(tmp_path, monkeypatch):
-    """a hook returning True ends the purge before the orphan cleanup; retention 0 keeps
-    everything; a clock ahead of the newest row deletes nothing"""
+    """a hook returning True ends the purge after a chunk; retention 0 keeps everything; a
+    clock ahead of the newest row deletes nothing"""
     import tracct.writer as writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
     con = _purge_db(tmp_path)
     now = int(time.time())
     _insert_connections(con, *[(now - 10 * 86400, 2)] * 4, (now - 3 * 86400, 2))
-    assert writer.purge_database(con, _config(0, 0), lambda: False)[1:] == (0, 0)
-    assert writer.purge_database(con, _config(7, 0), lambda: True)[1:] == (2, 0)
-    assert con.execute("SELECT count(*) FROM executables").fetchone()[0] == 3
+    assert writer.purge_database(con, _config(0, 0), lambda: False)[1] == 0
+    assert writer.purge_database(con, _config(7, 0), lambda: True)[1] == 2
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 3
     # the newest row is 3 days old, so a 1 day window would delete everything: clock ahead
-    assert writer.purge_database(con, _config(1, 0), lambda: False)[1:] == (0, 0)
+    assert writer.purge_database(con, _config(1, 0), lambda: False)[1] == 0
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 3
     con.close()
+
+
+def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
+    """a watermark ahead of the clock (rolled up while it ran ahead) moves back to the current
+    period; rollups from then on go, and the rows written since are rolled up once closed"""
+    import tracct.writer as writer
+
+    con = _purge_db(tmp_path)
+    hour = 3600
+    now = int(time.time())
+    current = now // hour * hour
+    ahead = current + 2 * 86400
+    # a row from the ahead clock, already rolled up, and one written after the clock went back
+    _insert_connections(con, (ahead + 10, 1), (now, 2))
+    con.execute("INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 10, 20, 1, 1", (ahead,))
+    con.execute("INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?)", (ahead + hour,))
+    con.commit()
+    errors = []
+    monkeypatch.setattr(writer, "log_error", errors.append)
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    assert len(errors) == 1
+    assert con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[0] == current
+    assert con.execute("SELECT count(*) FROM connections_rollup").fetchone()[0] == 0
+    # an hour on, the period of the row written since is closed and rolled up
+    monkeypatch.setattr(writer.time, "time", lambda: now + hour)
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 1
+    assert con.execute("SELECT period, exe_id FROM connections_rollup").fetchall() == [(current, 2)]
+    con.close()
+
+
+def test_clock_check():
+    """the wall clock's jump against the boot clock: 0 at first and while both advance alike"""
+    from tracct.writer import ClockCheck
+
+    wall, boot = [1000.0], [50.0]
+    clock = ClockCheck(lambda: wall[0], lambda: boot[0])
+    assert clock.jump() == 0
+    wall[0], boot[0] = 4600.0, 3650.0
+    assert clock.jump() == 0
+    # set two days ahead within a minute, then back
+    wall[0], boot[0] = 4660.0 + 2 * 86400, 3710.0
+    assert clock.jump() == 2 * 86400
+    wall[0], boot[0] = 4720.0, 3770.0
+    assert clock.jump() == -2 * 86400
 
 
 def test_purge_database_fraction_of_a_day(tmp_path):

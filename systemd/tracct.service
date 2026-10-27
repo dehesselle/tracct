@@ -35,8 +35,9 @@ RuntimeDirectory=tracct
 
 # libbpf locks the BPF maps and ring buffers past the default 8 MiB
 LimitMEMLOCK=infinity
-# caps the daemon's memory: systemd kills it past this and Restart= starts it again
-#MemoryMax=512M
+# a safety net against a leak: by design the daemon stays below about 720 MB (a full writer
+# queue, measured 717 MB); past this systemd kills it and Restart= starts it again
+MemoryMax=1G
 
 ProtectKernelModules=yes
 ProtectControlGroups=yes

@@ -27,6 +27,11 @@ from tracct.utils import DropOldestQueue, ephemeral_port_start, log_error, quara
 WINDOW_CONNECTIONS_MAX = 65536
 # rows the retention purge deletes per transaction; a write that is due goes between two
 PURGE_CHUNK_ROWS = 10000
+# how often unreferenced lookup entries are looked for at most (once per retention when that is
+# shorter): finding them scans every row, while waiting only leaves a few unused entries
+ORPHAN_INTERVAL_SECONDS = 86400
+# a maintenance pass is skipped when the wall clock moved this far from the boot clock since the last
+CLOCK_JUMP_SECONDS = 60
 # ids the writer keeps per lookup table; past it the cache starts over from the database
 ID_CACHE_MAX = 65536
 # the interface of a row whose interface is unknown
@@ -51,8 +56,8 @@ ROLLUPS = (
 # the tables purged past the raw and the rollup retention, with their time column
 RAW_TABLES = (("connections", "contime"), ("interface_traffic", "contime"), ("forwarded", "contime"))
 ROLLUP_TABLES = (("connections_rollup", "period"), ("interface_traffic_rollup", "period"), ("forwarded_rollup", "period"))
-# lookup entries nothing refers to; executables uses the exe_id and pexe_id indexes, the
-# others scan the tables referring to them (about half a second per million rows)
+# lookup entries nothing refers to, one transaction each; executables uses the exe_id and
+# pexe_id indexes, the others scan the tables referring to them
 ORPHAN_DELETES = (
     "DELETE FROM executables WHERE id != 0"
     " AND NOT EXISTS (SELECT 1 FROM connections WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections WHERE pexe_id = executables.id)"
@@ -273,13 +278,23 @@ def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Calla
     ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
     # periods end on multiples of the period length; the current one is still open, and so is
     # the newest row's, so a clock running ahead cannot carry the watermark past the data
-    closed = int(time.time()) // period * period
+    now = int(time.time())
+    current = closed = now // period * period
     newest_sql = "SELECT MAX(t) FROM (SELECT MAX(contime) AS t FROM connections UNION ALL SELECT MAX(contime) FROM interface_traffic UNION ALL SELECT MAX(contime) FROM forwarded)"
     newest = con.execute(newest_sql).fetchone()[0]
     if newest is not None:
         closed = min(closed, newest // period * period)
     row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
     watermark = row[0] if row is not None else 0
+    if watermark > now:
+        # the clock went back past periods rolled up while it ran ahead: their rollups go, and
+        # the periods are rolled up again once they close, with the rows written since
+        with con:
+            for table, column in ROLLUP_TABLES:
+                con.execute(f"DELETE FROM {table} WHERE {column} >= ?", (current,))
+            con.execute("UPDATE meta SET value = ? WHERE key = 'rollup_watermark'", (current,))
+        log_error(f"maintenance: the wall clock went back behind the rolled-up periods; rolling up again from {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(current))}")
+        watermark = current
     periods = 0
     while watermark < closed:
         # the next row at or past the watermark, so spans without any are skipped (a first
@@ -307,23 +322,26 @@ def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Calla
     return periods
 
 
-def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]) -> tuple[int, int, int]:
-    """roll up the closed periods, delete the rows past their retention in chunks (raw rows only
-    once rolled up), then the lookup entries nothing refers to any more. between_chunks runs
-    after each committed chunk or period and ends the purge by returning True. returns the
-    numbers of periods rolled up, rows deleted and lookup entries deleted"""
+def retention_seconds(config: Config) -> tuple[int, int]:
+    """the raw and the rollup retention in seconds, 0 for keeping forever; retention may be a
+    fraction of a day, rounded up so a tiny one never becomes 0"""
     database = config.database
-    periods = roll_up(con, database.rollup_period_minutes, between_chunks)
+    return math.ceil(database.raw_retention_days * 86400), math.ceil(database.rollup_retention_days * 86400)
+
+
+def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]) -> tuple[int, int]:
+    """roll up the closed periods, then delete the rows past their retention in chunks (raw rows
+    only once rolled up). between_chunks runs after each committed chunk or period and ends the
+    purge by returning True. returns the numbers of periods rolled up and rows deleted"""
+    periods = roll_up(con, config.database.rollup_period_minutes, between_chunks)
     now = int(time.time())
     # a cutoff past the newest row means a future clock (booted before NTP), which would wipe the db
     newest = con.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
-    # retention may be a fraction of a day; the cutoffs are whole seconds, rounded up so a tiny
-    # retention never becomes 0, which keeps everything
-    raw_seconds, rollup_seconds = math.ceil(database.raw_retention_days * 86400), math.ceil(database.rollup_retention_days * 86400)
+    raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
     if newest is not None and shortest > 0 and now - shortest > newest:
         logging.error("tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted")
-        return periods, 0, 0
+        return periods, 0
     watermark_row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
     watermark = watermark_row[0] if watermark_row is not None else 0
     purges = []
@@ -337,14 +355,37 @@ def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Call
         count, stopped = _chunked_delete(con, table, column, cutoff, between_chunks)
         deleted += count
         if stopped:
-            return periods, deleted, 0
-    # entries become orphans only when rows are deleted
+            break
+    return periods, deleted
+
+
+def delete_orphans(con: sqlite3.Connection, between_statements: Callable[[], bool]) -> int:
+    """delete the lookup entries nothing refers to any more, one table per transaction.
+    between_statements runs after each and ends the cleanup by returning True. returns the
+    number of entries deleted"""
     orphans = 0
-    if deleted:
+    for statement in ORPHAN_DELETES:
         with con:
-            for statement in ORPHAN_DELETES:
-                orphans += con.execute(statement).rowcount
-    return periods, deleted, orphans
+            orphans += con.execute(statement).rowcount
+        if between_statements():
+            break
+    return orphans
+
+
+class ClockCheck:
+    """how far the wall clock moved apart from the boot clock between two calls: a clock set by
+    hand or stepped by NTP. the boot clock keeps counting through a suspend"""
+
+    def __init__(self, wall: Callable[[], float] = time.time, boot: Callable[[], float] = lambda: time.clock_gettime(time.CLOCK_BOOTTIME)) -> None:
+        self.wall = wall
+        self.boot = boot
+        self.last: tuple[float, float] | None = None
+
+    def jump(self) -> float:
+        """seconds the wall clock jumped since the last call, 0 on the first"""
+        now = (self.wall(), self.boot())
+        last, self.last = self.last, now
+        return 0.0 if last is None else (now[0] - last[0]) - (now[1] - last[1])
 
 
 def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threading.Event) -> None:
@@ -475,22 +516,47 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
             last_write = time.monotonic()
             write()
 
+    clock = ClockCheck()
+    orphan_interval = min([ORPHAN_INTERVAL_SECONDS, *(seconds for seconds in retention_seconds(config) if seconds > 0)])
+    # entries become orphans only when rows are deleted; the first cleanup follows the first purge
+    next_orphans = time.monotonic()
+    deleted_since_orphans = 0
+
     def maintain() -> None:
+        nonlocal next_orphans, deleted_since_orphans
+
         def between_chunks() -> bool:
             collect(0)
             write_if_due()
             return stop.is_set()
 
+        def between_orphan_deletes() -> bool:
+            # the entries just deleted may be cached, and the write in between must not use them
+            clear_id_caches()
+            return between_chunks()
+
+        jump = clock.jump()
+        if abs(jump) > CLOCK_JUMP_SECONDS:
+            # rows past their retention by a clock set wrong would be gone for good
+            log_error(f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it")
+            return
         started = time.monotonic()
+        orphans = None
         con = sqlite3.connect(file_path)
         try:
-            periods, deleted, orphans = purge_database(con, config, between_chunks)
+            periods, deleted = purge_database(con, config, between_chunks)
+            deleted_since_orphans += deleted
+            if deleted_since_orphans and time.monotonic() >= next_orphans and not stop.is_set():
+                orphans = delete_orphans(con, between_orphan_deletes)
+                next_orphans = time.monotonic() + orphan_interval
+                deleted_since_orphans = 0
         finally:
             con.close()
             # orphan cleanup deletes ids the caches may hold
             clear_id_caches()
-        if periods or deleted:
-            logging.info(f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s) and {orphans} unreferenced lookup entries in {time.monotonic() - started:.1f} s")
+        if periods or deleted or orphans is not None:
+            cleanup = "" if orphans is None else f" and {orphans} unreferenced lookup entries"
+            logging.info(f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s")
 
     # the first pass runs at startup
     next_maintenance = time.monotonic()

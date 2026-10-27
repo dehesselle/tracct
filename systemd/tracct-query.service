@@ -24,6 +24,11 @@ NoNewPrivileges=yes
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 
+# SQLite sorts a large GROUP BY in temp files; the private /var/tmp of DynamicUser= can be a
+# small tmpfs counted against MemoryMax=, so they go to disk
+CacheDirectory=tracct-query
+Environment=SQLITE_TMPDIR=%C/tracct-query
+
 # a heavy query is killed here instead of growing the daemon, and yields CPU and disk to it
 MemoryMax=512M
 Nice=10

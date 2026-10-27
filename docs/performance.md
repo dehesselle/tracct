@@ -1,7 +1,8 @@
 # Performance
 
 This document records what the daemon costs and loses under load, as measured with the
-benchmark matrix and the load test in `bench/` (see [bench/README.md](../bench/README.md)).
+benchmark matrix and the load test in `bench/` (see [bench/README.md](../bench/README.md)),
+and how it holds up over a long uptime.
 
 Measured 2026-10-27 on a Hetzner VM with 2 vCPUs and 4 GB RAM, Ubuntu 26.04, kernel 7.0,
 on the current build. The load test ran the unit with its defaults (10 s write windows).
@@ -52,3 +53,63 @@ every write attempt failed after the 5 s busy timeout and was retried, the retry
 stayed at 100 000 rows and the oldest rows were dropped with a log line, and the hand-off
 queue dropped nothing. PSS peaked at 406 MB during the failed attempts and went back to
 158 MB once the lock was gone and the retained rows were written.
+
+## Long uptime
+
+Two runs check that memory, the database and maintenance level off and that the daemon
+recovers from faults. Retention takes fractions of a day, so turnover that takes months in
+production takes minutes; a seeded database stands in for a month of history.
+
+### Retention in minutes
+
+38 minutes with 180 s of raw and 361 s of rollup retention, 1-minute periods and
+maintenance every minute: about 12 raw turnovers and 36 passes. Besides the load generator,
+ten processes with new names started every second, a transient systemd unit every 10 s and a
+network namespace came and went every 30 s, with 8 bursts of churn and exec (60 s each, every
+4 minutes). It ran before the maintenance changes below, which matter little on a small
+database.
+
+- PSS levelled off at 125–131 MB across the bursts.
+- The database file stayed at 43–45 MB while 2.3 million rows were deleted; freed pages
+  were reused.
+- Maintenance took 0.4 s (median), 0.7 s at most.
+- No lookup table grew between the middle and the last third of the run.
+- Every burst was recorded at 99.98–100 %; no restarts, no warnings.
+
+### Production retention on a large database
+
+A database seeded with 30 days at 1 million connection rows per day (30 million raw rows,
+as many rollup rows, 6.6 GB), 30 and 365 days of retention, hourly periods and maintenance
+every 5 minutes, under the load generator for 2.5 hours.
+
+Maintenance used to look for unreferenced lookup entries after every pass that deleted
+rows, in one transaction: 120 s per pass (130 s at most) for about 3 700 deleted rows, with
+nothing written meanwhile. Both churn bursts fell into such a pass and were recorded at 0 %,
+3.3 million events dropped from the full queue; PSS stayed at 630–717 MB with the queue's
+backlog, against 45 MB once the passes had nothing to delete. The search now runs once a day,
+one lookup table per transaction: the longest takes 16 s, all of them 67 s. A 30 000/s churn
+burst during it was recorded at 67 %, the same burst outside it at 100 %, and a pass without
+it takes under a second.
+
+The viewer's queries through the query service:
+
+| Range | By executable | By domain | By remote address | Timeline |
+| --- | --- | --- | --- | --- |
+| 1 day | 1.1 s | 0.6 s | 0.6 s | 0.4 s |
+| 7 days | 5.6 s | 3.5 s | 4.4 s | 2.7 s |
+| 30 days | 18 s | 19 s | 19 s | 15 s |
+
+Before SQLite's temp files went to the service's cache directory, the 30-day queries by
+domain, by address and the timeline failed when its sort filled the 390 MB tmpfs of the
+private `/var/tmp`. Interfaces and forwarded flows answered within a second at every range.
+
+Faults:
+
+- `kill -9` during maintenance: the unit restarted the daemon, `PRAGMA quick_check` was ok,
+  and the next pass carried on.
+- A restart during a burst and a restart of journald: the daemon came back each time.
+- The wall clock 2 days ahead across one pass and then back: both passes were skipped and
+  nothing was deleted early. Before that check, the same fault deleted 2.2 million raw rows
+  early and left the rollup watermark 2 days ahead, which the next start moved back.
+- Under `MemoryMax=1G` the unit's memory sat at the cap from the database's page cache, with
+  17 MB of the daemon's own; nothing was killed.

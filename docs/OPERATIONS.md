@@ -20,8 +20,13 @@ are in the [README](../README.md).
   viewers with `usermod -aG tracct-viewer <user>`.
 - `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
   dies and is restarted.
-- `LimitMEMLOCK=infinity` for the BPF maps and ring buffers, and a commented
-  `MemoryMax=` to cap memory if wanted.
+- `LimitMEMLOCK=infinity` for the BPF maps and ring buffers.
+- `MemoryMax=1G`: a safety net against a leak, above the daemon's bounded memory (see
+  [Resource use](#resource-use)); past it systemd kills the daemon and `Restart=` starts it
+  again, losing the events still queued. `MemoryCurrent` also counts the page cache of the
+  database and sits at the cap once a large database has been read; the kernel then drops
+  cache rather than killing the daemon. The daemon's own memory is its PSS
+  (`grep Pss /proc/$(systemctl show -p MainPID --value tracct)/smaps_rollup`).
 
 Day to day:
 
@@ -45,6 +50,10 @@ from `systemd/tracct-query.socket` on the first connection:
 - It exits after ten minutes without a connected viewer; the next one starts it again.
 - `MemoryMax=512M`, `Nice=10` and `IOSchedulingClass=idle`: a heavy query slows or kills the
   query service, not the daemon.
+- `CacheDirectory=tracct-query` with `SQLITE_TMPDIR` pointing there: SQLite's temp files
+  for sorting a long range go to disk. The private `/var/tmp` that `DynamicUser=` brings is a
+  tmpfs on newer systemd (390 MB on a 4 GB host with systemd 259), counted against
+  `MemoryMax=`; a 30-day range of 30 million rows filled it.
 
 Install and enable the socket; the service needs no enabling:
 
@@ -125,7 +134,12 @@ and writing are logged under `tracct.error`, among them:
 - `writer retry buffer full …, dropped the oldest N connection, N interface and N forwarded
   row(s)`: writes have failed for so long that the oldest rows were given up
 - `maintenance: rolled up N period(s), deleted N row(s) …` (info): a maintenance pass that
-  did something, with how long it took
+  did something, with how long it took; `… and N unreferenced lookup entries` when it also
+  cleaned the lookup tables
+- `maintenance: skipped, the wall clock jumped N s …`: the clock was set or stepped since
+  the last pass; see [Failure and recovery](#failure-and-recovery)
+- `maintenance: the wall clock went back behind the rolled-up periods …`: the clock had run
+  ahead while periods were rolled up; they are rolled up again
 - `conntrack: cannot read the table of network namespace NAME (…)`: no `nf_conntrack`
   module, no `CAP_NET_ADMIN`, or the namespace cannot be joined; its forwarded traffic goes
   unrecorded until the table can be read, while the rest of each window is written
@@ -154,16 +168,18 @@ second); see [bench/README.md](../bench/README.md#load-test). Measured results a
 Memory is bounded: the writer's queue holds at most 262 144 events, a write window 65 536
 connections (a fuller one is written early), the retry buffer 100 000 rows, and each cache
 a fixed number of entries. After a burst the process gives part of its memory back and
-keeps the rest allocated; see [performance.md](performance.md) for measured peaks.
+keeps the rest allocated; see [performance.md](performance.md) for measured peaks. A full
+writer queue measured 717 MB PSS on a database of 30 million rows, the highest seen; the
+unit's `MemoryMax=1G` leaves room above it.
 
 The database grows with the number of distinct connections per write window (process,
 addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, larger rows.
 Retention keeps it at roughly `raw_retention_days` worth of raw rows plus
 `rollup_retention_days` worth of rollups, which hold one row per program, peer domain and
 service port per period; deleted pages are reused, so the file stays at its largest size
-without shrinking. Each maintenance pass that deletes rows also scans all of them for
-unreferenced lookup entries, about half a second per million rows, during which writes wait
-and the queue fills; raise `maintenance_interval_minutes` for a very large database.
+without shrinking. Once a day after deleting rows, maintenance also scans all of them for
+unreferenced lookup entries, one lookup table at a time with due writes in between; while a
+table is scanned, writes wait and the queue fills.
 
 Every write window the writer also reads the interfaces and dumps the conntrack table of
 each namespace it knows, another namespace's from a short-lived thread that joins it. A dump
@@ -197,6 +213,12 @@ again in a later window. `[log] reverse_dns = false` turns it off.
 - **Clock ahead of the data** (booted before NTP): the retention purge is skipped rather
   than wiping the database, and tried again on the next pass; the rollup does not pass the
   newest row's period.
+- **Clock set or stepped while running**: a maintenance pass that finds the wall clock moved
+  more than a minute apart from the boot clock since the last pass is skipped, and the next
+  one trusts the clock. A clock that stays wrong past the next pass purges by it: running
+  ahead deletes that much of the oldest history early. When it goes back behind periods
+  already rolled up, those are rolled up again, so the rows written since are kept. Rows
+  carry the time the clock showed when they were written.
 - **Maintenance fails** (locked, disk full): logged, and retried on the next pass.
 - **Conntrack table unreadable** (module unloaded, namespace gone mid-dump): logged once per
   namespace; its forwarded flows are skipped for that window, everything else is written.
@@ -210,8 +232,8 @@ again in a later window. `[log] reverse_dns = false` turns it off.
 
 Maintenance runs at daemon start and then every `maintenance_interval_minutes`: closed
 periods are rolled up, raw rows older than `raw_retention_days` (once rolled up) and
-rollups older than `rollup_retention_days` are deleted, then lookup entries nothing refers
-to any more.
+rollups older than `rollup_retention_days` are deleted, and once a day lookup entries nothing
+refers to any more.
 
 ## Upgrades
 
