@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import collections
-import ipaddress
 import logging
 import os
 import socket
 import sqlite3
 import stat
+import threading
 import unicodedata
 import urllib.parse
 from pathlib import Path
@@ -33,9 +33,19 @@ def sd_notify(message: str) -> None:
 def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
     """True when a sqlite error means picosnitch.db itself is unusable (quarantine+recreate);
     False for transient errors (locked by the live daemon, busy, disk I/O) where quarantining
-    would destroy a healthy database. Shared by the cli boot check and the secondary purge."""
+    would destroy a healthy database. Shared by the cli boot check and the writer."""
     msg = str(e).lower()
     return any(s in msg for s in ("malformed", "not a database", "no such table", "no such column", "encrypted"))
+
+
+def quarantine_database(db_path: Path) -> None:
+    """move an unusable database aside to picosnitch.db.bad, with its WAL files so that none is
+    replayed into the new database the next start creates"""
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            db_path.with_name(db_path.name + suffix).rename(db_path.with_name(db_path.name + ".bad" + suffix))
+        except OSError:
+            pass
 
 
 def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Connection:
@@ -83,36 +93,34 @@ def log_error(message: str) -> None:
     logging.getLogger("picosnitch.error").warning(sanitize_log_line(message))
 
 
-# reverse-DNS results keyed by ip; getnameinfo blocks, so callers probe reverse_dns_is_cached() first
-_reverse_dns_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
-_REVERSE_DNS_CACHE_MAX: int = 8192
+class DropOldestQueue[T]:
+    """a hand-off between threads, bounded by the items in its batches, that never blocks its
+    producer: past the bound the oldest batches are dropped and their items counted in dropped"""
 
+    def __init__(self, max_items: int) -> None:
+        self.max_items = max_items
+        self.dropped = 0
+        self._batches: collections.deque[list[T]] = collections.deque()
+        self._items = 0
+        self._ready = threading.Condition()
 
-def reverse_dns_is_cached(ip: str) -> bool:
-    """True if `ip` already has a cached reverse-DNS result (so resolving it is free)."""
-    return ip in _reverse_dns_cache
+    def put(self, batch: list[T]) -> None:
+        with self._ready:
+            self._batches.append(batch)
+            self._items += len(batch)
+            # the newest batch is always kept, even one larger than the bound
+            while self._items > self.max_items and len(self._batches) > 1:
+                oldest = self._batches.popleft()
+                self._items -= len(oldest)
+                self.dropped += len(oldest)
+            self._ready.notify()
 
-
-def reverse_dns_lookup(ip: str) -> str:
-    """Reverse-DNS `ip` to a hostname, cached; return the ip itself on failure. A
-    repeated address costs nothing; callers gate a NEW (blocking) getnameinfo with
-    reverse_dns_is_cached() plus their own per-write budget so a burst of distinct
-    addresses cannot stall byte accounting."""
-    cached = _reverse_dns_cache.get(ip)
-    if cached is not None:
-        _reverse_dns_cache.move_to_end(ip)
-        return cached
-    try:
-        host = socket.getnameinfo((ip, 0), 0)[0]
-        try:
-            ipaddress.ip_address(host)
-            result = ip
-        except ValueError:
-            result = ".".join(reversed(host.split(".")))
-    except Exception:
-        result = ip
-    _reverse_dns_cache[ip] = result
-    _reverse_dns_cache.move_to_end(ip)
-    if len(_reverse_dns_cache) > _REVERSE_DNS_CACHE_MAX:
-        _reverse_dns_cache.popitem(last=False)
-    return result
+    def get_all(self, timeout: float) -> list[list[T]]:
+        """all waiting batches, oldest first, after waiting up to timeout for one; [] if none came"""
+        with self._ready:
+            if not self._batches:
+                self._ready.wait(timeout)
+            batches = list(self._batches)
+            self._batches.clear()
+            self._items = 0
+        return batches

@@ -16,11 +16,14 @@ class DatabaseConfig:
     enabled: bool = True
     retention_days: int = 30
     write_limit_seconds: int = 10
+    maintenance_interval_minutes: int = 60
 
 
 @dataclasses.dataclass
 class LogConfig:
     addresses: bool = True
+    # PTR queries for remote addresses the program looked up no name for
+    reverse_dns: bool = True
     commands: bool = True
     ports: bool = True
     ignore_ports: list[int] = dataclasses.field(default_factory=list)
@@ -122,6 +125,10 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
     if write_limit < 0:
         logging.warning(f"database.write_limit_seconds must not be negative, got {write_limit}, using 10")
         config.database.write_limit_seconds = 10
+    interval = config.database.maintenance_interval_minutes
+    if interval < 1:
+        logging.warning(f"database.maintenance_interval_minutes must be at least 1, got {interval}, using 60")
+        config.database.maintenance_interval_minutes = 60
     # reset a group that doesn't resolve, else the daemon can't hand the sockets to it
     if config.viewer.group:
         try:

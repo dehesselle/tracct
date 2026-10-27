@@ -4,7 +4,8 @@ This document records what the daemon costs and loses under load, as measured wi
 benchmark matrix and the load test in `bench/` (see [bench/README.md](../bench/README.md)).
 
 Measured 2026-10-27 on a Hetzner VM with 2 vCPUs and 4 GB RAM, Ubuntu 26.04, kernel 7.0,
-running the unit with its defaults (10 s write windows), with the threaded daemon.
+running the unit with its defaults (10 s write windows). The matrix ran on the threaded
+daemon before the writer summed events on arrival; the load test on the current build.
 
 ## Benchmark matrix
 
@@ -19,12 +20,26 @@ notes on what that count misses).
 
 | Phase | Load | CPU avg (p95) | PSS avg / peak | Rows/s | Recorded | Warnings |
 | --- | --- | --- | --- | --- | --- | --- |
-| steady | 300 idle TCP clients, 4 KB command lines | 3.6 % (7.7 %) | 46 / 50 MB | 61 | 100 % | none |
-| churn | 30 000 new connections per second | 82 % (115 %) | 320 / 441 MB | 4 001 | 98.2 % | none |
-| churn | 50 000 new connections per second | 100 % (115 %) | 439 / 551 MB | 6 530 | 97.7 % | none |
-| exec | ~250 short-lived processes per second | 3.5 % (5.8 %) | 292 / 306 MB | 247 | 100 % | none |
+| steady | 300 idle TCP clients, 4 KB command lines | 4.2 % (6.0 %) | 27 / 29 MB | 70 | 99.99 % | none |
+| churn | 30 000 new connections per second | 71 % (102 %) | 83 / 105 MB | 3 677 | 99.4 % | none |
+| churn | 50 000 new connections per second | 100 % (121 %) | 136 / 160 MB | 6 198 | 99.3 % | none |
+| exec | ~250 short-lived processes per second | 4.1 % (6.0 %) | 73 / 75 MB | 240 | 99.99 % | none |
 
 The phases ran in this order in one daemon, so the exec phase starts with the memory the
 churn phase left allocated. Above one core under churn, the reader and writer threads run
 at the same time; neither the ring buffers nor the connection maps overflowed, and the
 remaining gap in the churn counts is the generator's last second (see the load test's notes).
+The small gap in the steady and exec counts is bytes drained after their process exited,
+recorded under the right executable but with an empty command line.
+
+Memory under churn follows the distinct connections of a window, since the writer sums
+events as they arrive; when it still held every event of a window, the 30 000/s phase
+peaked at 441 MB and the 50 000/s one at 551 MB.
+
+### Stalled writer
+
+An exclusive lock held on the database for 90 s, under 30 000 connections per second:
+every write attempt failed after the 5 s busy timeout and was retried, the retry buffer
+stayed at 100 000 rows and the oldest rows were dropped with a log line, and the hand-off
+queue dropped nothing. PSS peaked at 406 MB during the failed attempts and went back to
+158 MB once the lock was gone and the retained rows were written.

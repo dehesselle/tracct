@@ -31,7 +31,8 @@ through the ctypes libbpf wrapper in `bpf_wrapper.py`.
   after it exits, and with `every_exe` they are logged as rows without traffic.
 - **Domains.** A uprobe on libc `getaddrinfo` reports each answer, mapping the address to
   the name the program looked up. Addresses without such an answer get a reverse DNS
-  lookup (PTR), at most 256 new ones per database write.
+  lookup (PTR) in worker threads, asked when the connection shows up and used when its
+  window is written; until the answer arrives, rows have no domain.
 - **Startup seed.** Connections open before the daemon started are read from `/proc/net`
   and matched to processes by socket inode, so they appear with zero bytes until traffic
   flows.
@@ -58,14 +59,15 @@ Ring buffer drops and near-full aggregation maps are detected and logged, not si
 ## Threads
 
 The daemon (`picosnitch run`) is one process with three worker threads, supervised by the
-main thread (`main_loop.py`):
+main thread (`main_loop.py`), and a few reverse DNS workers owned by the writer:
 
 ```mermaid
 flowchart LR
     BPF["BPF program<br/>counters, exec and dns events"] --> R
     R["reader<br/>drain, attribution"] -- bounded queue --> W
     R -- bounded queue,<br/>only with viewers --> F
-    W["writer<br/>aggregation, reverse DNS, SQLite"] --> DB[(picosnitch.db)]
+    W["writer<br/>aggregation, SQLite, retention"] --> DB[(picosnitch.db)]
+    W <-- cache --> DNS["reverse DNS<br/>workers"]
     F["feed<br/>JSON for viewers"] --> LIVE([events.sock])
     LIVE --> TOP["top / tui live"]
     DB -. read-only .-> TUI["tui history"]
@@ -73,20 +75,24 @@ flowchart LR
 
 - **reader** attaches the BPF program, polls the ring buffers, drains the maps every
   second and attributes each entry to an executable (`monitor.py`).
-- **writer** collects the batches, aggregates them per write window, filters them per
-  `[log]`, adds domains and writes SQLite (`writer.py`).
+- **writer** sums the batches per connection as they arrive, filters them per `[log]`,
+  writes one row per connection and window to SQLite, and runs the retention purge
+  (`writer.py`).
+- **reverse DNS workers** (four) answer PTR queries for the writer into a shared cache
+  (`reverse_dns.py`). `getnameinfo` blocks as long as the system resolver takes; several
+  workers keep one slow server from holding up the rest, and the writer never waits for
+  them.
 - **feed** serializes batches for the live feed, and only receives them while a viewer is
   connected (`main_loop.py`, `live_feed.py`).
-- The **main thread** purges past the retention window at startup, sends `READY=1` once
-  the probes are attached, exits non-zero when a thread dies so systemd restarts the unit,
-  and has the reader re-attach after a suspend (detected as a gap between `CLOCK_BOOTTIME`
-  and `CLOCK_MONOTONIC`). On shutdown the reader drains the maps once more and the writer
-  writes everything it was handed.
+- The **main thread** sends `READY=1` once the probes are attached, exits non-zero when a
+  thread dies so systemd restarts the unit, and has the reader re-attach after a suspend
+  (detected as a gap between `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`). On shutdown the
+  reader drains the maps once more and the writer writes everything it was handed.
 
-The reader hands each batch over without copying. Its queues drop the oldest batch when
-they are full and the drop is logged, so a stalled writer or viewer never stalls the
-reader. The writer therefore must not modify the events it receives: the feed may be
-serializing the same objects.
+The reader hands each batch over without copying. Its queues are bounded by events and
+drop the oldest batches past the bound; the drop is logged, so a stalled writer or viewer
+never stalls the reader. The writer therefore must not modify the events it receives: the
+feed may be serializing the same objects.
 
 One process is enough because what remains besides the reader's attribution is I/O
 (SQLite, DNS, sockets), which releases the GIL. Upstream split the work into processes
@@ -108,10 +114,19 @@ subvolumes, the device check is masked off (`st_dev_mask`).
 
 ## Storage
 
-SQLite at `$STATE_DIRECTORY/picosnitch.db`, in WAL mode. Executables, domains and addresses
+SQLite at `$STATE_DIRECTORY/picosnitch.db`, in WAL mode so that readers never block the
+writer; every start switches a database made without it. Executables, domains and addresses
 are interned into lookup tables so connection rows stay small; see [schema.md](schema.md).
-Rows are written every `write_limit_seconds`, one row per distinct connection and window.
-The schema version sits in `PRAGMA user_version`; there are no migrations.
+Rows are written every `write_limit_seconds`, one row per distinct connection and window;
+a window that reaches 65 536 connections is written early, so memory follows connections
+and not events. The schema version sits in `PRAGMA user_version`; there are no migrations.
+
+Retention runs in the writer at start and every `maintenance_interval_minutes`: rows older
+than `retention_days` are deleted in chunks of 10 000, with any due write in between, and
+afterwards the lookup entries nothing refers to any more. Only the writer inserts, so no
+new row can refer to an entry while it is deleted; the writer then drops its cached ids.
+The purge is skipped while the wall clock is ahead of the newest row, which would
+otherwise wipe the database.
 
 ## Viewers
 
@@ -146,11 +161,15 @@ to upstream so fixes can still be carried over by hand.
    `tests/test_robustness.py` guard the mirror.
 6. **Bad input never crash-loops the daemon.** A malformed config falls back to defaults
    with a warning, an unknown key is reported, a corrupt database is moved to
-   `picosnitch.db.bad` and recreated. Only a database with another schema version stops the
-   daemon, so no data is destroyed.
+   `picosnitch.db.bad` and recreated, whether found at startup or by the writer. Only a
+   database with another schema version stops the daemon, so no data is destroyed.
 7. **A schema change bumps `DB_VERSION`.** The daemon refuses any other version; there is
    no migration code.
 8. **The daemon's capabilities are listed twice and must match:**
    `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `systemd/picosnitch.service`.
    Each one carries the reason it is needed.
-9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups.
+9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,
+   which `[log] reverse_dns = false` turns off.
+10. **Everything held in memory is bounded,** so months of uptime look like the first day:
+    the hand-off queues by events, a write window by connections, the retry buffer by
+    rows, every cache by entries. A new buffer or cache comes with its bound.

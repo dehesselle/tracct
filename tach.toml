@@ -48,12 +48,16 @@ path = "picosnitch.monitor"
 depends_on = ["picosnitch.bpf_wrapper", "picosnitch.config", "picosnitch.constants", "picosnitch.types", "picosnitch.utils"]
 
 [[modules]]
+path = "picosnitch.reverse_dns"
+depends_on = []
+
+[[modules]]
 path = "picosnitch.writer"
-depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.types", "picosnitch.utils"]
+depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.reverse_dns", "picosnitch.types", "picosnitch.utils"]
 
 [[modules]]
 path = "picosnitch.main_loop"
-depends_on = ["picosnitch.config", "picosnitch.constants", "picosnitch.live_feed", "picosnitch.monitor", "picosnitch.types", "picosnitch.utils", "picosnitch.writer"]
+depends_on = ["picosnitch.config", "picosnitch.live_feed", "picosnitch.monitor", "picosnitch.types", "picosnitch.utils", "picosnitch.writer"]
 
 [[modules]]
 path = "picosnitch.cli"

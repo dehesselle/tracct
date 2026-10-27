@@ -3,57 +3,32 @@
 from __future__ import annotations
 
 import logging
-import queue
 import signal
 import threading
 import time
 
 from picosnitch.config import Config
-from picosnitch.constants import DB_PATH
 from picosnitch.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
 from picosnitch.monitor import run_monitor
 from picosnitch.types import BpfEvent
-from picosnitch.utils import log_error, sd_notify
-from picosnitch.writer import maintain_database, run_writer
+from picosnitch.utils import DropOldestQueue, log_error, sd_notify
+from picosnitch.writer import run_writer
 
-# hand-off bounds, in batches of up to monitor.CONN_DRAIN_CHUNK events; the writer collects
-# what it takes off its queue until the next write, so its queue only has to cover one write
-WRITER_QUEUE_BATCHES = 128
-FEED_QUEUE_BATCHES = 64
-
-
-class DropOldestQueue:
-    """a bounded hand-off that never blocks its producer: when it is full, the oldest batch
-    is dropped and its events counted in dropped. one producer (the reader thread)"""
-
-    def __init__(self, maxsize: int) -> None:
-        self.queue: queue.Queue[list[BpfEvent]] = queue.Queue(maxsize)
-        self.dropped = 0
-
-    def put(self, batch: list[BpfEvent]) -> None:
-        while True:
-            try:
-                self.queue.put_nowait(batch)
-                return
-            except queue.Full:
-                try:
-                    self.dropped += len(self.queue.get_nowait())
-                except queue.Empty:
-                    pass
+# hand-off bounds, in events; the writer sums what it takes off its queue right away, so its
+# queue only fills while it writes or purges
+WRITER_QUEUE_EVENTS = 262144
+FEED_QUEUE_EVENTS = 131072
 
 
-def run_feed(live_feed: LiveFeedPublisher, batches: queue.Queue[list[BpfEvent]], stop: threading.Event) -> None:
+def run_feed(live_feed: LiveFeedPublisher, batches: DropOldestQueue[BpfEvent], stop: threading.Event) -> None:
     """the live feed thread: serializes batches for the viewers, off the reader's path"""
     reported = 0
     while not stop.is_set():
-        try:
-            batch = batches.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        try:
-            live_feed.publish_many(batch)
-        except Exception:
-            pass
+        for batch in batches.get_all(timeout=0.5):
+            try:
+                live_feed.publish_many(batch)
+            except Exception:
+                pass
         if live_feed.dropped > reported:
             log_error(f"live feed: dropped {live_feed.dropped - reported} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind")
             reported = live_feed.dropped
@@ -62,13 +37,10 @@ def run_feed(live_feed: LiveFeedPublisher, batches: queue.Queue[list[BpfEvent]],
 def run_main_loop(config: Config) -> int:
     """runs the daemon: a reader thread for the BPF program, a writer thread for the database and
     a thread for the live feed, supervised from the main thread"""
-    if config.database.enabled:
-        # before any thread starts: it exits on a database it must not touch
-        maintain_database(DB_PATH, config.database.retention_days)
     live_feed = LiveFeedPublisher(group=config.viewer.group)
     live_feed.start()
-    to_writer = DropOldestQueue(WRITER_QUEUE_BATCHES)
-    to_feed = DropOldestQueue(FEED_QUEUE_BATCHES)
+    to_writer: DropOldestQueue[BpfEvent] = DropOldestQueue(WRITER_QUEUE_EVENTS)
+    to_feed: DropOldestQueue[BpfEvent] = DropOldestQueue(FEED_QUEUE_EVENTS)
 
     def publish(batch: list[BpfEvent]) -> None:
         to_writer.put(batch)
@@ -79,8 +51,8 @@ def run_main_loop(config: Config) -> int:
     reader_stop, writer_stop, feed_stop = threading.Event(), threading.Event(), threading.Event()
     reattach, ready = threading.Event(), threading.Event()
     reader = threading.Thread(target=run_monitor, args=(config, publish, reader_stop, reattach, ready), name="reader", daemon=True)
-    writer = threading.Thread(target=run_writer, args=(config, to_writer.queue, writer_stop), name="writer", daemon=True)
-    feed = threading.Thread(target=run_feed, args=(live_feed, to_feed.queue, feed_stop), name="feed", daemon=True)
+    writer = threading.Thread(target=run_writer, args=(config, to_writer, writer_stop), name="writer", daemon=True)
+    feed = threading.Thread(target=run_feed, args=(live_feed, to_feed, feed_stop), name="feed", daemon=True)
     threads = [reader, writer, feed]
     for thread in threads:
         thread.start()

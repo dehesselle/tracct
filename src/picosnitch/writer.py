@@ -4,163 +4,169 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import queue
 import shlex
 import sqlite3
-import sys
 import threading
 import time
-from pathlib import Path
+from collections.abc import Callable
 
 from picosnitch.config import Config
-from picosnitch.constants import DB_PATH, DB_VERSION, RETRY_BUFFER_MAX, VERSION
+from picosnitch.constants import DB_PATH, RETRY_BUFFER_MAX
+from picosnitch.reverse_dns import ReverseDns
 from picosnitch.types import BpfEvent
-from picosnitch.utils import log_error, reverse_dns_is_cached, reverse_dns_lookup, sqlite_error_means_corrupt
+from picosnitch.utils import DropOldestQueue, log_error, quarantine_database, sqlite_error_means_corrupt
 
-# new (uncached, blocking) reverse-DNS lookups per write; ~256 * a few ms stays under a second
-REVERSE_DNS_LOOKUPS_PER_WRITE = 256
-
-
-def maintain_database(file_path: Path, retention_days: int) -> None:
-    """open picosnitch.db and purge rows past the retention window. exits on a version mismatch;
-    on a corrupt/malformed or table-missing db, quarantine it to picosnitch.db.bad and exit so the
-    next boot's init recreates a fresh db (crash-loop safety -- this runs before the main loop's
-    try/except; the data is kept in .bad). a transient error (e.g. a lock) is re-raised untouched."""
-    con = None
-    try:
-        con = sqlite3.connect(file_path)
-        cur = con.cursor()
-        cur.execute("PRAGMA user_version")
-        db_version = cur.fetchone()[0]
-        if db_version != DB_VERSION:
-            con.close()
-            logging.error(f"Incorrect database version of picosnitch.db for picosnitch v{VERSION}")
-            sys.exit(1)
-        # retention_days <= 0 is the usual "keep forever" convention; config clamps only negatives
-        if int(retention_days) <= 0:
-            con.close()
-            return
-        retention_cutoff = int(time.time()) - int(retention_days) * 86400
-        # a cutoff past the newest row means a future clock (booted before NTP), which would wipe the db
-        newest_contime = cur.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
-        if newest_contime is None or retention_cutoff <= newest_contime:
-            cur.execute("DELETE FROM connections WHERE contime < ?", (retention_cutoff,))
-        else:
-            logging.error("picosnitch: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no connections deleted")
-        cur.execute("DELETE FROM domains WHERE id != 0 AND id NOT IN (SELECT DISTINCT domain_id FROM connections)")
-        cur.execute("DELETE FROM addresses WHERE id != 0 AND id NOT IN (SELECT DISTINCT laddr_id FROM connections UNION SELECT DISTINCT raddr_id FROM connections)")
-        # executables interns (exe, name, cmdline); a new cmdline is a new row, so a high
-        # argv cardinality (per-invocation tokens) grows it unbounded without this. purge orphans
-        # like domains/addresses above, keeping it consistent with the connection retention window
-        cur.execute("DELETE FROM executables WHERE id != 0 AND id NOT IN (SELECT exe_id FROM connections UNION SELECT pexe_id FROM connections)")
-        con.commit()
-        con.close()
-    except sqlite3.DatabaseError as e:
-        # this runs before the main loop's try/except, so re-raising a full disk crash-loops the daemon
-        if "disk is full" in str(e).lower():
-            logging.error(f"picosnitch: skipping startup db maintenance, disk is full ({e}); starting anyway")
-            if con is not None:
-                con.close()
-            return
-        if not sqlite_error_means_corrupt(e):
-            raise
-        logging.error(f"picosnitch.db is unusable ({e}); quarantining to picosnitch.db.bad and recreating on restart")
-        if con is not None:
-            con.close()
-        try:
-            file_path.rename(file_path.with_name("picosnitch.db.bad"))
-        except OSError:
-            pass
-        sys.exit(1)
+# distinct connections one write window may hold; past it the window is written early
+WINDOW_CONNECTIONS_MAX = 65536
+# rows the retention purge deletes per transaction; a write that is due goes between two
+PURGE_CHUNK_ROWS = 10000
+# ids the writer keeps per lookup table; past it the cache starts over from the database
+ID_CACHE_MAX = 65536
+# lookup entries no connection refers to; executables uses the exe_id and pexe_id indexes,
+# domains and addresses scan the connections (about half a second per million rows)
+ORPHAN_DELETES = (
+    "DELETE FROM executables WHERE id != 0 AND NOT EXISTS (SELECT 1 FROM connections WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections WHERE pexe_id = executables.id)",
+    "DELETE FROM domains WHERE id != 0 AND id NOT IN (SELECT domain_id FROM connections)",
+    "DELETE FROM addresses WHERE id != 0 AND id NOT IN (SELECT laddr_id FROM connections UNION SELECT raddr_id FROM connections)",
+)
 
 
-def build_log_entries(
-    config: Config,
-    new_processes: list[BpfEvent],
-    ignored_networks: list,
-) -> list[tuple]:
-    """iterate over the list of process/connection data to generate a list of entries for the sql database;
-    the events are not modified, the live feed may still be sending the same objects"""
-    datetime_now = int(time.time())
-    traffic_counter: dict[tuple, list[int]] = {}
-    # a burst of distinct addresses is that many serial round-trips before any row is written
-    reverse_dns_budget = REVERSE_DNS_LOOKUPS_PER_WRITE
-    # many connections in one write share a cmdline, and this string work dominated at high cardinality
-    cmdline_cache: dict[str, str] = {}
+class WriteWindow:
+    """the connections of one write window, summed as their events arrive, so memory follows the
+    number of distinct connections rather than events. the events are not modified, the live
+    feed may still be sending the same objects"""
 
-    def clean_cmdline(raw: str) -> str:
-        cleaned = cmdline_cache.get(raw)
+    def __init__(self, config: Config, reverse_dns: ReverseDns | None = None) -> None:
+        self.config = config
+        self.reverse_dns = reverse_dns
+        self.ignored_networks = [ipaddress.ip_network(ip_subnet, strict=False) for ip_subnet in config.log.ignore_ips]
+        self.connections: dict[tuple, list[int]] = {}
+        # many connections in one window share a cmdline, and this string work dominated at high cardinality
+        self.cmdlines: dict[str, str] = {}
+
+    def __len__(self) -> int:
+        return len(self.connections)
+
+    def clean_cmdline(self, raw: str) -> str:
+        cleaned = self.cmdlines.get(raw)
         if cleaned is None:
             cleaned = shlex.join(raw.encode("utf-8", "ignore").decode("utf-8", "ignore").strip("\0\t\n ").split("\0"))
-            cmdline_cache[raw] = cleaned
+            self.cmdlines[raw] = cleaned
         return cleaned
 
-    for proc in new_processes:
-        # join or omit commands from logs
-        if config.log.commands:
-            cmdline = clean_cmdline(proc["cmdline"])
-            pcmdline = clean_cmdline(proc["pcmdline"])
-        else:
-            cmdline = pcmdline = ""
-        # reverse dns lookup or omit with IP from logs
-        domain, raddr = proc["domain"], proc["raddr"]
-        if config.log.addresses:
-            if not domain and raddr:
-                # a cached lookup is free; a new one has to fit the per-write budget
-                if reverse_dns_is_cached(raddr):
-                    domain = reverse_dns_lookup(raddr)
-                elif reverse_dns_budget > 0:
-                    domain = reverse_dns_lookup(raddr)
-                    reverse_dns_budget -= 1
-        else:
-            domain = raddr = ""
-        lport, rport = proc["lport"], proc["rport"]
-        if not config.log.ports:
-            lport, rport = min(0, lport), min(0, rport)
-        # omit entry from logs
-        ignored = False
-        if rport in config.log.ignore_ports or lport in config.log.ignore_ports:
-            ignored = True
-        if not ignored:
-            for domain_prefix in config.log.ignore_domains:
-                if domain.startswith(domain_prefix):
-                    ignored = True
-                    break
-        if ignored:
-            continue
-        if ignored_networks and raddr:
-            if any(ipaddress.ip_address(raddr) in network for network in ignored_networks):
+    def add(self, events: list[BpfEvent]) -> None:
+        log = self.config.log
+        for proc in events:
+            # join or omit commands from logs
+            if log.commands:
+                cmdline = self.clean_cmdline(proc["cmdline"])
+                pcmdline = self.clean_cmdline(proc["pcmdline"])
+            else:
+                cmdline = pcmdline = ""
+            # the domain the program looked up; omitted with the address from logs
+            domain, raddr = proc["domain"], proc["raddr"]
+            if not log.addresses:
+                domain = raddr = ""
+            lport, rport = proc["lport"], proc["rport"]
+            if not log.ports:
+                lport, rport = min(0, lport), min(0, rport)
+            # omit entry from logs (domains are matched in take_rows, once reverse DNS had its chance)
+            if rport in log.ignore_ports or lport in log.ignore_ports:
                 continue
-            if any(ipaddress.ip_address(proc["laddr"]) in network for network in ignored_networks):
+            if self.ignored_networks and raddr:
+                if any(ipaddress.ip_address(raddr) in network for network in self.ignored_networks):
+                    continue
+                if any(ipaddress.ip_address(proc["laddr"]) in network for network in self.ignored_networks):
+                    continue
+            # exe info as tuples for normalization, connection-specific fields
+            exe_key = (proc["exe"], proc["name"], cmdline)
+            pexe_key = (proc["pexe"], proc["pname"], pcmdline)
+            key = (
+                exe_key,
+                pexe_key,
+                proc["uid"],
+                int(proc.get("family", 0) or 0),
+                int(proc.get("protocol", 0) or 0),
+                lport,
+                rport,
+                proc["laddr"],
+                raddr,
+                domain,
+                int(proc.get("netns", 0) or 0),
+            )
+            counters = self.connections.get(key)
+            if counters is None:
+                self.connections[key] = [proc["send"], proc["recv"], proc.get("pkts", 1)]
+                # asked for now, so the answer has the rest of the window to arrive
+                if not domain and raddr and self.reverse_dns is not None:
+                    self.reverse_dns.lookup(raddr)
+            else:
+                counters[0] += proc["send"]
+                counters[1] += proc["recv"]
+                counters[2] += proc.get("pkts", 1)
+
+    def take_rows(self) -> list[tuple]:
+        """the window as rows for the database, with domains from reverse DNS where the program
+        looked up none; the next window starts empty"""
+        contime = int(time.time())
+        ignore_domains = self.config.log.ignore_domains
+        rows: dict[tuple, list[int]] = {}
+        for key, (send, recv, n_events) in self.connections.items():
+            domain, raddr = key[9], key[8]
+            if not domain and raddr and self.reverse_dns is not None:
+                domain = self.reverse_dns.lookup(raddr)
+                key = (*key[:9], domain, key[10])
+            if any(domain.startswith(domain_prefix) for domain_prefix in ignore_domains):
                 continue
-        # create sql entry (exe info as tuples for normalization, connection-specific fields)
-        exe_key = (proc["exe"], proc["name"], cmdline)
-        pexe_key = (proc["pexe"], proc["pname"], pcmdline)
-        event = (
-            exe_key,
-            pexe_key,
-            proc["uid"],
-            int(proc.get("family", 0) or 0),
-            int(proc.get("protocol", 0) or 0),
-            lport,
-            rport,
-            proc["laddr"],
-            raddr,
-            domain,
-            int(proc.get("netns", 0) or 0),
-        )
-        if event in traffic_counter:
-            traffic_counter[event][0] += proc["send"]
-            traffic_counter[event][1] += proc["recv"]
-            traffic_counter[event][2] += proc.get("pkts", 1)
-        else:
-            traffic_counter[event] = [proc["send"], proc["recv"], proc.get("pkts", 1)]
-    return [(datetime_now, send, recv, n_events, *event) for event, (send, recv, n_events) in traffic_counter.items()]
+            # a connection with and without the domain the program looked up are one row now
+            counters = rows.get(key)
+            if counters is None:
+                rows[key] = [send, recv, n_events]
+            else:
+                counters[0] += send
+                counters[1] += recv
+                counters[2] += n_events
+        self.connections = {}
+        self.cmdlines = {}
+        return [(contime, send, recv, n_events, *key) for key, (send, recv, n_events) in rows.items()]
 
 
-def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threading.Event) -> None:
-    """the writer thread: collects the reader's batches and writes them to SQLite once per write
-    window; once stop is set it writes what the queue still holds and returns"""
+def purge_database(con: sqlite3.Connection, retention_days: int, between_chunks: Callable[[], bool]) -> tuple[int, int]:
+    """delete the connections past the retention window in chunks, then the lookup entries no
+    connection refers to any more. between_chunks runs after each committed chunk and ends the
+    purge by returning True. returns the numbers of connections and lookup entries deleted"""
+    # retention_days <= 0 is the usual "keep forever" convention; config clamps only negatives
+    if retention_days <= 0:
+        return 0, 0
+    retention_cutoff = int(time.time()) - retention_days * 86400
+    # a cutoff past the newest row means a future clock (booted before NTP), which would wipe the db
+    newest_contime = con.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
+    if newest_contime is None:
+        return 0, 0
+    if retention_cutoff > newest_contime:
+        logging.error("picosnitch: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no connections deleted")
+        return 0, 0
+    deleted = 0
+    while True:
+        with con:
+            chunk = con.execute("DELETE FROM connections WHERE rowid IN (SELECT rowid FROM connections WHERE contime < ? LIMIT ?)", (retention_cutoff, PURGE_CHUNK_ROWS)).rowcount
+        deleted += chunk
+        if chunk < PURGE_CHUNK_ROWS:
+            break
+        if between_chunks():
+            return deleted, 0
+    # entries become orphans only when connections are deleted
+    orphans = 0
+    if deleted:
+        with con:
+            for statement in ORPHAN_DELETES:
+                orphans += con.execute(statement).rowcount
+    return deleted, orphans
+
+
+def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threading.Event) -> None:
+    """the writer thread: sums the reader's batches per write window, writes them to SQLite and
+    purges past the retention window; once stop is set it writes what is left and returns"""
     # init sql
     # connections columns: contime, send, recv, events, exe_id, pexe_id, uid,
     # family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns  (15 cols).
@@ -180,8 +186,15 @@ def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threa
     # a rolled-back INSERT frees its rowid for reuse, so on failure these must be dropped
     # from the caches or a later cache hit would misattribute rows to a stale/reused id
     pending_cache_keys: list[tuple] = []
-    # get network address and mask for ignored IP subnets
-    ignored_networks = [ipaddress.ip_network(ip_subnet, strict=False) for ip_subnet in config.log.ignore_ips]
+    reverse_dns = ReverseDns() if config.log.addresses and config.log.reverse_dns else None
+    window = WriteWindow(config, reverse_dns)
+
+    def clear_id_caches() -> None:
+        exe_id_cache.clear()
+        domain_id_cache.clear()
+        addr_id_cache.clear()
+        domain_id_cache[""] = 0
+        addr_id_cache[""] = 0
 
     # resolve exe tuples to IDs with caching
     def resolve_exe_id(con: sqlite3.Connection, exe_key: tuple) -> int:
@@ -212,12 +225,12 @@ def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threa
         return row[0]
 
     transaction: list[tuple] = []
-    new_processes: list[BpfEvent] = []
 
     def write() -> None:
-        nonlocal transaction, new_processes
-        transaction += build_log_entries(config, new_processes, ignored_networks)
-        new_processes = []
+        nonlocal transaction
+        transaction += window.take_rows()
+        if max(len(exe_id_cache), len(domain_id_cache), len(addr_id_cache)) > ID_CACHE_MAX:
+            clear_id_caches()
         transaction_success = False
         try:
             if config.database.enabled:
@@ -240,6 +253,8 @@ def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threa
             for cache, cache_key in pending_cache_keys:
                 cache.pop(cache_key, None)
             pending_cache_keys.clear()
+            if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
+                raise
             log_error("SQLite execute %s%s on line %s, will retry %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
         if transaction_success or not config.database.enabled:
             transaction = []
@@ -250,24 +265,61 @@ def run_writer(config: Config, batches: queue.Queue[list[BpfEvent]], stop: threa
             log_error("writer retry buffer full (persistent write outage), dropped %s oldest entries; retrying %s" % (dropped, len(transaction)))
 
     last_write = 0.0
-    while True:
-        # checked before emptying the queue: the reader has stopped by the time stop is set,
-        # so the queue then holds all that is left
-        stopping = stop.is_set()
+
+    def collect(timeout: float) -> None:
+        for batch in batches.get_all(timeout):
+            window.add(batch)
+
+    def write_if_due() -> None:
+        nonlocal last_write
+        if not (window or transaction):
+            return
+        # a backward wall-clock jump must not stall writes; contime still uses time.time()
+        if time.monotonic() - last_write > config.database.write_limit_seconds or len(window) >= WINDOW_CONNECTIONS_MAX:
+            last_write = time.monotonic()
+            write()
+
+    def maintain() -> None:
+        def between_chunks() -> bool:
+            collect(0)
+            write_if_due()
+            return stop.is_set()
+
+        started = time.monotonic()
+        con = sqlite3.connect(file_path)
         try:
-            new_processes.extend(batches.get(timeout=0.5))
-            while True:
-                new_processes.extend(batches.get_nowait())
-        except queue.Empty:
-            pass
-        try:
-            if stopping:
-                if transaction or new_processes:
-                    write()
-                return
-            # a backward wall-clock jump must not stall writes; contime still uses time.time()
-            if time.monotonic() - last_write > config.database.write_limit_seconds and (transaction or new_processes):
-                last_write = time.monotonic()
-                write()
-        except Exception as e:
-            log_error("writer %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+            deleted, orphans = purge_database(con, config.database.retention_days, between_chunks)
+        finally:
+            con.close()
+            # orphan cleanup deletes ids the caches may hold
+            clear_id_caches()
+        if deleted:
+            logging.info(f"retention purge: deleted {deleted} connection(s) and {orphans} unreferenced lookup entries in {time.monotonic() - started:.1f} s")
+
+    # the first pass runs at startup
+    next_maintenance = time.monotonic()
+    try:
+        while True:
+            # checked before emptying the queue: the reader has stopped by the time stop is set,
+            # so the queue then holds all that is left
+            stopping = stop.is_set()
+            try:
+                collect(0.5)
+                if stopping:
+                    if window or transaction:
+                        write()
+                    return
+                write_if_due()
+                if config.database.enabled and time.monotonic() >= next_maintenance:
+                    next_maintenance = time.monotonic() + config.database.maintenance_interval_minutes * 60
+                    maintain()
+            except Exception as e:
+                if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
+                    # the thread ends and the daemon exits, for the service manager to start it on a new db
+                    logging.error(f"picosnitch.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart")
+                    quarantine_database(file_path)
+                    raise
+                log_error("writer %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+    finally:
+        if reverse_dns is not None:
+            reverse_dns.close()

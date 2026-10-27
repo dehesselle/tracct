@@ -36,7 +36,7 @@ def test_non_utf8_config_falls_back_to_defaults(tmp_path):
 
 def test_config_numeric_clamps(tmp_path):
     (tmp_path / "config.toml").write_text(
-        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nretention_days = -1\nwrite_limit_seconds = -1\n"
+        "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nretention_days = -1\nwrite_limit_seconds = -1\nmaintenance_interval_minutes = 0\n"
     )
     config = load_config(tmp_path / "config.toml")
     assert config.monitoring.exec_ring_buffer_pages == 256  # non-power-of-two clamped to default
@@ -44,6 +44,7 @@ def test_config_numeric_clamps(tmp_path):
     assert config.monitoring.st_dev_mask is None
     assert config.database.retention_days == 30
     assert config.database.write_limit_seconds == 10
+    assert config.database.maintenance_interval_minutes == 60
 
 
 def test_config_valid_values_preserved(tmp_path):
@@ -147,106 +148,102 @@ def test_config_ignore_ports_validated(tmp_path):
     assert config.log.ignore_ports == [-1, 443]
 
 
-def test_maintain_database_quarantines_corrupt(tmp_path):
-    """maintain_database must purge a healthy db, but quarantine a corrupt/table-missing db to
-    .bad and exit (so the next boot recreates it) rather than crash-loop; a version mismatch must
-    exit WITHOUT quarantining (migratable data preserved)."""
-    import sqlite3
-
-    import pytest
-
-    from picosnitch.constants import DB_VERSION
-    from picosnitch.writer import maintain_database
-
-    db = tmp_path / "picosnitch.db"
-    bad = tmp_path / "picosnitch.db.bad"
-
-    def fresh(version=DB_VERSION):
-        db.unlink(missing_ok=True)
-        con = sqlite3.connect(db)
-        con.execute("CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER, exe_id INTEGER, pexe_id INTEGER)")
-        con.execute("CREATE TABLE domains (id INTEGER)")
-        con.execute("CREATE TABLE addresses (id INTEGER)")
-        con.execute("CREATE TABLE executables (id INTEGER)")
-        con.execute(f"PRAGMA user_version = {version}")
-        con.commit()
-        con.close()
-
-    fresh()  # healthy -> purge, no quarantine, no exit
-    maintain_database(db, 365)
-    assert db.exists() and not bad.exists()
-
-    fresh()  # missing table -> quarantine + exit
-    con = sqlite3.connect(db)
-    con.execute("DROP TABLE connections")
-    con.commit()
-    con.close()
-    with pytest.raises(SystemExit):
-        maintain_database(db, 365)
-    assert bad.exists() and not db.exists()
-
-    bad.unlink()  # not-a-database file -> quarantine + exit
-    db.write_bytes(b"this is not a sqlite database" * 8)
-    with pytest.raises(SystemExit):
-        maintain_database(db, 365)
-    assert bad.exists() and not db.exists()
-
-    bad.unlink()  # wrong version -> exit but do NOT destroy the db
-    fresh(version=DB_VERSION - 1)
-    with pytest.raises(SystemExit):
-        maintain_database(db, 365)
-    assert db.exists() and not bad.exists()
-
-    bad.unlink(missing_ok=True)  # right table name, wrong columns -> "no such column" -> quarantine
-    db.unlink(missing_ok=True)
-    con = sqlite3.connect(db)
-    con.execute("CREATE TABLE connections (foo INTEGER)")
-    con.execute(f"PRAGMA user_version = {DB_VERSION}")
-    con.commit()
-    con.close()
-    with pytest.raises(SystemExit):
-        maintain_database(db, 365)
-    assert bad.exists() and not db.exists()
-
-
-def test_maintain_database_purges_orphans(tmp_path):
-    """after connections age out, the reference tables (executables/domains/addresses)
-    must shed rows no live connection points at, while referenced rows and the id=0
-    sentinel survive -- otherwise executables grows unbounded with argv cardinality."""
+def _purge_db(tmp_path):
+    """a database with the real schema, its sentinels, and ids 1 (kept) and 2 (to be orphaned)"""
     import sqlite3
 
     from picosnitch.constants import DB_VERSION, SCHEMA_ADDRESSES, SCHEMA_CONNECTIONS, SCHEMA_DOMAINS, SCHEMA_EXECUTABLES
-    from picosnitch.writer import maintain_database
 
-    db = tmp_path / "picosnitch.db"
-    con = sqlite3.connect(db)
+    con = sqlite3.connect(tmp_path / "picosnitch.db")
     con.execute(f"CREATE TABLE executables ({SCHEMA_EXECUTABLES}) STRICT")
     con.execute(f"CREATE TABLE domains ({SCHEMA_DOMAINS}) STRICT")
     con.execute(f"CREATE TABLE addresses ({SCHEMA_ADDRESSES}) STRICT")
     con.execute(f"CREATE TABLE connections ({SCHEMA_CONNECTIONS}) STRICT")
-    for t in ("executables", "domains", "addresses"):
-        col = "exe, name, cmdline" if t == "executables" else ("domain" if t == "domains" else "addr")
-        vals = "'', '', ''" if t == "executables" else "''"
-        con.execute(f"INSERT INTO {t}(id, {col}) VALUES (0, {vals})")  # sentinel
-    # id 1 = referenced by a live connection; id 2 = orphan (no connection points at it)
-    con.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (1, '/bin/live', 'live', 'live')")
-    con.execute("INSERT INTO executables(id, exe, name, cmdline) VALUES (2, '/bin/orphan', 'orphan', 'orphan --token-999')")
-    con.execute("INSERT INTO domains(id, domain) VALUES (1, 'live.example'), (2, 'orphan.example')")
-    con.execute("INSERT INTO addresses(id, addr) VALUES (1, '10.0.0.1'), (2, '10.0.0.2')")
-    now = int(time.time())
-    # one live connection referencing exe 1 / domain 1 / addr 1 (as laddr AND raddr)
-    con.execute(f"INSERT INTO connections VALUES ({now}, 0, 0, 1, 1, 1, 0, 2, 6, 0, 443, 1, 1, 1, 0)")
+    con.execute("CREATE INDEX idx_contime ON connections(contime)")
+    con.execute("INSERT INTO executables VALUES (0, '', '', ''), (1, '/bin/live', 'live', 'live'), (2, '/bin/old', 'old', 'old --token-999')")
+    con.execute("INSERT INTO domains VALUES (0, ''), (1, 'live.example'), (2, 'old.example')")
+    con.execute("INSERT INTO addresses VALUES (0, ''), (1, '10.0.0.1'), (2, '10.0.0.2')")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
+    return con
+
+
+def _insert_connections(con, *rows):
+    # each row (contime, ref) refers to ref as exe, parent, both addresses and domain
+    con.executemany("INSERT INTO connections VALUES (?, 0, 0, 1, ?, ?, 0, 2, 6, 0, 443, ?, ?, ?, 0)", [(contime, ref, ref, ref, ref, ref) for contime, ref in rows])
+    con.commit()
+
+
+def test_purge_database_in_chunks(tmp_path, monkeypatch):
+    """rows past the retention window go in chunks with a hook between them, and the lookup
+    entries only they referred to go with them; recent rows, their entries and the sentinels stay"""
+    import picosnitch.writer as writer
+
+    monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
+    con = _purge_db(tmp_path)
+    now = int(time.time())
+    _insert_connections(con, *[(now - 10 * 86400, 2)] * 5, (now, 1))
+    calls = []
+    assert writer.purge_database(con, 7, lambda: calls.append(1) or False) == (5, 3)
+    assert len(calls) == 2  # after the two full chunks; the third came back short
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
+    for table in ("executables", "domains", "addresses"):
+        assert [r[0] for r in con.execute(f"SELECT id FROM {table} ORDER BY id")] == [0, 1]
     con.close()
 
-    maintain_database(db, 365)
 
+def test_purge_database_stops_and_guards(tmp_path, monkeypatch):
+    """a hook returning True ends the purge before the orphan cleanup; retention 0 keeps
+    everything; a clock ahead of the newest row deletes nothing"""
+    import picosnitch.writer as writer
+
+    monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
+    con = _purge_db(tmp_path)
+    now = int(time.time())
+    _insert_connections(con, *[(now - 10 * 86400, 2)] * 4, (now - 3 * 86400, 2))
+    assert writer.purge_database(con, 0, lambda: False) == (0, 0)
+    assert writer.purge_database(con, 7, lambda: True) == (2, 0)
+    assert con.execute("SELECT count(*) FROM executables").fetchone()[0] == 3
+    # the newest row is 3 days old, so a 1 day window would delete everything: clock ahead
+    assert writer.purge_database(con, 1, lambda: False) == (0, 0)
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 3
+    con.close()
+
+
+def test_init_database_uses_wal(tmp_path, monkeypatch):
+    """a new database is in WAL mode, and one made without it is converted at the next start"""
+    import sqlite3
+
+    import picosnitch.cli as cli
+
+    db = tmp_path / "picosnitch.db"
+    monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(cli, "DB_PATH", db)
+
+    def journal_mode() -> str:
+        con = sqlite3.connect(db)
+        try:
+            return con.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            con.close()
+
+    cli.init_database()
+    assert journal_mode() == "wal"
     con = sqlite3.connect(db)
-    assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1]  # orphan 2 purged, sentinel + live kept
-    assert sorted(r[0] for r in con.execute("SELECT id FROM domains")) == [0, 1]
-    assert sorted(r[0] for r in con.execute("SELECT id FROM addresses")) == [0, 1]
+    con.execute("PRAGMA journal_mode=DELETE")
     con.close()
+    assert journal_mode() == "delete"
+    cli.init_database()
+    assert journal_mode() == "wal"
+
+
+def test_quarantine_moves_wal_files(tmp_path):
+    """the WAL files go along, or one would be replayed into the next database"""
+    for name in ("picosnitch.db", "picosnitch.db-wal"):
+        (tmp_path / name).write_bytes(name.encode())
+    utils.quarantine_database(tmp_path / "picosnitch.db")
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["picosnitch.db.bad", "picosnitch.db.bad-wal"]
+    assert (tmp_path / "picosnitch.db.bad-wal").read_bytes() == b"picosnitch.db-wal"
 
 
 def test_db_is_corrupt(tmp_path):

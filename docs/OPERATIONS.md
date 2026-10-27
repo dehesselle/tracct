@@ -60,6 +60,8 @@ capture side are logged under `picosnitch.error`, among them:
 - `live feed: dropped N subscriber(s)`: a viewer fell more than 8 MiB behind
 - `hardlink multi-call inode …`: informational, once per multi-call binary
 - `SQLite execute … will retry N entries`: a failed write, retried on the next window
+- `retention purge: deleted N connection(s) …` (info): a maintenance pass that deleted
+  rows, with how long it took
 
 ## Resource use
 
@@ -71,15 +73,31 @@ tens of thousands of connections per second, hundreds of short-lived processes p
 second); see [bench/README.md](../bench/README.md#load-test). Measured results are in
 [performance.md](performance.md).
 
+Memory is bounded: the writer's queue holds at most 262 144 events, a write window 65 536
+connections (a fuller one is written early), the retry buffer 100 000 rows, and each cache
+a fixed number of entries. After a burst the process gives part of its memory back and
+keeps the rest allocated; see [performance.md](performance.md) for measured peaks.
+
 The database grows with the number of distinct connections per write window (process,
 addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, larger rows.
+Retention keeps it at roughly `retention_days` worth of rows; deleted pages are reused, so
+the file stays at its largest size without shrinking. Each maintenance pass that deletes
+rows also scans all of them for unreferenced lookup entries, about half a second per
+million rows, during which writes wait and the queue fills; raise
+`maintenance_interval_minutes` for a very large database.
+
+Reverse DNS sends a PTR query through the system resolver for every remote address no
+program looked up by name, port scanners included. Four workers handle the queries, with
+up to 1024 addresses waiting and 8192 answers cached; addresses beyond that are asked for
+again in a later window. `[log] reverse_dns = false` turns it off.
 
 ## Failure and recovery
 
 - **Database write fails** (locked, disk full): rows are kept and retried each window; past
   100 000 pending rows the oldest are dropped and the drop is logged.
-- **Corrupt database**: moved to `picosnitch.db.bad` in the state directory and recreated on
-  the next start.
+- **Corrupt database**: moved to `picosnitch.db.bad` (with its `-wal` and `-shm` files) in
+  the state directory and recreated on the next start. When the writer finds it while running, the daemon exits so that the unit
+  restarts it on a new database; the window being written is lost.
 - **Database of another schema version**: the daemon refuses to start, leaving the file
   untouched (see [Upgrades](#upgrades)).
 - **Malformed config**: defaults are used and the problem is logged.
@@ -90,10 +108,11 @@ addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, lar
   the BPF program and loads it again.
   `systemctl kill -s SIGUSR1 --kill-whom=main picosnitch` forces the same.
 - **Clock ahead of the data** (booted before NTP): the retention purge is skipped rather
-  than wiping the database.
+  than wiping the database, and tried again on the next pass.
+- **Maintenance fails** (locked, disk full): logged, and retried on the next pass.
 
-Retention runs once, at daemon start: rows older than `retention_days` and lookup entries
-nothing refers to any more are deleted.
+Retention runs at daemon start and then every `maintenance_interval_minutes`: rows older
+than `retention_days` and lookup entries nothing refers to any more are deleted.
 
 ## Upgrades
 

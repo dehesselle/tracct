@@ -15,7 +15,7 @@ from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, RUN_DIR, SCHE
 from picosnitch.main_loop import run_main_loop
 from picosnitch.ui.top import top_init
 from picosnitch.ui.tui import tui_init
-from picosnitch.utils import connect_db_readonly, sqlite_error_means_corrupt
+from picosnitch.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
 REQUIRED_CAPABILITIES: dict[str, int] = {
@@ -141,10 +141,7 @@ def init_database() -> None:
         # quarantine a corrupt db and recreate it below, so check_database / the secondary boot
         # purge don't crash-loop the daemon (data is kept in picosnitch.db.bad)
         logging.error(f"picosnitch.db is unusable, quarantining to {db_path.name}.bad and recreating")
-        try:
-            db_path.rename(db_path.with_name("picosnitch.db.bad"))
-        except OSError:
-            pass
+        quarantine_database(db_path)
     if not db_path.exists():
         con = sqlite3.connect(db_path)
         cur = con.cursor()
@@ -158,9 +155,20 @@ def init_database() -> None:
         cur.execute("CREATE INDEX idx_contime ON connections(contime)")
         cur.execute("CREATE INDEX idx_exe_id_contime ON connections(exe_id, contime)")
         cur.execute("CREATE INDEX idx_pexe_id_contime ON connections(pexe_id, contime)")
-        cur.execute("PRAGMA journal_mode=WAL")
         cur.execute(f"PRAGMA user_version = {DB_VERSION}")
         con.commit()
+        con.close()
+    # readers must not block the writer; sqlite ignores this inside a transaction, so it runs on
+    # its own, and as the mode is kept in the file this also converts a database made without it
+    con = sqlite3.connect(db_path)
+    try:
+        mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if mode != "wal":
+            logging.warning(f"picosnitch.db stays in journal mode {mode}; readers will block writes")
+    except sqlite3.OperationalError as e:
+        # another connection holds the database; the next start tries again
+        logging.warning(f"could not switch picosnitch.db to WAL mode ({e}); readers will block writes")
+    finally:
         con.close()
 
 

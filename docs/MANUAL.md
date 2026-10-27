@@ -33,11 +33,13 @@ defaults.
 ```toml
 [database]
 enabled = true              # write connections to SQLite
-retention_days = 30         # purge older rows at startup; 0 keeps everything
+retention_days = 30         # purge older rows; 0 keeps everything
 write_limit_seconds = 10    # length of a write window: traffic is summed per connection and window
+maintenance_interval_minutes = 60  # how often the retention purge runs, besides at startup
 
 [log]
 addresses = true            # store remote addresses and domains
+reverse_dns = true          # name addresses no program looked up by a PTR query (needs addresses)
 commands = true             # store command lines of the process and its parent
 ports = true                # store local and remote ports
 ignore_ports = []           # connections with a matching local or remote port are not stored
@@ -56,12 +58,14 @@ group = ""                  # group that gets the daemon's sockets; empty keeps 
 ```
 
 Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
-`retention_days`, `write_limit_seconds` and `st_dev_mask` are replaced by their defaults
-with a warning. Invalid `ignore_*` entries are dropped. A `[viewer] group` that does not
+`retention_days`, `write_limit_seconds`, `maintenance_interval_minutes` and `st_dev_mask`
+are replaced by their defaults with a warning. Invalid `ignore_*` entries are dropped. A `[viewer] group` that does not
 exist is ignored.
 
 Domains in the database are stored in reversed notation (`com.example.www`), which is what
-`ignore_domains` prefixes match.
+`ignore_domains` prefixes match. A domain is the name the program looked up, else the
+reverse DNS name; a connection whose reverse DNS answer was still outstanding when its
+window was written has none, and `ignore_domains` cannot match it.
 
 ## Paths
 

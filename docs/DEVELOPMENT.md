@@ -9,9 +9,11 @@ This document covers the code layout, building, the checks and tests, and the be
 | `src/picosnitch/bpf/picosnitch.bpf.c` | the BPF program (tracked against upstream) |
 | `src/picosnitch/bpf_wrapper.py` | ctypes libbpf wrapper and struct mirrors (tracked against upstream) |
 | `src/picosnitch/cli.py` | commands, capability and database checks, schema creation |
-| `src/picosnitch/main_loop.py` | starts and supervises the threads, the hand-off queues, the live feed thread |
+| `src/picosnitch/main_loop.py` | starts and supervises the threads, the live feed thread |
 | `src/picosnitch/monitor.py` | the reader thread: BPF attach, drain, attribution |
 | `src/picosnitch/writer.py` | the writer thread: aggregation, filters, SQLite, retention |
+| `src/picosnitch/reverse_dns.py` | the reverse DNS workers |
+| `src/picosnitch/utils.py` | the hand-off queue between threads, logging and SQLite helpers |
 | `src/picosnitch/config.py`, `constants.py` | configuration, paths, schema |
 | `src/picosnitch/live_feed.py` | `events.sock` publisher and subscriber |
 | `src/picosnitch/ui/` | `top` and `tui` (curses) |
@@ -63,7 +65,8 @@ BPF object.
   records for `curl`, `wget` and generated traffic. It needs root and the built BPF object,
   and is skipped otherwise.
 - `test_monitor.py` covers executable resolution, `test_pipeline.py` the hand-off between
-  the threads and the writer, `test_robustness.py` config, database and
+  the threads and the writer, `test_reverse_dns.py` the reverse DNS workers with a fake
+  resolver, `test_robustness.py` config, retention, database and
   struct-layout robustness, `test_live_feed.py` the socket, `test_ui_*.py` the viewers
   in a pty. These run unprivileged.
 
