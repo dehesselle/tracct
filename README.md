@@ -18,22 +18,24 @@ Needs a kernel with BTF (`/sys/kernel/btf/vmlinux`), `libbpf1` at runtime, and `
 
 ```sh
 uv venv /opt/picosnitch
-VIRTUAL_ENV=/opt/picosnitch uv pip install .
-install -m 644 systemd/picosnitch.service /etc/systemd/system/
+VIRTUAL_ENV=/opt/picosnitch uv pip install '.[tui]'
+install -m 644 systemd/picosnitch.service systemd/picosnitch-query.socket systemd/picosnitch-query.service /etc/systemd/system/
 install -m 644 systemd/picosnitch.sysusers /etc/sysusers.d/picosnitch.conf
 systemd-sysusers
 install -d /etc/opt/picosnitch
 printf '[viewer]\ngroup = "picosnitch-viewer"\n' > /etc/opt/picosnitch/config.toml
-systemctl daemon-reload && systemctl enable --now picosnitch
+systemctl daemon-reload && systemctl enable --now picosnitch picosnitch-query.socket
 ```
+
+The `tui` extra adds the viewer; without it the daemon needs only the standard library.
 
 To record traffic the host forwards (an exit node, NAT), also set
 `net.netfilter.nf_conntrack_acct = 1`; see [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
 
-Then watch live traffic as root or as a member of `picosnitch-viewer`:
+Then browse live and recorded traffic as root or as a member of `picosnitch-viewer`:
 
 ```sh
-/opt/picosnitch/bin/picosnitch top
+/opt/picosnitch/bin/picosnitch view
 ```
 
 ## Caveats

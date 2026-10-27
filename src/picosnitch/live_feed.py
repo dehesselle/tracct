@@ -3,7 +3,7 @@
 
 """
 Live event feed published over a UNIX socket so external readers
-(picosnitch top, tui Live tab, custom tools) can subscribe to network
+(the live tab of picosnitch view, custom tools) can subscribe to network
 events in real time without polling the database.
 """
 
@@ -15,6 +15,7 @@ import os
 import select
 import socket
 import threading
+from pathlib import Path
 
 from picosnitch.constants import RUN_DIR
 
@@ -26,10 +27,10 @@ MAX_SUBSCRIBERS = 32
 MAX_PENDING_BYTES = 8 * 1024 * 1024
 
 
-def feed_closed_reason() -> str:
+def feed_closed_reason(path: Path | None = None) -> str:
     """Why a subscriber saw EOF: the daemon removes the socket on shutdown, so a
     socket that is still there means this subscriber was dropped (or the daemon restarted)."""
-    if EVENTS_SOCKET_PATH.exists():
+    if (path or EVENTS_SOCKET_PATH).exists():
         return f"the daemon dropped this viewer after it fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind (or the daemon restarted)"
     return "the picosnitch daemon stopped"
 
@@ -106,7 +107,7 @@ class LiveFeedPublisher:
 
     def has_subscribers(self) -> bool:
         """True if anyone is listening, so callers can skip serializing an event no
-        one will read -- the common case (no picosnitch top / tui Live tab open)."""
+        one will read -- the common case (no live tab of picosnitch view open)."""
         return self._sock is not None and bool(self._subscribers)
 
     def publish(self, event: dict) -> None:
@@ -201,8 +202,10 @@ class LiveFeedPublisher:
 class LiveFeedSubscriber:
     """Iterable line-delimited JSON reader for the live event socket."""
 
-    def __init__(self, timeout: float | None = None) -> None:
+    def __init__(self, timeout: float | None = None, path: Path | None = None) -> None:
         self._timeout = timeout
+        # resolved at connect time, so a test that moves EVENTS_SOCKET_PATH is followed
+        self._path = path
         self._sock: socket.socket | None = None
         self._buf = b""
 
@@ -210,7 +213,11 @@ class LiveFeedSubscriber:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         if self._timeout is not None:
             sock.settimeout(self._timeout)
-        sock.connect(str(EVENTS_SOCKET_PATH))
+        try:
+            sock.connect(str(self._path or EVENTS_SOCKET_PATH))
+        except OSError:
+            sock.close()
+            raise
         self._sock = sock
 
     def settimeout(self, timeout: float | None) -> None:

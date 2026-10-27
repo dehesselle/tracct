@@ -13,8 +13,7 @@ from pathlib import Path
 from picosnitch.config import load_config
 from picosnitch.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR, SENTINELS, STATE_DIR, TABLES, VERSION
 from picosnitch.main_loop import run_main_loop
-from picosnitch.ui.top import top_init
-from picosnitch.ui.tui import tui_init
+from picosnitch.query_server import run_query_server
 from picosnitch.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
 
 # what the daemon needs, as root or as an unprivileged user with ambient capabilities
@@ -134,7 +133,7 @@ def _db_is_corrupt(db_path: Path) -> bool:
     except sqlite3.DatabaseError as e:
         # not a database / malformed header / missing table or column -> corrupt; a transient
         # error (locked by the live daemon or a user's sqlite session, busy, disk I/O) must
-        # NOT quarantine a healthy db (e.g. one a `tui` session has open)
+        # NOT quarantine a healthy db (e.g. one the query server or a sqlite session has open)
         return sqlite_error_means_corrupt(e)
 
 
@@ -219,19 +218,27 @@ def start_picosnitch() -> int:
         run: {RUN_DIR}
 
         usage:
-            picosnitch run|top|tui|version|help
-                        |   |   |   |       |--> this text
-                        |   |   |   |--> version number
-                        |   |   |--> curses tui
-                        |   |--> live event monitor
+            picosnitch run|view|query-server|version|help
+                        |   |    |            |       |--> this text
+                        |   |    |            |--> version number
+                        |   |    |--> answer history queries (used by picosnitch-query.service)
+                        |   |--> live and history viewer (needs picosnitch[tui]; view --help)
                         |--> run the daemon in the foreground (used by picosnitch.service)
 
             systemctl enable|disable|start|stop|restart|status picosnitch
 
         paths follow $PICOSNITCH_CONFIG (a file), else $CONFIGURATION_DIRECTORY,
-        $STATE_DIRECTORY and $RUNTIME_DIRECTORY as set by systemd
+        $STATE_DIRECTORY and $RUNTIME_DIRECTORY as set by systemd; the query socket
+        follows $PICOSNITCH_QUERY_SOCKET
         """.lstrip("\n")
     )
+    if len(sys.argv) >= 2 and sys.argv[1] == "view":
+        try:
+            from picosnitch.viewer import run_viewer
+        except ImportError as e:
+            logging.error(f"the viewer needs Textual, installed with picosnitch[tui] ({e})")
+            return 1
+        return run_viewer(sys.argv[2:])
     if len(sys.argv) != 2:
         print(readme)
         return 2
@@ -246,12 +253,8 @@ def start_picosnitch() -> int:
         if err := check_capabilities():
             return err
         return main()
-    elif cmd == "tui":
-        if err := check_database():
-            return err
-        return tui_init()
-    elif cmd == "top":
-        return top_init()
+    elif cmd == "query-server":
+        return run_query_server()
     else:
         print(readme)
         return 2

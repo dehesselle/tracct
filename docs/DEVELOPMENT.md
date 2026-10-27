@@ -18,8 +18,10 @@ This document covers the code layout, building, the checks and tests, and the be
 | `src/picosnitch/utils.py` | the hand-off queue between threads, logging and SQLite helpers |
 | `src/picosnitch/config.py`, `constants.py` | configuration, paths, schema |
 | `src/picosnitch/live_feed.py` | `events.sock` publisher and subscriber |
-| `src/picosnitch/ui/` | `top` and `tui` (curses) |
-| `systemd/` | unit and sysusers file |
+| `src/picosnitch/query.py` | the query socket's message framing and client |
+| `src/picosnitch/query_server.py` | the query server: sources, dimensions, raw and rollup routing, socket activation |
+| `src/picosnitch/viewer/` | `view` (Textual): app, live tab, history tabs, timeline |
+| `systemd/` | daemon unit, query socket and service, sysusers file |
 | `hatch_build.py` | build hook compiling the BPF object into the wheel |
 | `bench/` | accuracy and overhead benchmark against other tools |
 
@@ -30,7 +32,8 @@ How the parts fit together is in [DESIGN.md](DESIGN.md).
 Everything runs on Linux only: Python 3.12 or newer, [uv](https://docs.astral.sh/uv/),
 `clang` and `libbpf-dev` to compile the BPF object, `libbpf1` at runtime. Vendored
 `vmlinux_*.h` headers cover x86_64 and aarch64; elsewhere the build dumps one from the
-running kernel with `bpftool`.
+running kernel with `bpftool`. The viewer needs Textual (the `tui` extra); the dev group
+pins it for the tests.
 
 ## Building
 
@@ -72,8 +75,10 @@ BPF object.
 - `test_monitor.py` covers executable and unit resolution, `test_pipeline.py` the hand-off
   between the threads and the writer, `test_reverse_dns.py` the reverse DNS workers with a
   fake resolver, `test_robustness.py` config, rollups, retention, database and
-  struct-layout robustness, `test_live_feed.py` the socket, `test_ui_*.py` the viewers
-  in a pty. These run unprivileged.
+  struct-layout robustness, `test_live_feed.py` the socket, `test_query_server.py` the
+  routing between raw rows and rollups, the dimensions, request bounds and the socket,
+  `test_viewer.py` the Textual viewer headless against both sockets (skipped without
+  Textual). These run unprivileged.
 
 CI (`.github/workflows/ci.yml`) runs the checks, builds the sdist and x86_64 and aarch64
 wheels, and runs the tests as root from the wheels on Python 3.12 to 3.14.

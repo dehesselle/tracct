@@ -75,9 +75,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libbpf1 curl wget
-      - name: Install picosnitch wheel + pytest into venv
+      - name: Install picosnitch wheel (with the viewer) + pytest into venv
         run: |
           uv venv
-          uv pip install dist/*.whl pytest==9.1.1
+          uv pip install "$(ls dist/*.whl)[tui]" textual==8.2.8 pytest==9.1.1
       - name: Run tests
         run: sudo -E env "PATH=$PATH" .venv/bin/pytest tests/ -v

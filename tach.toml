@@ -44,6 +44,14 @@ path = "picosnitch.live_feed"
 depends_on = ["picosnitch.constants"]
 
 [[modules]]
+path = "picosnitch.query"
+depends_on = []
+
+[[modules]]
+path = "picosnitch.query_server"
+depends_on = ["picosnitch.constants", "picosnitch.query", "picosnitch.utils"]
+
+[[modules]]
 path = "picosnitch.monitor"
 depends_on = ["picosnitch.bpf_wrapper", "picosnitch.config", "picosnitch.constants", "picosnitch.types", "picosnitch.utils"]
 
@@ -73,28 +81,12 @@ depends_on = ["picosnitch.config", "picosnitch.live_feed", "picosnitch.monitor",
 
 [[modules]]
 path = "picosnitch.cli"
-depends_on = ["picosnitch.utils", "picosnitch.ui.top", "picosnitch.config", "picosnitch.constants", "picosnitch.bpf_wrapper", "picosnitch.ui.tui", "picosnitch.main_loop"]
+depends_on = ["picosnitch.utils", "picosnitch.config", "picosnitch.constants", "picosnitch.bpf_wrapper", "picosnitch.main_loop", "picosnitch.query_server", "picosnitch.viewer"]
 
 [[modules]]
 path = "picosnitch.__main__"
 depends_on = ["picosnitch.cli"]
 
 [[modules]]
-path = "picosnitch.ui"
-depends_on = []
-
-[[modules]]
-path = "picosnitch.ui.top"
-depends_on = ["picosnitch.ui._keys", "picosnitch.constants", "picosnitch.ui._chrome", "picosnitch.live_feed"]
-
-[[modules]]
-path = "picosnitch.ui.tui"
-depends_on = ["picosnitch.constants", "picosnitch.live_feed", "picosnitch.ui._chrome", "picosnitch.ui._keys", "picosnitch.utils"]
-
-[[modules]]
-path = "picosnitch.ui._chrome"
-depends_on = []
-
-[[modules]]
-path = "picosnitch.ui._keys"
-depends_on = []
+path = "picosnitch.viewer"
+depends_on = ["picosnitch.live_feed", "picosnitch.query", "picosnitch.utils"]

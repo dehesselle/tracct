@@ -100,8 +100,10 @@ flowchart LR
     W <-- cache --> DNS["reverse DNS<br/>workers"]
     NL["netlink<br/>interfaces, conntrack"] --> W
     F["feed<br/>JSON for viewers"] --> LIVE([events.sock])
-    LIVE --> TOP["top / tui live"]
-    DB -. read-only .-> TUI["tui history"]
+    LIVE --> VIEW["view<br/>live tab"]
+    DB -. read-only .-> Q["query server<br/>own unit"]
+    Q --> QS([picosnitch-query.sock])
+    QS --> HIST["view<br/>history tabs"]
 ```
 
 - **reader** attaches the BPF program, polls the ring buffers, drains the maps every
@@ -171,11 +173,39 @@ period.
 
 ## Viewers
 
-- `events.sock` in the runtime directory streams every batch as JSON lines to up to 32
-  subscribers (`live_feed.py`). Its mode is 0660 and its group is `[viewer] group`, so
-  viewers need no capabilities. A subscriber more than 8 MiB behind is dropped.
-- `picosnitch top` and the live tab of `picosnitch tui` read that socket; the history views
-  of `tui` read the database directly.
+Viewers need no capabilities. They read two sockets, both 0660 for root and the viewer group:
+
+- **`events.sock`** in the daemon's runtime directory streams every batch as JSON lines to
+  up to 32 subscribers (`live_feed.py`); the daemon hands it to `[viewer] group`. A
+  subscriber more than 8 MiB behind is dropped.
+- **`/run/picosnitch-query.sock`** belongs to `picosnitch-query.socket`, whose service runs
+  `picosnitch query-server` (`query_server.py`) on the first connection and exits after ten
+  idle minutes. It runs as the daemon's dynamic user, so it shares the state directory and
+  the WAL index, but it opens the database read-only and holds no capabilities. A heavy
+  query then grows the query server, which its own `MemoryMax=` stops, not the daemon. The
+  socket lies outside `/run/picosnitch`, which systemd deletes whenever the daemon's unit
+  stops; history stays readable while the daemon is down.
+
+The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
+source (connections, interfaces or forwarded flows) grouped by one dimension, narrowed by a
+list of include and exclude filters and a time range, and the same sums per time bucket for a
+timeline. The dimensions are a fixed table mapped to SQL in `query_server.py`; values are
+bound, so a request carries no SQL. Each part of a request groups by the lookup ids and
+filters by id sets, so the `(exe_id, contime)` indexes serve a drill-down; the text is looked
+up once per group. Requests are bounded in size, filters, rows, buckets, response bytes, run
+time (30 s) and concurrent viewers (8).
+
+A range is read from the raw rows wherever they still exist and from the rollups before that,
+so a spike can be taken apart by address and port for all of `raw_retention_days`. The split
+is the first rolled-up period from the oldest raw row on: that row's own period has already
+been partly purged, and only its rollup is complete. A dimension the rollups do not keep
+(addresses, source ports) narrows the range to the raw rows. A port reaching into the rollups
+is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
+
+`picosnitch view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
+and a history tab per source with one time range shared between them. A tab's timeline shows
+the highlighted row rather than the sum of all rows, so layers or interfaces are not added
+up unless asked for; choosing a bucket narrows the range to it, which every tab then shows.
 
 ## Relationship to upstream
 
@@ -208,10 +238,14 @@ to upstream so fixes can still be carried over by hand.
    no migration code.
 8. **The daemon's capabilities are listed twice and must match:**
    `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `systemd/picosnitch.service`.
-   Each one carries the reason it is needed.
+   Each one carries the reason it is needed. Nothing that answers viewers runs with them:
+   the live feed only sends, and history queries go to the query server, which has none.
 9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,
    which `[log] reverse_dns = false` turns off.
 10. **Everything held in memory is bounded,** so months of uptime look like the first day:
     the hand-off queues by events, a write window by connections, the retry buffers by
     rows, every cache by entries, the remembered namespaces by count, the conntrack view by
     the kernel's own table size. A new buffer or cache comes with its bound.
+11. **Viewers never send SQL.** The query server maps whitelisted dimensions to SQL and
+    binds every value; a new view adds a dimension there, with its rollup and raw-only
+    behavior, instead of a way to pass queries through.

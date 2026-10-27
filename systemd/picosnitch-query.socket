@@ -1,0 +1,14 @@
+[Unit]
+Description=picosnitch history query socket
+
+[Socket]
+# outside /run/picosnitch, which belongs to picosnitch.service and goes when it stops
+ListenStream=/run/picosnitch-query.sock
+# members of the viewer group from picosnitch.sysusers may query the history
+SocketMode=0660
+SocketGroup=picosnitch-viewer
+# one server process takes all connections; it starts on the first and exits when idle
+Accept=no
+
+[Install]
+WantedBy=sockets.target

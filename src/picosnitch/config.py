@@ -48,7 +48,7 @@ class MonitoringConfig:
 
 @dataclasses.dataclass
 class ViewerConfig:
-    # group whose members may connect to the daemon's sockets (top, tui); empty keeps the daemon's own group
+    # group whose members may connect to events.sock (the live tab of view); empty keeps the daemon's own group
     group: str = ""
 
 

@@ -14,7 +14,7 @@ are in the [README](../README.md).
   below. Its state lives in `/var/lib/private/picosnitch` (reached through the symlink
   `/var/lib/picosnitch`), readable by root only.
 - `SupplementaryGroups=picosnitch-viewer`: lets the daemon hand `events.sock` to that
-  group. The group comes from `systemd/picosnitch.sysusers`; it cannot be called
+  group (the query socket gets it from its socket unit). The group comes from `systemd/picosnitch.sysusers`; it cannot be called
   `picosnitch`, which `DynamicUser=` takes for itself. Set `[viewer] group` to match and add
   viewers with `usermod -aG picosnitch-viewer <user>`.
 - `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
@@ -29,6 +29,31 @@ systemctl status picosnitch
 journalctl -u picosnitch -f
 systemctl restart picosnitch     # after a config change
 ```
+
+## The query service
+
+The history tabs of `picosnitch view` ask `picosnitch-query.service`, which systemd starts
+from `systemd/picosnitch-query.socket` on the first connection:
+
+- The socket is `/run/picosnitch-query.sock`, mode 0660, group `picosnitch-viewer`, set by
+  systemd. It is not in `/run/picosnitch`, which systemd removes whenever `picosnitch.service`
+  stops.
+- The service runs `picosnitch query-server` as the daemon's dynamic user (`User=picosnitch`)
+  with the same `StateDirectory=`, so it can read the database and share its WAL index. It
+  opens the database read-only and has no capabilities and no network.
+- It exits after ten minutes without a connected viewer; the next one starts it again.
+- `MemoryMax=512M`, `Nice=10` and `IOSchedulingClass=idle`: a heavy query slows or kills the
+  query service, not the daemon.
+
+Install and enable the socket; the service needs no enabling:
+
+```sh
+install -m 644 systemd/picosnitch-query.socket systemd/picosnitch-query.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now picosnitch-query.socket
+```
+
+`systemctl stop picosnitch-query.service` ends a running server; the socket stays and starts
+a new one when needed.
 
 ## Forwarded traffic
 
@@ -89,6 +114,9 @@ capture side are logged under `picosnitch.error`, among them:
 - `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
   its interfaces go unrecorded until it can
 
+The query service logs to its own unit (`journalctl -u picosnitch-query`): where it reads
+from at start, and `query server: interrupted …` for a query stopped after 30 seconds.
+
 ## Resource use
 
 Bytes are summed in the kernel, so CPU use follows the number of active connections per
@@ -146,6 +174,11 @@ again in a later window. `[log] reverse_dns = false` turns it off.
 - **Maintenance fails** (locked, disk full): logged, and retried on the next pass.
 - **Restart**: interface counters and conntrack start from a new baseline, so the traffic
   of the minutes the daemon was down is not attributed to the first window.
+- **Slow history query**: interrupted after 30 seconds; the viewer says so and suggests a
+  shorter range or a filter. A query past `MemoryMax=` kills the query service, the viewer
+  reports the closed connection, and the next request starts a new one.
+- **Daemon down**: the history stays readable through the query service; the live tab says
+  the feed is unavailable and reconnects when the daemon is back.
 
 Maintenance runs at daemon start and then every `maintenance_interval_minutes`: closed
 periods are rolled up, raw rows older than `raw_retention_days` (once rolled up) and
@@ -169,8 +202,9 @@ start it again to get a new one.
   the journal for `conntrack:` lines; flows that started while it was 0 never get counters.
 - **`BPF requirements not met`**: the kernel lacks BTF (`CONFIG_DEBUG_INFO_BTF=y`), the bpf
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
-- **`top`: socket not accessible**: the user is not in the viewer group (log in again after
-  `usermod`), or `[viewer] group` is not set.
-- **`tui`: `Database not found`** as a viewer: the database is readable by root only; run
-  `tui` as root.
+- **`view`: no access to `events.sock`**: the user is not in the viewer group (log in again
+  after `usermod`), or `[viewer] group` is not set.
+- **`view`: query server unavailable**: `picosnitch-query.socket` is not installed or not
+  enabled (`systemctl status picosnitch-query.socket`); with "no access", the user is not in
+  `picosnitch-viewer`. Errors of the server itself are in `journalctl -u picosnitch-query`.
 - **`Unsupported database version N, expected M`**: see [Upgrades](#upgrades).

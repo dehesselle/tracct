@@ -164,7 +164,10 @@ meta(key TEXT PRIMARY KEY, value INTEGER)   -- rollup_watermark: raw rows before
 
 A period is rolled up once it has closed; raw rows are deleted past `raw_retention_days`
 only once their period is rolled up. To cover a range that reaches past the raw window, read
-the rollups before the watermark and the raw rows from it on.
+the rollups before the watermark and the raw rows from it on. The query server keeps more
+detail: it reads the raw rows from the first rolled-up period at or after the oldest raw row
+on (the oldest row's own period is partly purged), the rollups before that, and the raw rows
+from the watermark on when nothing at or after the oldest raw row is rolled up yet.
 
 ## Indexes
 

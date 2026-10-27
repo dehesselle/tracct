@@ -17,7 +17,7 @@ from picosnitch.constants import DB_PATH, RETRY_BUFFER_MAX
 from picosnitch.netinfo import NetInfo
 from picosnitch.reverse_dns import ReverseDns
 from picosnitch.types import BpfEvent
-from picosnitch.utils import DropOldestQueue, log_error, quarantine_database, sqlite_error_means_corrupt
+from picosnitch.utils import DropOldestQueue, ephemeral_port_start, log_error, quarantine_database, sqlite_error_means_corrupt
 
 # distinct connections one write window may hold; past it the window is written early
 WINDOW_CONNECTIONS_MAX = 65536
@@ -63,15 +63,6 @@ ORPHAN_DELETES = (
     "DELETE FROM netns WHERE inode NOT IN"
     " (SELECT netns FROM connections UNION SELECT netns FROM connections_rollup UNION SELECT netns FROM interfaces UNION SELECT netns FROM forwarded UNION SELECT netns FROM forwarded_rollup)",
 )
-
-
-def ephemeral_port_start() -> int:
-    """the first port of the kernel's range for automatically chosen local ports"""
-    try:
-        with open("/proc/sys/net/ipv4/ip_local_port_range", "r") as f:
-            return int(f.read().split()[0])
-    except (OSError, ValueError, IndexError):
-        return 32768
 
 
 class Interned:

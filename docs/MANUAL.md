@@ -6,22 +6,48 @@ daemon and viewers use. Installing and running the unit is in [OPERATIONS.md](OP
 ## Commands
 
 ```text
-picosnitch run|top|tui|version|help
+picosnitch run|view|query-server|version|help
 ```
 
 | Command | What it does | Needs |
 | --- | --- | --- |
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
-| `top` | live feed: connections as the daemon sees them, with per-executable totals | access to `events.sock` |
-| `tui` | browse the history by executable, parent, user, port, address, domain or time; also has a live tab | read access to the database |
+| `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `picosnitch[tui]`, access to `events.sock` and the query socket |
+| `query-server` | answer the viewer's history queries; this is what `picosnitch-query.service` starts | read access to the database |
 | `version` | print the version | |
 | `help` | print usage and the resolved paths | |
 
-`top` and the live tab of `tui` work for root and for members of the viewer group
-(`[viewer] group`). The history in `tui` reads the database directly, which lies in the
-dynamic user's private state directory, so it currently works only as root.
+`view` works for root and for members of the viewer group (`[viewer] group`, and the group
+of `picosnitch-query.socket`). Press `?` in it for its keys.
 
-Press `?` in `top` or `tui` for their keys.
+### The viewer
+
+`picosnitch view` needs the `tui` extra (`uv pip install 'picosnitch[tui]'`). It has four
+tabs, switched with `1` to `4`:
+
+- **Live**: connections as the daemon drains them, with totals per executable since the tab
+  started and the ports each listens on. `p` pauses the list, `s` sorts by sent or received,
+  `r` resets.
+- **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
+  of routed flows): the history, grouped by the dimension chosen on the left, over the time
+  range in the header. The three kinds of bytes are never added together.
+
+In a history tab, `Enter` keeps only the highlighted row's value and `e` excludes it; the
+filters stack up in the header, and `Backspace` takes the last one off. The timeline above
+the table shows the highlighted row, or all rows after `a`, in buckets of a round length
+from 10 seconds up; dimmed buckets come from rollups. In the timeline, `←` and `→` pick a
+bucket and `Enter` narrows the range to it, `z` goes back. `t` cycles the span (last
+hour, last day, ...), `h` and `H` step back and forward by a whole span, `u` cycles the byte
+units, `/` finds text in the rows shown, `r` refreshes. A range that ends now refreshes
+every 10 seconds.
+
+Ranges older than the raw rows come from the rollups: whole periods, no addresses, ephemeral
+ports as 0. Dimensions marked "raw only" (addresses, source ports) narrow the range to the
+raw rows, and the status line says from when.
+
+```text
+picosnitch view [--tab live|processes|interfaces|forwarded] [--events-socket PATH] [--query-socket PATH]
+```
 
 ## Configuration
 
@@ -57,7 +83,7 @@ conn_map_max_entries = 65536  # connections the kernel can hold between drains, 
 conntrack = true            # record forwarded traffic from connection tracking (needs nf_conntrack_acct = 1)
 
 [viewer]
-group = ""                  # group that gets the daemon's sockets; empty keeps the daemon's own
+group = ""                  # group that gets events.sock; empty keeps the daemon's own
 ```
 
 Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
@@ -85,8 +111,11 @@ apply. Viewers use the same rules, so they find the defaults unless the variable
 | configuration file | `PICOSNITCH_CONFIG` (a file), else `$CONFIGURATION_DIRECTORY/config.toml` | `/etc/opt/picosnitch/config.toml` |
 | state directory with `picosnitch.db` | `STATE_DIRECTORY` | `/var/lib/picosnitch` |
 | runtime directory with `events.sock`, `picosnitch.lock` | `RUNTIME_DIRECTORY` | `/run/picosnitch` |
+| query socket, from `picosnitch-query.socket` | `PICOSNITCH_QUERY_SOCKET` | `/run/picosnitch-query.sock` |
 
-When a variable lists several directories separated by colons, the first one is used.
+When a variable lists several directories separated by colons, the first one is used. The
+options of `view` override both sockets. Outside socket activation, `query-server` creates its
+socket itself and runs until stopped.
 
 ## Querying the database
 

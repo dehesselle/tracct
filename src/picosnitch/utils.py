@@ -49,38 +49,31 @@ def quarantine_database(db_path: Path) -> None:
 
 
 def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Connection:
-    """Open a sqlite3 connection for read-only access.
-
-    Tries `mode=ro`, then `mode=ro&immutable=1`. The immutable fallback is needed
-    when the caller cannot write to the -shm / -wal sidecar files of a WAL database (e.g.
-    a non-root user opening the picosnitch database written by the root
-    daemon). Raises sqlite3.OperationalError if both attempts fail."""
+    """a read-only connection to a regular, not hardlinked database file; raises
+    sqlite3.OperationalError when it cannot be opened"""
     try:
         db_stat = os.lstat(db_path)
     except OSError as e:
         raise sqlite3.OperationalError(f"could not inspect {db_path}: {e}") from e
     if not stat.S_ISREG(db_stat.st_mode) or db_stat.st_nlink != 1:
         raise sqlite3.OperationalError(f"refusing non-regular or hardlinked database: {db_path}")
-    quoted_path = urllib.parse.quote(os.fspath(db_path), safe="/")
-    last_err: Exception | None = None
-    for uri in (
-        f"file:{quoted_path}?mode=ro",
-        f"file:{quoted_path}?mode=ro&immutable=1",
-    ):
-        con = None
-        try:
-            con = sqlite3.connect(uri, uri=uri.startswith("file:"), timeout=timeout)
-            # Force the connection to actually touch the file so we
-            # surface "attempt to write a readonly database" here
-            # instead of at the first user query.
-            con.execute("PRAGMA user_version").fetchone()
-            return con
-        except sqlite3.OperationalError as e:
-            if con is not None:
-                con.close()
-            last_err = e
-            continue
-    raise sqlite3.OperationalError(f"could not open {db_path} for reading: {last_err}")
+    con = sqlite3.connect(f"file:{urllib.parse.quote(os.fspath(db_path), safe='/')}?mode=ro", uri=True, timeout=timeout)
+    try:
+        # touch the file, so an unreadable database fails here and not at the first query
+        con.execute("PRAGMA user_version").fetchone()
+    except sqlite3.Error:
+        con.close()
+        raise
+    return con
+
+
+def ephemeral_port_start() -> int:
+    """the first port of the kernel's range for automatically chosen local ports"""
+    try:
+        with open("/proc/sys/net/ipv4/ip_local_port_range", "r") as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 32768
 
 
 def sanitize_log_line(line: str) -> str:
