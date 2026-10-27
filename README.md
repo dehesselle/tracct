@@ -29,8 +29,8 @@ systemctl daemon-reload && systemctl enable --now picosnitch picosnitch-query.so
 
 The `tui` extra adds the viewer; without it the daemon needs only the standard library.
 
-To record traffic the host forwards (an exit node, NAT), also set
-`net.netfilter.nf_conntrack_acct = 1`; see [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
+To record traffic the host or its namespaces forward (an exit node, NAT, a VPN namespace),
+load `nf_conntrack` with `acct=1`; see [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
 
 Then browse live and recorded traffic as root or as a member of `picosnitch-viewer`:
 

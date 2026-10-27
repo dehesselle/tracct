@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from picosnitch import conntrack
+from picosnitch import conntrack, netinfo
 
 
 def _attr(kind: int, payload: bytes, nested: bool = False) -> bytes:
@@ -49,7 +49,7 @@ def test_parse_entry_reads_tuples_and_counters():
     assert flow_id == 7
     assert entry == conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, (100, 2000, 2, 3))
     # a flow started while nf_conntrack_acct was off has no counters
-    assert conntrack.parse_entry(_message(7, ORIG, REPLY, None)) is None
+    assert conntrack.parse_entry(_message(7, ORIG, REPLY, None)) == (7, conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, None))
 
 
 def test_quick_sources_find_both_ends():
@@ -77,7 +77,7 @@ def test_collect_reports_deltas():
     """the first dump is the baseline; then each flow reports what it moved since the dump that
     saw it last, and an ended flow its last bytes from the destroy event"""
     dumps = [{1: _entry(100, 1000)}, {1: _entry(150, 1500), 2: _entry(30, 300)}, {2: _entry(40, 400)}]
-    tracker = conntrack.Conntrack(lambda message: None, set(), dumper=lambda local: dumps.pop(0), listen=False)
+    tracker = conntrack.Conntrack(lambda message: None, set(), dumper=lambda local: dumps.pop(0), opener=None)
     flows = tracker.collect(set())
     assert [(flow.orig_bytes, flow.reply_bytes) for flow in flows] == [(50, 500), (30, 300)]
     # flow 1 ended at 170/1700 between the dumps; flow 2 goes on
@@ -85,6 +85,46 @@ def test_collect_reports_deltas():
     flows = tracker.collect(set())
     assert sorted((flow.orig_bytes, flow.reply_bytes) for flow in flows) == [(10, 100), (20, 200)]
     assert set(tracker.seen) == {2}
+
+
+def test_collect_reports_flows_without_counters_once():
+    uncounted = conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, None)
+    dumps = [{}, {1: uncounted}, {1: uncounted, 2: _entry(30, 300)}]
+    reports: list[str] = []
+    tracker = conntrack.Conntrack(reports.append, set(), label="vpn1", dumper=lambda local: dumps.pop(0), opener=None)
+    assert tracker.collect(set()) == []
+    assert [(flow.orig_bytes, flow.reply_bytes) for flow in tracker.collect(set())] == [(30, 300)]
+    assert len(reports) == 1 and "vpn1" in reports[0] and "nf_conntrack_acct" in reports[0]
+
+
+def test_trackers_follow_the_namespaces():
+    """a namespace's first dump is its baseline; one that cannot be read is reported once and
+    the others go on; one that has gone is closed"""
+    # each namespace's table, told apart by its local address
+    tables: dict[bytes, list] = {
+        socket.inet_aton("10.0.0.1"): [{1: _entry(100, 1000)}, {1: _entry(150, 1500)}, {1: _entry(160, 1600)}, {1: _entry(170, 1700)}, {1: _entry(170, 1700)}],
+        socket.inet_aton("10.0.0.2"): [{}, OSError("busy"), OSError("busy"), {1: _entry(5, 50)}],
+    }
+
+    def dumper(local: frozenset[bytes]) -> dict[int, conntrack.Entry]:
+        (address,) = local
+        answer = tables[address].pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    reports: list[str] = []
+    trackers = conntrack.Trackers(reports.append, dumper=dumper, listen=False)
+    namespaces = {1: ("host", None, {"10.0.0.1"}), 2: ("vpn1", None, {"10.0.0.2"})}
+    assert trackers.collect(namespaces) == []
+    assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [(1, 50)]
+    assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [(1, 10)]
+    assert len(reports) == 1 and "vpn1" in reports[0] and "busy" in reports[0]
+    # vpn1 can be read again, counting from its baseline; then it goes away and is closed
+    assert sorted((flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)) == [(1, 10), (2, 5)]
+    vpn1 = trackers.trackers[2]
+    assert trackers.collect({1: namespaces[1]}) == []
+    assert vpn1.closed.is_set() and set(trackers.trackers) == {1} and len(reports) == 1
 
 
 @pytest.mark.skipif(os.geteuid() != 0 or shutil.which("ip") is None or not os.path.exists(conntrack.ACCT_SYSCTL), reason="needs root, iproute2 and nf_conntrack")
@@ -114,7 +154,7 @@ def test_collect_sees_routed_traffic():
             sh(f"ip netns add psct{i} && ip link add psct{i}h type veth peer name psct{i}n && ip link set psct{i}n netns psct{i}")
             sh(f"ip addr add 10.97.{i}.1/24 dev psct{i}h && ip link set psct{i}h up")
             sh(f"ip -n psct{i} addr add 10.97.{i}.2/24 dev psct{i}n && ip -n psct{i} link set psct{i}n up && ip -n psct{i} route add default via 10.97.{i}.1")
-        tracker = conntrack.Conntrack(lambda message: None, {"10.97.1.1", "10.97.2.1"}, listen=False)
+        tracker = conntrack.Conntrack(lambda message: None, {"10.97.1.1", "10.97.2.1"}, opener=None)
         server = subprocess.Popen(["ip", "netns", "exec", "psct2", "python3", "-c", "import socket; s = socket.create_server(('10.97.2.2', 8099)); c, _ = s.accept(); print(len(c.recv(65536)))"])
         time.sleep(0.5)
         sh("ip netns exec psct1 python3 -c \"import socket; c = socket.create_connection(('10.97.2.2', 8099)); c.sendall(b'x' * 20000); c.close()\"")
@@ -131,3 +171,61 @@ def test_collect_sees_routed_traffic():
                 subprocess.run(f"{iptables} -D {rule}", shell=True, capture_output=True)
         sysctl(conntrack.ACCT_SYSCTL, acct)
         sysctl("/proc/sys/net/ipv4/ip_forward", forward)
+
+
+def _flush_conntrack() -> None:
+    """delete every entry of the calling thread's conntrack table, as conntrack -F does"""
+    with conntrack._socket() as sock:
+        body = conntrack._NFGENMSG.pack(socket.AF_INET, 0, 0)
+        msg_type = (conntrack.NFNL_SUBSYS_CTNETLINK << 8) | conntrack.IPCTNL_MSG_CT_DELETE
+        sock.send(conntrack._NLMSGHDR.pack(conntrack._NLMSGHDR.size + len(body), msg_type, conntrack.NLM_F_REQUEST | 0x4, 1, 0) + body)  # NLM_F_ACK
+        sock.recv(65536)
+
+
+@pytest.mark.skipif(os.geteuid() != 0 or shutil.which("ip") is None or shutil.which("nft") is None or not os.path.exists(conntrack.ACCT_SYSCTL), reason="needs root, iproute2, nft and nf_conntrack")
+def test_trackers_see_forwarding_inside_a_namespace():
+    """a namespace routes between two others, as a VPN namespace that forwards would: its own
+    conntrack table is dumped from inside it, and its listener catches flows that end"""
+
+    def sh(command: str) -> None:
+        subprocess.run(command, shell=True, check=True, capture_output=True)
+
+    trackers = None
+    try:
+        sh("ip netns add psfr")
+        for side, i in (("a", 1), ("b", 2)):
+            sh(f"ip netns add psf{side} && ip link add psf{side}0 netns psf{side} type veth peer name psfr{i} netns psfr")
+            sh(f"ip -n psf{side} addr add 10.98.{i}.2/24 dev psf{side}0 && ip -n psf{side} link set psf{side}0 up && ip -n psf{side} route add default via 10.98.{i}.1")
+            sh(f"ip -n psfr addr add 10.98.{i}.1/24 dev psfr{i} && ip -n psfr link set psfr{i} up")
+        # forwarding with counters in the router only; the ct rule turns conntrack on there
+        sh("ip netns exec psfr sysctl -qw net.ipv4.ip_forward=1 net.netfilter.nf_conntrack_acct=1")
+        sh("ip netns exec psfr nft 'add table inet psf; add chain inet psf forward { type filter hook forward priority 0; }; add rule inet psf forward ct state new,established accept'")
+        router = os.stat("/run/netns/psfr").st_ino
+        namespaces = {router: ("psfr", "/run/netns/psfr", {"10.98.1.1", "10.98.2.1"})}
+        reports: list[str] = []
+        trackers = conntrack.Trackers(reports.append)
+        assert trackers.collect(namespaces) == []
+
+        def transfer(size: int) -> None:
+            server = subprocess.Popen(["ip", "netns", "exec", "psfb", "python3", "-c", "import socket; s = socket.create_server(('10.98.2.2', 8098)); c, _ = s.accept()\nwhile c.recv(65536): pass"])
+            time.sleep(0.5)
+            sh(f"ip netns exec psfa python3 -c \"import socket; c = socket.create_connection(('10.98.2.2', 8098)); c.sendall(b'x' * {size}); c.close()\"")
+            server.wait(10)
+
+        transfer(20000)
+        flows = [flow for flow in trackers.collect(namespaces) if flow.dport == 8098]
+        assert [(flow.netns, flow.src, flow.dst, flow.protocol) for flow in flows] == [(router, "10.98.1.2", "10.98.2.2", 6)]
+        assert flows[0].orig_bytes >= 20000
+        # a flow that ends between two collects is known from the destroy event alone
+        transfer(30000)
+        netinfo.run_in_netns("/run/netns/psfr", _flush_conntrack)
+        time.sleep(1)
+        flows = [flow for flow in trackers.collect(namespaces) if flow.dport == 8098]
+        assert len(flows) == 1 and flows[0].orig_bytes >= 30000
+        assert reports == []
+        trackers.collect({})
+        assert trackers.trackers == {}
+    finally:
+        if trackers is not None:
+            trackers.close()
+        subprocess.run("ip netns del psfa; ip netns del psfb; ip netns del psfr", shell=True, capture_output=True)

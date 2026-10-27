@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable
 
 from picosnitch.config import Config
-from picosnitch.conntrack import Conntrack, Flow
+from picosnitch.conntrack import Flow, Trackers
 from picosnitch.constants import DB_PATH, RETRY_BUFFER_MAX
 from picosnitch.netinfo import NetInfo
 from picosnitch.reverse_dns import ReverseDns
@@ -353,15 +353,19 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
     interned = (executables, domains, addresses, units, interfaces)
     reverse_dns = ReverseDns() if config.log.addresses and config.log.reverse_dns else None
     netinfo = NetInfo(log_error) if config.database.enabled else None
+    forwarded = Trackers(log_error) if netinfo is not None and config.monitoring.conntrack else None
+
+    def collect_forwarded() -> list[Flow]:
+        """the forwarded flows of every namespace the last refresh looked at; a namespace that
+        cannot be read is reported and skipped, so the rest of the window is still written"""
+        if forwarded is None or netinfo is None:
+            return []
+        return forwarded.collect({inode: (netinfo.label(inode), path, netinfo.local_addresses(inode)) for inode, path in netinfo.paths.items()})
+
     if netinfo is not None:
-        # the baseline the first window's interface counters start from
+        # the baseline the first window's interface counters and forwarded flows start from
         netinfo.refresh()
-    conntrack = None
-    if netinfo is not None and config.monitoring.conntrack:
-        try:
-            conntrack = Conntrack(log_error, netinfo.local_addresses())
-        except OSError as e:
-            log_error(f"conntrack: not available ({e}); forwarded traffic goes unrecorded")
+        collect_forwarded()
     window = WriteWindow(config, reverse_dns, netinfo)
 
     def clear_id_caches() -> None:
@@ -375,14 +379,14 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
 
     def write() -> None:
         nonlocal transaction, iface_rows, flow_rows
-        if conntrack is not None and netinfo is not None:
-            window.add_flows(conntrack.collect(netinfo.local_addresses()))
+        if netinfo is not None:
+            # first, so the window's rows find the namespaces and addresses as they are now
+            contime = int(time.time())
+            iface_rows += [(contime, (netns, name, kind), rx, tx) for netns, name, kind, rx, tx in netinfo.refresh()]
+            window.add_flows(collect_forwarded())
         rows, flows = window.take_rows()
         transaction += rows
         flow_rows += flows
-        if netinfo is not None:
-            contime = int(time.time())
-            iface_rows += [(contime, (netns, name, kind), rx, tx) for netns, name, kind, rx, tx in netinfo.refresh()]
         if any(len(table.ids) > ID_CACHE_MAX for table in interned):
             clear_id_caches()
         transaction_success = False
@@ -442,12 +446,14 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
             transaction, iface_rows, flow_rows = [], [], []
             return
         # a persistent write outage would grow the buffers unbounded; keep the newest
-        if len(transaction) > RETRY_BUFFER_MAX:
-            dropped = len(transaction) - RETRY_BUFFER_MAX
-            transaction = transaction[-RETRY_BUFFER_MAX:]
-            log_error("writer retry buffer full (persistent write outage), dropped %s oldest entries; retrying %s" % (dropped, len(transaction)))
-        iface_rows = iface_rows[-RETRY_BUFFER_MAX:]
-        flow_rows = flow_rows[-RETRY_BUFFER_MAX:]
+        dropped = [len(rows) - RETRY_BUFFER_MAX for rows in (transaction, iface_rows, flow_rows)]
+        if any(count > 0 for count in dropped):
+            transaction, iface_rows, flow_rows = transaction[-RETRY_BUFFER_MAX:], iface_rows[-RETRY_BUFFER_MAX:], flow_rows[-RETRY_BUFFER_MAX:]
+            connections, interface_rows, forwarded_rows = (max(0, count) for count in dropped)
+            log_error(
+                f"writer retry buffer full (persistent write outage), dropped the oldest {connections} connection, {interface_rows} interface and {forwarded_rows} forwarded row(s);"
+                f" retrying {len(transaction) + len(iface_rows) + len(flow_rows)}"
+            )
 
     last_write = 0.0
 
@@ -505,5 +511,5 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
     finally:
         if reverse_dns is not None:
             reverse_dns.close()
-        if conntrack is not None:
-            conntrack.close()
+        if forwarded is not None:
+            forwarded.close()

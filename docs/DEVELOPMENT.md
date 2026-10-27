@@ -69,9 +69,9 @@ BPF object.
 - `test_functional.py` starts a real daemon under `/tmp/picosnitch` and checks what it
   records for `curl`, `wget` and generated traffic. It needs root and the built BPF object,
   and is skipped otherwise.
-- `test_netinfo.py` and `test_conntrack.py` test their parsers and deltas with fakes; one
-  test each creates network namespaces (and routes traffic between them through the host)
-  and is skipped without root and iproute2.
+- `test_netinfo.py` and `test_conntrack.py` test their parsers and deltas with fakes; their
+  root tests create network namespaces and route traffic between them, through the host and
+  through a router namespace (which needs `nft`), and are skipped without root and iproute2.
 - `test_monitor.py` covers executable and unit resolution, `test_pipeline.py` the hand-off
   between the threads and the writer, `test_reverse_dns.py` the reverse DNS workers with a
   fake resolver, `test_robustness.py` config, rollups, retention, database and

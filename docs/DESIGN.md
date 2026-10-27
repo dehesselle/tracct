@@ -32,11 +32,16 @@ traffic come from netlink.
   zero-copy receives, and raw `packet_sendmsg` / `packet_recvmsg`, `tun_get_user` /
   `tun_do_read` and AF_XDP copy-mode sends. Opt-in (`mmap_ring_rx`): AF_PACKET and AF_XDP
   mmap-ring receives. Hooks whose kernel symbol is missing are skipped with a log line.
+  Socket I/O of kernel threads (nfsd, the workers of the NFS and SMB clients, ksmbd) counts
+  under the thread's comm, without an executable.
 - **In-kernel aggregation.** Bytes and packets are summed per connection, keyed by
   (pid, netns, saddr, daddr, lport, dport, protocol), in LRU hash maps (`conn_stats4`,
   `conn_stats6`, `conn_stats_packet`). Each value also carries the process's and parent's
   comm, device and inode, and the uid. Userspace drains the maps once per second with
-  lookup-and-delete, so its cost scales with active connections, not packets.
+  lookup-and-delete, so its cost scales with active connections, not packets. An IPv4 peer
+  of a dual-stack IPv6 socket (`::ffff:a.b.c.d`) is recorded as IPv4, so a server listening
+  on `[::]` has its IPv4 clients under their own addresses and its local address on its
+  interface.
 - **Exec events.** A kretprobe on `execve` sends each new process to a ring buffer. They are
   resolved while the process is young, which fills the caches its connections fall back on
   after it exits, and with `every_exe` they are logged as rows without traffic.
@@ -56,20 +61,23 @@ traffic come from netlink.
   (`RTM_GETADDR`), in the daemon's namespace, the named ones (`/run/netns`,
   `/run/docker/netns`) and those a recorded process lives in. Another namespace is queried
   from a short-lived thread that joins it (`setns`), so no other thread changes namespace and
-  no file descriptor keeps a namespace alive. The counter deltas become `interface_traffic`;
+  the query keeps no file descriptor that would hold the namespace alive. The counter deltas become `interface_traffic`;
   the addresses tell which interface each connection's local address is on, and a process's
   `/dev/net/tun` descriptors which TUN device its raw reads and writes went through.
 - **Forwarded flows** (`conntrack.py`). Once per write window the writer dumps the kernel's
-  connection tracking table (ctnetlink) and turns each flow's cumulative counters into the
-  bytes moved since the last dump; a listener thread on the destroy group catches the final
-  counters of flows that end in between. Counters are only read, never zeroed, so nothing
-  else that reads them is disturbed. Flows with a local address at either end, and those
-  sent to a broadcast or multicast address, are skipped, first by comparing the raw
+  connection tracking table (ctnetlink) of every namespace it reads the interfaces of, and
+  turns each flow's cumulative counters into the bytes moved since the last dump; one
+  listener thread reads the destroy group of each namespace for the final counters of flows
+  that end in between. Another namespace's table is dumped from a short-lived thread that joins it,
+  and its listener socket is opened there; that socket keeps the namespace alive until the
+  next window has found it gone. Counters are only read, never zeroed, so nothing else that
+  reads them is disturbed. Flows with a local address of their namespace at either end, and
+  those sent to a broadcast or multicast address, are skipped, first by comparing the raw
   addresses at their fixed offsets in the message, which keeps a busy host's local flows
-  cheap. Needs `nf_conntrack_acct = 1`.
+  cheap. Needs `nf_conntrack_acct = 1` in each namespace.
 
-Ring buffer drops, near-full aggregation maps, lost conntrack events and namespaces that
-cannot be queried are detected and logged, not silent.
+Ring buffer drops, near-full aggregation maps, lost conntrack events, forwarded flows without
+counters and namespaces that cannot be queried are detected and logged, not silent.
 
 ## What is and isn't counted
 
@@ -86,10 +94,15 @@ cannot be queried are detected and logged, not silent.
   is on a `tun` interface is inner, an `AF_PACKET` row on a `tun` interface is tunnel, the
   rest is outer or direct.
 - **Forwarded traffic** that the kernel routes through the host (an exit node, NAT for
-  containers) touches no local socket. It is recorded from connection tracking in the
-  daemon's namespace, as IP bytes, in its own table; forwarding inside other namespaces is
-  not recorded yet. Traffic of a container behind NAT appears twice, once as the container's
+  containers) or through one of its namespaces (a VPN namespace routing for others) touches
+  no local socket. It is recorded from connection tracking, as IP bytes, in its own table,
+  per namespace. A namespace without a name is only seen while a process in it has
+  connections. Traffic of a container behind NAT appears twice, once as the container's
   sockets and once forwarded by the host.
+- **No socket, no attribution.** In-kernel tunnels and encapsulation (the WireGuard kernel
+  module, VXLAN, GRE, IPsec) send and receive without a socket call, as do receives through
+  `TCP_ZEROCOPY_RECEIVE`, AF_XDP zero-copy sends and, unless `mmap_ring_rx` is on, mmap-ring
+  receives. Their bytes show only in the interface totals.
 - **Interface totals.** Per-interface counters are the baseline every other number can be
   held against: socket bytes attributed to processes, the remainder that no socket explains
   (forwarding, kernel traffic), per namespace.
@@ -121,8 +134,10 @@ flowchart LR
 - **writer** sums the batches per connection as they arrive, filters them per `[log]`, and
   once per window reads the interfaces and forwarded flows and writes everything to SQLite;
   it also rolls up and purges (`writer.py`).
-- **conntrack listener** collects the final counters of ended flows for the writer, and
-  short-lived **netns-query** threads read the interfaces of other namespaces.
+- **conntrack listener** collects the final counters of ended flows in every namespace for
+  the writer, and short-lived **netns-query** threads read the interfaces and conntrack
+  tables of other namespaces. A namespace whose table cannot be read is reported and
+  skipped; the rest of the window is written.
 - **reverse DNS workers** (four) answer PTR queries for the writer into a shared cache
   (`reverse_dns.py`). `getnameinfo` blocks as long as the system resolver takes; several
   workers keep one slow server from holding up the rest, and the writer never waits for
@@ -146,7 +161,9 @@ because hashing executables is CPU-bound and would have starved the reader.
 ## Executable identity
 
 A process is identified by the path of its executable plus its comm and command line, and
-the same for its parent. The reader reads `/proc/<pid>/exe` and accepts the path only if
+the same for its parent. The comm is that of the thread that did the I/O, so a program whose
+threads name themselves (`tokio-runtime-w`) appears under those names next to its own; the
+path and command line stay the same. The reader reads `/proc/<pid>/exe` and accepts the path only if
 its device and inode match what BPF recorded at event time; a process that has exec'd
 since gets no stale attribution. When the process is already gone, the resolver
 (`ExeResolver`) falls back to caches keyed by (device, inode, comm), to a binary found on
@@ -248,7 +265,9 @@ up unless asked for; choosing a bucket narrows the range to it, which every tab 
 ## Relationship to upstream
 
 `picosnitch.bpf.c` and `bpf_wrapper.py` are tracked against upstream: they hold the kernel
-side and its ctypes mirror, which change in lockstep. Everything above them, including
+side and its ctypes mirror, which change in lockstep. They differ from upstream in one place:
+`fill_conn_ancestry` keeps the I/O of a kernel thread, which has no executable, with its comm
+instead of dropping it. Everything above them, including
 `monitor.py`, is owned by this fork; its BPF attach and drain code stays structurally close
 to upstream so fixes can still be carried over by hand.
 
@@ -265,8 +284,9 @@ to upstream so fixes can still be carried over by hand.
    right for their layer; any total or rollup keeps them apart.
 4. **Socket bytes are labelled as such.** Wherever wire bytes (interface counters,
    conntrack) are added, the two kinds stay separate columns or tables.
-5. **The BPF program and `bpf_wrapper.py` stay byte-identical to upstream** unless a change
-   is deliberate, and then change together; the struct-size tests in
+5. **The BPF program and `bpf_wrapper.py` stay identical to upstream** apart from deliberate
+   changes, each named under "Relationship to upstream" and kept small enough to port
+   upstream's fixes around; the two change together, and the struct-size tests in
    `tests/test_robustness.py` guard the mirror.
 6. **Bad input never crash-loops the daemon.** A malformed config falls back to defaults
    with a warning, an unknown key is reported, a corrupt database is moved to
@@ -282,8 +302,9 @@ to upstream so fixes can still be carried over by hand.
    which `[log] reverse_dns = false` turns off.
 10. **Everything held in memory is bounded,** so months of uptime look like the first day:
     the hand-off queues by events, a write window by connections, the retry buffers by
-    rows, every cache by entries, the remembered namespaces by count, the conntrack view by
-    the kernel's own table size. A new buffer or cache comes with its bound.
+    rows, every cache by entries, the remembered namespaces by count, the conntrack view of
+    each namespace by the kernel's own table size. A new buffer or cache comes with its
+    bound.
 11. **Viewers never send SQL.** The query server maps whitelisted dimensions to SQL and
     binds every value; a new view adds a dimension there, with its rollup and raw-only
     behavior, instead of a way to pass queries through.

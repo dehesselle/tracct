@@ -58,20 +58,31 @@ a new one when needed.
 
 ## Forwarded traffic
 
-Flows the host only routes (an exit node, NAT for containers) are read from connection
-tracking, whose entries carry byte counters only with `nf_conntrack_acct` on. The setting
-exists only once the `nf_conntrack` module is loaded, which at boot happens after
-`sysctl.d` is applied unless the module is loaded early. Turn both on persistently, then
-restart the unit; flows that started before keep having no counters:
+Flows the host or one of its namespaces only routes (an exit node, NAT for containers, a VPN
+namespace routing for others) are read from connection tracking, whose entries carry byte
+counters only with `nf_conntrack_acct` on. Each network namespace has its own
+`nf_conntrack_acct`, and a new one starts from the `nf_conntrack` module's `acct` option, not
+from the host's setting. Setting the option when the module loads at boot covers the host and
+every namespace created later:
 
 ```sh
 echo nf_conntrack > /etc/modules-load.d/picosnitch.conf
-printf 'net.netfilter.nf_conntrack_acct = 1\n' > /etc/sysctl.d/90-picosnitch.conf
-modprobe nf_conntrack && sysctl -p /etc/sysctl.d/90-picosnitch.conf
+echo 'options nf_conntrack acct=1' > /etc/modprobe.d/picosnitch.conf
 ```
 
-Without it, or without the `nf_conntrack` module loaded, the forwarded tables stay empty
-and the journal says why. `[monitoring] conntrack = false` turns the reading off.
+On a running system, set it for the namespaces still to come and in each existing one, then
+restart the unit; flows that started before keep having no counters:
+
+```sh
+echo 1 > /sys/module/nf_conntrack/parameters/acct
+sysctl -w net.netfilter.nf_conntrack_acct=1
+for ns in $(ip netns list | cut -d' ' -f1); do ip netns exec "$ns" sysctl -qw net.netfilter.nf_conntrack_acct=1; done
+```
+
+The tables of the daemon's namespace, the named ones (`/run/netns`, `/run/docker/netns`) and
+those a recorded process lives in are read. Where flows carry no counters, or the table cannot
+be read, the journal says so once per namespace. `[monitoring] conntrack = false` turns the
+reading off.
 
 ## Capabilities
 
@@ -84,7 +95,7 @@ exactly these.
 | `CAP_DAC_READ_SEARCH` | list `/proc/<pid>/fd` of other users' processes, a plain permission check `CAP_SYS_PTRACE` does not override: matching connections open before the start to their processes, finding a process's TUN device |
 | `CAP_NET_ADMIN` | read the conntrack table and its events (forwarded traffic), and size netlink receive buffers |
 | `CAP_PERFMON` | attach kprobes, uprobes and fexit programs |
-| `CAP_SYS_ADMIN` | attach the `getaddrinfo` uprobe, whose perf event the kernel refuses without it at any `perf_event_paranoid` (seen on Ubuntu's 7.0 kernel; without it, domains come from reverse DNS only); join other network namespaces (`setns`) to read their interfaces |
+| `CAP_SYS_ADMIN` | attach the `getaddrinfo` uprobe, whose perf event the kernel refuses without it at any `perf_event_paranoid` (seen on Ubuntu's 7.0 kernel; without it, domains come from reverse DNS only); join other network namespaces (`setns`) to read their interfaces and conntrack tables |
 | `CAP_SYS_PTRACE` | read `/proc/<pid>/exe` and open `/proc/<pid>/ns/net` of other users' processes |
 | `CAP_SYSLOG` | not checked; reads kernel symbol addresses, without which io_uring zero-copy receives go uncounted |
 
@@ -99,8 +110,10 @@ and writing are logged under `picosnitch.error`, among them:
   `[monitoring] exec_ring_buffer_pages`
 - `dns ring buffer full: dropped N dns event(s)`: those connections get their domain from
   reverse DNS instead
-- `conn_stats4 near capacity` (or `conn_stats6`, `conn_stats_packet`): connections may have
-  been evicted before a drain; raise `[monitoring] conn_map_max_entries`
+- `conn_stats4 near capacity` (or `conn_stats6`): connections may have been evicted before
+  a drain; raise `[monitoring] conn_map_max_entries`
+- `conn_stats_packet near capacity`: more than about 59 000 processes did raw packet or TUN
+  I/O within a second; its size is fixed
 - `writer queue full: dropped N event(s)`: the writer fell behind the reader (slow disk,
   locked database) and the oldest batches were discarded
 - `live feed queue full: dropped N event(s)`: the same for viewers, which costs no data
@@ -109,17 +122,19 @@ and writing are logged under `picosnitch.error`, among them:
   unit's `SupplementaryGroups=`
 - `hardlink multi-call inode …`: informational, once per multi-call binary
 - `SQLite execute … will retry N entries`: a failed write, retried on the next window
-- `writer retry buffer full …, dropped N oldest entries`: writes have failed for so long
-  that the oldest rows were given up
+- `writer retry buffer full …, dropped the oldest N connection, N interface and N forwarded
+  row(s)`: writes have failed for so long that the oldest rows were given up
 - `maintenance: rolled up N period(s), deleted N row(s) …` (info): a maintenance pass that
   did something, with how long it took
-- `conntrack: not available (…)`: no `nf_conntrack` module or no `CAP_NET_ADMIN`; forwarded
-  traffic goes unrecorded
-- `conntrack: net.netfilter.nf_conntrack_acct is 0 …`: see [Forwarded traffic](#forwarded-traffic)
-- `conntrack: N ended flow event(s) lost`: the kernel dropped destroy events under load;
-  those flows miss their last window's bytes
-- `conntrack: listener stopped …`: from then on, flows that end miss their last window's
-  bytes until the daemon restarts
+- `conntrack: cannot read the table of network namespace NAME (…)`: no `nf_conntrack`
+  module, no `CAP_NET_ADMIN`, or the namespace cannot be joined; its forwarded traffic goes
+  unrecorded until the table can be read, while the rest of each window is written
+- `conntrack: forwarded flows in network namespace NAME carry no counters …`: once per
+  namespace; see [Forwarded traffic](#forwarded-traffic)
+- `conntrack: N ended flow event(s) lost in network namespace NAME`: the kernel dropped
+  destroy events under load; those flows miss their last window's bytes
+- `conntrack: listener stopped in network namespace NAME …`: from then on, flows that end
+  there miss their last window's bytes until the daemon restarts
 - `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
   its interfaces go unrecorded until it can
 
@@ -150,10 +165,12 @@ without shrinking. Each maintenance pass that deletes rows also scans all of the
 unreferenced lookup entries, about half a second per million rows, during which writes wait
 and the queue fills; raise `maintenance_interval_minutes` for a very large database.
 
-Every write window the writer also reads the interfaces of each namespace it knows and
-dumps the conntrack table. The dump walks every tracked flow, local ones included, but
-skips local ones without parsing them; with a full table of 65 536 flows under load it made
-no measurable difference (see [performance.md](performance.md)).
+Every write window the writer also reads the interfaces and dumps the conntrack table of
+each namespace it knows, another namespace's from a short-lived thread that joins it. A dump
+walks every tracked flow, local ones included, but skips local ones without parsing them;
+with a full table of 65 536 flows under load it made no measurable difference (see
+[performance.md](performance.md)). One thread waits on the ended-flow events of all
+namespaces.
 
 Reverse DNS sends a PTR query through the system resolver for every remote address no
 program looked up by name, port scanners included. Four workers handle the queries, with
@@ -181,6 +198,8 @@ again in a later window. `[log] reverse_dns = false` turns it off.
   than wiping the database, and tried again on the next pass; the rollup does not pass the
   newest row's period.
 - **Maintenance fails** (locked, disk full): logged, and retried on the next pass.
+- **Conntrack table unreadable** (module unloaded, namespace gone mid-dump): logged once per
+  namespace; its forwarded flows are skipped for that window, everything else is written.
 - **Restart**: interface counters and conntrack start from a new baseline, so the traffic
   of the minutes the daemon was down is not attributed to the first window.
 - **Slow history query**: interrupted after 30 seconds; the viewer says so and suggests a
@@ -207,8 +226,9 @@ start it again to get a new one.
   installed version; copy `systemd/picosnitch.service` again and `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
-- **No forwarded rows on an exit node**: check `sysctl net.netfilter.nf_conntrack_acct` and
-  the journal for `conntrack:` lines; flows that started while it was 0 never get counters.
+- **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that
+  namespace and the journal for `conntrack:` lines; flows that started while it was 0 never
+  get counters.
 - **`BPF requirements not met`**: the kernel lacks BTF (`CONFIG_DEBUG_INFO_BTF=y`), the bpf
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
 - **`view`: no access to `events.sock`**: the user is not in the viewer group (log in again

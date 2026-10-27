@@ -4,13 +4,14 @@ This document records what the daemon costs and loses under load, as measured wi
 benchmark matrix and the load test in `bench/` (see [bench/README.md](../bench/README.md)).
 
 Measured 2026-10-27 on a Hetzner VM with 2 vCPUs and 4 GB RAM, Ubuntu 26.04, kernel 7.0,
-running the unit with its defaults (10 s write windows). The matrix ran on the threaded
-daemon before the writer summed events on arrival; the load test on the current build.
+on the current build. The load test ran the unit with its defaults (10 s write windows).
 
 ## Benchmark matrix
 
 24 scenarios, 3 trials each: every scenario passes detection and bandwidth. Over the whole
-run the daemon averaged 0.4 % CPU (p95 1.0 %) and 17.5 MB PSS.
+run the daemon averaged 1.3 % CPU (p95 2.0 %) and 18.1 MB PSS. The matrix configures 1 s
+write windows, so the interfaces and conntrack tables, read once per window, are read ten
+times as often as with the defaults.
 
 ## Load test
 
@@ -20,17 +21,21 @@ notes on how it is counted).
 
 | Phase | Load | CPU avg (p95) | PSS avg / peak | Rows/s | Recorded | Warnings |
 | --- | --- | --- | --- | --- | --- | --- |
-| steady | 300 idle TCP clients, 4 KB command lines | 5.2 % (8.7 %) | 30 / 30 MB | 72 | 100 % | none |
-| churn | 30 000 new connections per second | 72 % (116 %) | 89 / 100 MB | 3 502 | 100 % | none |
-| churn | 50 000 new connections per second | 100 % (119 %) | 135 / 160 MB | 5 835 | 100 % | none |
-| exec | ~250 short-lived processes per second | 7.1 % (15 %) | 29 / 32 MB | 237 | 99.99 % | none |
+| steady | 300 idle TCP clients, 4 KB command lines | 3.2 % (5.7 %) | 29 / 29 MB | 70 | 100 % | none |
+| churn | 30 000 new connections per second | 29 % (51 %) | 83 / 108 MB | 3 500 | 100 % | none |
+| churn | 50 000 new connections per second | 44 % (83 %) | 130 / 158 MB | 5 833 | 100 % | none |
+| exec | ~250 short-lived processes per second | 6.4 % (14 %) | 87 / 87 MB | 237 | 99.99 % | none |
 
-The steady and 30 000/s churn phases ran in this order in one daemon, the others each in a
-fresh one. Under 30 000/s churn the reader thread takes 65 % of a core and the writer 14 %;
-above one core they run at the same time. Neither the ring buffers nor the connection maps
-overflowed. Reading each new process's command line and systemd unit at exec time costs
-the exec phase about 3 points of CPU over not doing so, and is what keeps the command line
-of a process whose last bytes are drained after it exited.
+The steady, 30 000/s churn and exec phases ran in this order in one daemon, so the exec
+phase starts from the memory the churn left; the 50 000/s phase ran in a fresh one. Neither
+the ring buffers nor the connection maps overflowed.
+
+The reader resolves a process's executable once per drain, not once per drained
+connection. Against the build before that change, run on the same VM, it cut the CPU of the
+30 000/s churn from 71 % to 29 % and of the 50 000/s churn from 100 % to 44 %; the other
+phases changed little. Reading each new process's command line and systemd unit at exec
+time costs the exec phase about 3 points of CPU over not doing so, and is what keeps the
+command line of a process whose last bytes are drained after it exited.
 
 All of it ran with connection tracking read every window, besides a forwarded test flow
 and a userspace TUN device; turning conntrack off made no measurable difference under

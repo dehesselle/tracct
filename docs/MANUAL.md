@@ -80,7 +80,7 @@ mmap_ring_rx = false        # count AF_PACKET/AF_XDP mmap-ring receives; adds a 
 exec_ring_buffer_pages = 256  # size of the exec event ring buffer, a power of two up to 16384
 conn_map_max_entries = 65536  # connections the kernel can hold between drains, up to 1048576
 # st_dev_mask = 0           # mask for device numbers in inode checks; auto-detected (0 on btrfs)
-conntrack = true            # record forwarded traffic from connection tracking (needs nf_conntrack_acct = 1)
+conntrack = true            # record forwarded traffic of every namespace from connection tracking (needs nf_conntrack_acct = 1)
 
 [viewer]
 group = ""                  # group that gets events.sock; empty keeps the daemon's own

@@ -2,7 +2,7 @@
 interface owns a local address, the TUN device of a process, and the bytes each interface
 moved. a namespace other than the daemon's own is queried from a short-lived thread that
 joins it (setns, CAP_SYS_ADMIN), so no other thread changes namespace and no file
-descriptor pins a namespace that has gone"""
+descriptor of this module pins a namespace that has gone"""
 
 from __future__ import annotations
 
@@ -38,9 +38,10 @@ def _query() -> Snapshot:
     return Snapshot(rtnetlink.links(), rtnetlink.addresses())
 
 
-def query_netns(path: str, query: Callable[[], Snapshot] = _query) -> Snapshot:
-    """run query inside the network namespace that path (an nsfs file) refers to"""
-    result: list[Snapshot] = []
+def run_in_netns[T](path: str, function: Callable[[], T], timeout: float = NETNS_QUERY_TIMEOUT) -> T:
+    """run function inside the network namespace that path (an nsfs file) refers to; a socket it
+    opens stays in that namespace"""
+    result: list[T] = []
     errors: list[BaseException] = []
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
 
@@ -48,21 +49,26 @@ def query_netns(path: str, query: Callable[[], Snapshot] = _query) -> Snapshot:
         try:
             # changes this thread's namespace only, and the thread ends right after
             os.setns(fd, os.CLONE_NEWNET)
-            result.append(query())
+            result.append(function())
         except BaseException as e:
             errors.append(e)
 
     try:
         thread = threading.Thread(target=run, name="netns-query", daemon=True)
         thread.start()
-        thread.join(NETNS_QUERY_TIMEOUT)
+        thread.join(timeout)
     finally:
         os.close(fd)
     if errors:
         raise errors[0]
     if not result:
-        raise TimeoutError(f"querying the network namespace of {path} took longer than {NETNS_QUERY_TIMEOUT} s")
+        raise TimeoutError(f"querying the network namespace of {path} took longer than {timeout} s")
     return result[0]
+
+
+def query_netns(path: str) -> Snapshot:
+    """the interfaces and addresses of the network namespace that path refers to"""
+    return run_in_netns(path, _query)
 
 
 def named_namespaces() -> dict[int, tuple[str, str]]:
@@ -117,11 +123,14 @@ class NetInfo:
         # (netns, address) -> (interface name, kind); exact addresses, then loopback networks
         self.owners: dict[tuple[int, str], tuple[str, str]] = {}
         self.loopback: dict[int, tuple[str, str]] = {}
-        # broadcast addresses of the IPv4 networks in the daemon's own namespace
-        self.broadcasts: set[str] = set()
+        # netns -> broadcast addresses of its IPv4 networks
+        self.broadcasts: dict[int, set[str]] = {}
         # (netns, ifindex, name) -> (rx, tx) at the last refresh
         self.counters: dict[tuple[int, int, str], tuple[int, int]] = {}
         self.tun_cache: dict[int, str] = {}
+        # inode -> path to join (None for the daemon's own) of the namespaces the last refresh
+        # looked at
+        self.paths: dict[int, str | None] = {}
         self.failed: set[int] = set()
 
     def note(self, netns: int, pid: int) -> None:
@@ -146,10 +155,15 @@ class NetInfo:
                 pass
         return "", ""
 
-    def local_addresses(self) -> set[str]:
-        """the addresses of the daemon's own namespace and the broadcast addresses of its IPv4
-        networks, as of the last refresh"""
-        return {address for netns, address in self.owners if netns == self.host} | self.broadcasts
+    def local_addresses(self, netns: int | None = None) -> set[str]:
+        """the addresses of a namespace (by default the daemon's own) and the broadcast
+        addresses of its IPv4 networks, as of the last refresh"""
+        netns = self.host if netns is None else netns
+        return {address for inode, address in self.owners if inode == netns} | self.broadcasts.get(netns, set())
+
+    def label(self, netns: int) -> str:
+        """a namespace's name, or its inode when it has none"""
+        return self.names.get(netns, str(netns))
 
     def tun_of(self, pid: int) -> str:
         """the TUN device of pid when it has exactly one, else ''"""
@@ -186,28 +200,32 @@ class NetInfo:
         owners: dict[tuple[int, str], tuple[str, str]] = {}
         loopback: dict[int, tuple[str, str]] = {}
         counters: dict[tuple[int, int, str], tuple[int, int]] = {}
-        broadcasts = set(self.broadcasts)
+        broadcasts: dict[int, set[str]] = {}
         traffic = []
-        for inode, path in self._targets().items():
+        targets = self._targets()
+        # a namespace that has gone is no longer reported, nor remembered as failed
+        self.failed &= set(targets)
+        for inode, path in targets.items():
             try:
                 snapshot = self.query(path)
             except Exception as e:
                 if inode not in self.failed:
                     self.failed.add(inode)
-                    self.report(f"netinfo: cannot query network namespace {inode} ({e}); its interfaces go unrecorded")
+                    self.report(f"netinfo: cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded")
                 # keep what the last look found, so the next one that works counts from there
                 owners.update({key: value for key, value in self.owners.items() if key[0] == inode})
                 counters.update({key: value for key, value in self.counters.items() if key[0] == inode})
                 if inode in self.loopback:
                     loopback[inode] = self.loopback[inode]
+                if inode in self.broadcasts:
+                    broadcasts[inode] = self.broadcasts[inode]
                 continue
             self.failed.discard(inode)
-            if inode == self.host:
-                broadcasts = {
-                    str(network.broadcast_address)
-                    for address in snapshot.addresses
-                    if (network := ipaddress.ip_network(f"{address.addr}/{address.prefixlen}", strict=False)).version == 4 and network.prefixlen < 31
-                }
+            broadcasts[inode] = {
+                str(network.broadcast_address)
+                for address in snapshot.addresses
+                if (network := ipaddress.ip_network(f"{address.addr}/{address.prefixlen}", strict=False)).version == 4 and network.prefixlen < 31
+            }
             by_index = {link.index: link for link in snapshot.links}
             for address in snapshot.addresses:
                 link = by_index.get(address.index)
@@ -229,5 +247,6 @@ class NetInfo:
                 if rx or tx:
                     traffic.append((inode, link.name, link.kind, rx, tx))
         self.owners, self.loopback, self.counters, self.broadcasts = owners, loopback, counters, broadcasts
+        self.paths = targets
         self.tun_cache = {}
         return traffic

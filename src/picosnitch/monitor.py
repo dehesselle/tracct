@@ -23,6 +23,8 @@ from picosnitch.utils import log_error
 CONN_DRAIN_CHUNK: typing.Final[int] = 2048
 # bound of each exe resolution cache and of the dns answer cache
 LOOKUP_CACHE_MAX: typing.Final[int] = 8192
+# entries of conn_stats_packet, one per process and namespace doing raw packet or TUN I/O
+PACKET_MAP_MAX: typing.Final[int] = 65536
 
 
 def _read_proc_comm(pid: int) -> str:
@@ -252,6 +254,20 @@ class ExeResolver:
         return st_dev, st_ino, exe
 
 
+# the first 12 bytes of an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+V4_MAPPED_PREFIX: typing.Final[bytes] = b"\0" * 10 + b"\xff\xff"
+V6_UNSPECIFIED: typing.Final[bytes] = b"\0" * 16
+
+
+def unmap_ipv4(saddr: bytes, daddr: bytes) -> tuple[int, str, str]:
+    """(family, laddr, raddr) of an IPv6 socket's addresses: an IPv4 peer of a dual-stack socket
+    shows as ::ffff:a.b.c.d, and is IPv4 traffic, on an interface's IPv4 address"""
+    sides = (saddr, daddr)
+    if any(side[:12] == V4_MAPPED_PREFIX for side in sides) and all(side[:12] == V4_MAPPED_PREFIX or side == V6_UNSPECIFIED for side in sides):
+        return int(socket.AF_INET), socket.inet_ntop(socket.AF_INET, saddr[12:]), socket.inet_ntop(socket.AF_INET, daddr[12:])
+    return int(socket.AF_INET6), socket.inet_ntop(socket.AF_INET6, saddr), socket.inet_ntop(socket.AF_INET6, daddr)
+
+
 def _parse_proc_net_addr(hex_addr: str) -> str:
     """Parse 'AABBCCDD:PPPP' or IPv6 hex form into a string IP address."""
     addr_part, _, _port_part = hex_addr.partition(":")
@@ -261,8 +277,10 @@ def _parse_proc_net_addr(hex_addr: str) -> str:
             return socket.inet_ntop(socket.AF_INET, packed[::-1])
         if len(addr_part) == 32:
             # /proc/net stores IPv6 as 4 little-endian u32 words
-            words = [bytes.fromhex(addr_part[i : i + 8])[::-1] for i in range(0, 32, 8)]
-            return socket.inet_ntop(socket.AF_INET6, b"".join(words))
+            packed = b"".join(bytes.fromhex(addr_part[i : i + 8])[::-1] for i in range(0, 32, 8))
+            if packed[:12] == V4_MAPPED_PREFIX:
+                return socket.inet_ntop(socket.AF_INET, packed[12:])
+            return socket.inet_ntop(socket.AF_INET6, packed)
     except (ValueError, OSError):
         pass
     return ""
@@ -428,7 +446,9 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
     except (ValueError, OSError):
         pass
     EVERY_EXE: typing.Final[bool] = config.monitoring.every_exe
-    CONN_MAP_MAX: typing.Final[int] = config.monitoring.conn_map_max_entries
+    # the size of each aggregation map, set at load; the packet map is keyed by process, not
+    # connection, so it keeps its own size
+    map_sizes = {"conn_stats4": config.monitoring.conn_map_max_entries, "conn_stats6": config.monitoring.conn_map_max_entries, "conn_stats_packet": PACKET_MAP_MAX}
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
     resolver = ExeResolver(log_error)
 
@@ -558,7 +578,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                 disabled_traces.update(("packet_set_ring_ret", "tpacket_rcv_ret", "xsk_bind_ret", "xsk_rcv_ret"))
             # a ringbuf's max_entries is its byte size, so the configured page count sizes it
             exec_ring_bytes = config.monitoring.exec_ring_buffer_pages * resource.getpagesize()
-            b = BPF(obj_file=bpf_obj_path, map_max_entries={"conn_stats4": CONN_MAP_MAX, "conn_stats6": CONN_MAP_MAX, "exec_events": exec_ring_bytes}, disabled_programs=disabled_traces)
+            b = BPF(obj_file=bpf_obj_path, map_max_entries={**map_sizes, "exec_events": exec_ring_bytes}, disabled_programs=disabled_traces)
             b.attach_kretprobe(event=b.get_syscall_fnname("execve"), fn_name="exec_entry")
         except Exception as e:
             log_error("Init BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
@@ -642,7 +662,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
         conn_stats4/conn_stats6 LRU hash maps, so process-ancestry resolution
         runs once per connection per drain interval rather than per packet.
         each entry carries the send and recv totals as one event."""
-        for map_name, key_type, family in (
+        for map_name, key_type, map_family in (
             ("conn_stats4", ConnKey4, socket.AF_INET),
             ("conn_stats6", ConnKey6, socket.AF_INET6),
             ("conn_stats_packet", ConnKeyPacket, socket.AF_PACKET),
@@ -654,10 +674,12 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                 continue
             # an lru map evicts oldest entries silently when full, so a drain at
             # near capacity means connections may have been dropped before drain
-            if len(entries) >= CONN_MAP_MAX * 9 // 10:
+            capacity = map_sizes[map_name]
+            if len(entries) >= capacity * 9 // 10:
                 if map_name not in near_capacity_maps:
                     near_capacity_maps.add(map_name)
-                    log_error(f"{map_name} near capacity ({len(entries)}/{CONN_MAP_MAX}), connections may have been evicted, try increasing [monitoring].conn_map_max_entries")
+                    hint = "try increasing [monitoring].conn_map_max_entries" if map_name != "conn_stats_packet" else "too many processes doing raw packet or TUN I/O"
+                    log_error(f"{map_name} near capacity ({len(entries)}/{capacity}), connections may have been evicted, {hint}")
             else:
                 near_capacity_maps.discard(map_name)
             # drain_map already lookup_and_delete'd every entry from the kernel, so a
@@ -665,19 +687,29 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             # per-entry failures isolated so one bad entry can't lose its siblings.
             outgoing: list[BpfEvent] = []
             process_cache: dict[int, tuple[str, str]] = {}
+            # a process's connections share their exe and parent; resolved once per drain
+            exe_cache: dict[tuple[int, int, int, bytes], tuple[int, int, str]] = {}
+
+            def resolve_cached(st_dev: int, st_ino: int, pid: int, comm: bytes) -> tuple[int, int, str]:
+                cache_key = (st_dev, st_ino, pid, comm)
+                resolved = exe_cache.get(cache_key)
+                if resolved is None:
+                    resolved = exe_cache[cache_key] = resolver.resolve(st_dev, st_ino, pid, comm.decode(errors="replace"))
+                return resolved
+
             for key, val in entries:
                 try:
-                    st_dev, st_ino, exe = resolver.resolve(val.dev, val.ino, key.pid, val.comm.decode(errors="replace"))
-                    pst_dev, pst_ino, pexe = resolver.resolve(val.pdev, val.pino, val.ppid, val.pcomm.decode(errors="replace"))
+                    st_dev, st_ino, exe = resolve_cached(val.dev, val.ino, key.pid, val.comm)
+                    pst_dev, pst_ino, pexe = resolve_cached(val.pdev, val.pino, val.ppid, val.pcomm)
                     cmd, unit = read_process_cached(key.pid, process_cache)
                     pcmd, _ = read_process_cached(val.ppid, process_cache)
-                    if family == socket.AF_INET:
+                    family = int(map_family)
+                    if map_family == socket.AF_INET:
                         laddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.saddr))
                         raddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.daddr))
                         lport, rport, protocol = key.lport, key.dport, int(key.protocol)
-                    elif family == socket.AF_INET6:
-                        laddr = socket.inet_ntop(socket.AF_INET6, bytes(key.saddr)[:16])
-                        raddr = socket.inet_ntop(socket.AF_INET6, bytes(key.daddr)[:16])
+                    elif map_family == socket.AF_INET6:
+                        family, laddr, raddr = unmap_ipv4(bytes(key.saddr)[:16], bytes(key.daddr)[:16])
                         lport, rport, protocol = key.lport, key.dport, int(key.protocol)
                     else:
                         # the peer, ports and protocol live inside the app-crafted frame, so record them as unknown
@@ -702,7 +734,7 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                             "send": int(val.send_bytes),
                             "recv": int(val.recv_bytes),
                             "pkts": int(val.send_pkts) + int(val.recv_pkts),
-                            "family": int(family),
+                            "family": family,
                             "protocol": protocol,
                             "lport": lport,
                             "rport": rport,
@@ -726,6 +758,9 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
         # connections fall back on once a short-lived process has exited
         st_dev, st_ino, exe = resolver.resolve(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
         pst_dev, pst_ino, pexe = resolver.resolve(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
+        # what was read under this pid before belongs to the program before the exec, or to an
+        # earlier process the pid was reused from; it must not answer once this one has exited
+        last_read.pop(event.pid, None)
         cmd, unit = read_process(event.pid)
         if EVERY_EXE:
             publish(

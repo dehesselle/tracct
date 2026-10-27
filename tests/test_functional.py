@@ -370,6 +370,45 @@ assert got == total, got
         assert recv_total == total, f"spliced recv bytes {recv_total} != {total} transferred (2x means double counting), rows: {rows}"
 
 
+class TestDualStackServer:
+    """a server listening on [::] sees IPv4 clients as ::ffff:a.b.c.d; their rows are IPv4, with
+    plain addresses and the interface of the local address"""
+
+    def test_ipv4_client_of_dual_stack_server(self, picosnitch_session):
+        port = 42814
+        script = f"""
+import socket, threading
+srv = socket.create_server(("::", {port}), family=socket.AF_INET6, dualstack_ipv6=True)
+def serve():
+    c, _ = srv.accept()
+    c.sendall(b"D" * 300000)
+    c.close()
+t = threading.Thread(target=serve)
+t.start()
+s = socket.create_connection(("127.0.0.1", {port}))
+while s.recv(65536):
+    pass
+s.close()
+t.join()
+"""
+        subprocess.run([PYTHON_EXE, "-c", script], check=True, timeout=60)
+
+        def server_rows() -> list:
+            return query_db(
+                "SELECT c.family, la.addr, ra.addr, c.send, i.name FROM connections c JOIN addresses la ON c.laddr_id = la.id"
+                " JOIN addresses ra ON c.raddr_id = ra.id JOIN interfaces i ON c.iface_id = i.id WHERE c.lport = ? AND c.send > 0",
+                (port,),
+            )
+
+        deadline = time.time() + (DB_WRITE_LIMIT + TRAFFIC_WAIT) * 3
+        rows = []
+        while time.time() < deadline and sum(row[3] for row in rows) < 300000:
+            time.sleep(2)
+            rows = server_rows()
+        assert rows and sum(row[3] for row in rows) == 300000, rows
+        assert {(family, laddr, raddr, iface) for family, laddr, raddr, _, iface in rows} == {(2, "127.0.0.1", "127.0.0.1", "lo")}
+
+
 class TestParentTracking:
     """Tests for parent process tracking."""
 

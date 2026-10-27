@@ -3,6 +3,7 @@
 
 """Unit tests for monitor exe-resolution helpers."""
 
+import ipaddress
 import os
 import subprocess
 import sys
@@ -10,7 +11,7 @@ import sys
 import pytest
 
 from picosnitch.constants import ST_DEV_MASK
-from picosnitch.monitor import ExeResolver, _classify_inode_fallback, _read_proc_unit, unit_of_cgroup
+from picosnitch.monitor import ExeResolver, _classify_inode_fallback, _parse_proc_net_addr, _read_proc_unit, unit_of_cgroup, unmap_ipv4
 
 
 def _dev_ino(path: str) -> tuple[int, int]:
@@ -134,3 +135,25 @@ def test_read_proc_unit_of_self():
     assert isinstance(_read_proc_unit(os.getpid()), str)
     with pytest.raises(OSError):
         _read_proc_unit(2**22 + 1)
+
+
+def _packed(address: str) -> bytes:
+    return ipaddress.ip_address(address).packed
+
+
+def test_unmap_ipv4_turns_dual_stack_peers_into_ipv4():
+    # an IPv4 client of a server listening on [::]
+    assert unmap_ipv4(_packed("::ffff:203.0.113.1"), _packed("::ffff:198.51.100.7")) == (2, "203.0.113.1", "198.51.100.7")
+    # an unbound dual-stack UDP socket sending to an IPv4 peer
+    assert unmap_ipv4(_packed("::"), _packed("::ffff:198.51.100.7")) == (2, "0.0.0.0", "198.51.100.7")
+    # IPv6 stays IPv6, ::1 and :: included
+    assert unmap_ipv4(_packed("2001:db8::1"), _packed("2001:db8::7")) == (10, "2001:db8::1", "2001:db8::7")
+    assert unmap_ipv4(_packed("::1"), _packed("::1")) == (10, "::1", "::1")
+    assert unmap_ipv4(_packed("::"), _packed("::")) == (10, "::", "::")
+
+
+def test_parse_proc_net_addr_unmaps_ipv4():
+    # /proc/net/tcp6 holds four little-endian words
+    assert _parse_proc_net_addr("0000000000000000FFFF00000100007F:1F90") == "127.0.0.1"
+    assert _parse_proc_net_addr("00000000000000000000000001000000:0016") == "::1"
+    assert _parse_proc_net_addr("0100007F:0050") == "127.0.0.1"

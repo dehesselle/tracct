@@ -176,7 +176,7 @@ class Picosnitch(ToolAdapter):
         # pre-existing install must not run the benchmark under different settings.
         Path("/etc/opt/picosnitch").mkdir(parents=True, exist_ok=True)
         Path("/etc/opt/picosnitch/config.toml").write_text(
-            "[database]\nenabled = true\nretention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
+            "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
         # always rebuild: the tree under test is whatever is checked out
         if not Path(f"{self.PREFIX}/bin/python").exists():
@@ -187,7 +187,8 @@ class Picosnitch(ToolAdapter):
         if r.returncode != 0:
             raise RuntimeError(f"picosnitch install failed: {r.stderr}\n{r.stdout}")
         sh(f"install -m 644 {self.SRC}/systemd/picosnitch.service /etc/systemd/system/picosnitch.service")
-        sh(f"install -m 644 {self.SRC}/systemd/picosnitch.sysusers /etc/sysusers.d/picosnitch.conf")
+        # -D: a stock install has no /etc/sysusers.d, and without the viewer group the unit cannot start
+        sh(f"install -D -m 644 {self.SRC}/systemd/picosnitch.sysusers /etc/sysusers.d/picosnitch.conf")
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")
 

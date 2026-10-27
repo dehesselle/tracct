@@ -409,8 +409,11 @@ static __always_inline int fill_conn_ancestry(struct conn_val_t *val, __u32 uid)
 
     // Self exe info (required)
     struct mm_struct *mm = BPF_CORE_READ(task, mm);
-    if (!mm)
-        return -1;
+    if (!mm) {  // a kernel thread (nfsd, kworker): recorded by comm alone, without an exe
+        bpf_get_current_comm(&val->comm, sizeof(val->comm));
+        bpf_probe_read_kernel_str(&val->pcomm, sizeof(val->pcomm), BPF_CORE_READ(parent, comm));
+        return 0;
+    }
     struct file *exe_file = BPF_CORE_READ(mm, exe_file);
     if (!exe_file)
         return -1;
