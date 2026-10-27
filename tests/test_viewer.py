@@ -17,7 +17,7 @@ pytest.importorskip("textual")
 from tcoda.dialogs import SettingsDialog  # noqa: E402
 from tcoda.settings import config, configure  # noqa: E402
 from test_query_server import P0, VPN, H, _db  # noqa: E402
-from textual.widgets import DataTable, TabbedContent, Tabs  # noqa: E402
+from textual.widgets import DataTable, TabbedContent, TabPane, Tabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
@@ -61,6 +61,7 @@ def test_tab_keys(tmp_path):
         app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
         async with app.run_test(size=(120, 40)) as pilot:
             tabs = app.query_one(TabbedContent)
+            assert [pane.id for pane in tabs.query(TabPane)] == ["forwarded", "interfaces", "live", "processes"]
             assert not tabs.query_one(Tabs).can_focus
             # no daemon: the live tab's banner shows why, as an error
             banner = app.query_one(LivePane).query_one(".banner")

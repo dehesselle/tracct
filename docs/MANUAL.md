@@ -24,7 +24,8 @@ of `tracct-query.socket`). Press `?` in it for its keys.
 ### The viewer
 
 `tracct view` needs the `tui` extra (`uv pip install 'tracct[tui]'`). It has four
-tabs, switched with the letter highlighted in their title (`l`, `p`, `i`, `f`):
+tabs in alphabetical order, switched with the letter highlighted in their title (`f`, `i`,
+`l`, `p`):
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started and the ports each listens on (for processes the viewer's user may inspect, all of

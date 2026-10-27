@@ -15,7 +15,7 @@ from tracct.live_feed import EVENTS_SOCKET_PATH
 from tracct.query import QUERY_SOCKET_PATH
 
 # tab id -> (title, query source)
-TABS = {"live": ("Live", ""), "processes": ("Processes", "connections"), "interfaces": ("Interfaces", "interfaces"), "forwarded": ("Forwarded", "forwarded")}
+TABS = {"forwarded": ("Forwarded", "forwarded"), "interfaces": ("Interfaces", "interfaces"), "live": ("Live", ""), "processes": ("Processes", "connections")}
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
