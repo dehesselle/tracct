@@ -21,10 +21,10 @@ from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane, Ta
 
 from tracct.query import QueryClient, QueryError
 from tracct.viewer import TABS
-from tracct.viewer.format import BYTE_UNITS, SPANS, moment
+from tracct.viewer.format import BYTE_UNITS, SPANS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
-from tracct.viewer.timeline import Timeline
+from tracct.viewer.plot import TrafficPlot
 
 # a range that ends now is asked again this often while its tab is shown
 REFRESH_SECONDS = 10.0
@@ -37,8 +37,8 @@ def _aligned(now: int, seconds: int) -> int:
 
 
 class TimeRange:
-    """a span that ends now, a span stepped back into the past, or a range zoomed into from the
-    timeline; zooms stack, so zooming out returns to the range before"""
+    """a span that ends now, a span stepped back into the past, or the range a plot was zoomed or
+    panned to; zooming out returns to the span"""
 
     def __init__(self, span: int = 4) -> None:
         self.span = span
@@ -181,10 +181,18 @@ class ViewerApp(ChordMixin, App):
         self.focus_pane()
         self.reload_active()
 
-    def zoom(self, start: int, end: int) -> None:
-        self.time_range.zooms.append((start, end))
-        self.notify(f"zoomed to {moment(start)} to {moment(end)}; z zooms out", timeout=3)
+    def view(self, start: int, end: int) -> None:
+        """the range a plot came to rest on, which every history tab then shows"""
+        if self.time_range.zooms:
+            self.time_range.zooms[-1] = (start, end)
+        else:
+            self.time_range.zooms.append((start, end))
         self.reload_active()
+
+    def reset_view(self) -> None:
+        if self.time_range.zooms:
+            self.time_range.zooms.clear()
+            self.reload_active()
 
     # ── actions ─────────────────────────────────────────────────────
 
@@ -212,9 +220,9 @@ class ViewerApp(ChordMixin, App):
 
     def action_units(self) -> None:
         self.unit = BYTE_UNITS[(BYTE_UNITS.index(self.unit) + 1) % len(BYTE_UNITS)]
-        for timeline in self.query(Timeline):
-            timeline.unit = self.unit
-            timeline.refresh()
+        for plot in self.query(TrafficPlot):
+            plot.unit = self.unit
+            plot.redraw()
         for pane in self.query(HistoryPane):
             if pane.result:
                 pane.render_rows()

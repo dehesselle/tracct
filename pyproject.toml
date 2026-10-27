@@ -26,7 +26,7 @@ classifiers = [
 
 [project.optional-dependencies]
 # the viewer, `tracct view`; the daemon and the query server need only the standard library
-tui = ["textual>=8.2.8,<9", "tcoda>=0.8,<0.9"]
+tui = ["textual>=8.2.8,<9", "tcoda>=0.8,<0.9", "textual-plot>=0.10.1,<0.11"]
 
 [project.scripts]
 tracct = "tracct.cli:start_tracct"
@@ -76,4 +76,5 @@ dev = [
     "ruff==0.15.20",
     "tcoda==0.8.0",
     "textual==8.2.8",
+    "textual-plot==0.10.1",
 ]

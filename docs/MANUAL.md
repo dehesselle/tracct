@@ -39,13 +39,20 @@ tabs in alphabetical order, switched with the letter highlighted in their title 
   range in the header. The three kinds of bytes are never added together.
 
 In a history tab, `Enter` keeps only the highlighted row's value and `e` excludes it; the
-filters stack up in the header, and `Backspace` takes the last one off. The timeline above
-the table shows the highlighted row, or all rows after `a`, in buckets of a round length
-from 10 seconds up; dimmed buckets come from rollups. In the timeline, `←` and `→` pick a
-bucket and `Enter` narrows the range to it, `z` goes back. `t` cycles the span (last
-hour, last day, ...), `h` and `H` step back and forward by a whole span, `u` cycles the byte
-units, `/` finds text in the rows shown (on every tab; `c` clears it), `r` refreshes. A range that ends now refreshes
-every 10 seconds.
+filters stack up in the header, and `Backspace` takes the last one off. The plot above the
+table draws the highlighted row, or all rows after `a`, as a line each for sent and
+received. A point is the highest rate of any 10 seconds within its bucket (longer if the
+daemon writes less often, a whole period in the rollups), so a short spike keeps its height
+at any zoom; its title says so, and a vertical line marks where the rollups end. Hovering
+shows a bucket's bytes and peaks in the bottom border.
+
+The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
+dragging or `←` and `→` pan, and a moment after the plot comes to rest the tables follow.
+`r` in the plot or `z` returns to the span. `t` cycles the span (last hour, last day, ...),
+`h` and `H` step back and forward by a whole span, `u` cycles the byte units, `/` finds text
+in the rows shown (on every tab; `c` clears it), `r` refreshes. A range that ends now
+refreshes every 10 seconds. While a tab waits more than a moment for the query server, `↻`
+ends the plot's title.
 
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
 opens the viewer's settings, such as the live tab's limits. They are kept per user in

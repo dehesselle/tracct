@@ -28,6 +28,7 @@ import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 
+from tracct.config import load_config
 from tracct.constants import DB_PATH, DB_VERSION
 from tracct.query import MAX_RESPONSE_BYTES, QUERY_SOCKET_PATH, recv_message, send_message
 from tracct.utils import ephemeral_port_start
@@ -197,6 +198,17 @@ class RequestError(Exception):
     """a request the server refuses; the message goes back to the viewer"""
 
 
+@dataclasses.dataclass(frozen=True)
+class Settings:
+    """what the answers depend on besides the database"""
+
+    # the first ephemeral port, below which the rollups keep ports
+    ephemeral: int
+    # the daemon's write window and rollup period, in seconds, for the peaks of a timeline
+    write_window: int
+    rollup_period: int
+
+
 def _source(request: dict) -> Source:
     source = SOURCES.get(request.get("source", ""))
     if source is None:
@@ -303,7 +315,7 @@ class _Plan:
         return {"start": self.start, "end": self.end, "split": self.split, "clipped": self.clipped}
 
 
-def aggregate(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
+def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
     """the byte sums per value of one dimension, largest first, with the sums over all values"""
     source = _source(request)
     group = source.dimensions.get(request.get("group_by") or source.default)
@@ -312,7 +324,7 @@ def aggregate(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
     filters = _filters(request, source)
     start, end = _range(request)
     limit = _int(request, "limit", DEFAULT_ROWS, 1, MAX_ROWS)
-    plan = _Plan(con, source, [group], filters, start, end, ephemeral)
+    plan = _Plan(con, source, [group], filters, start, end, settings.ephemeral)
     result: dict = {**plan.info(), "rows": [], "totals": [0, 0], "groups": 0, "truncated": False}
     if not plan.parts:
         return result
@@ -334,26 +346,49 @@ def aggregate(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
     return result
 
 
-def timeline(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
-    """the byte sums per bucket of step seconds from start; buckets without bytes are left out"""
+def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
+    """the byte sums per bucket of step seconds from start; buckets without bytes are left out.
+    with peak, each bucket also carries the highest rate of a stretch of peak seconds in it, so a
+    spike shorter than the bucket keeps its height"""
     source = _source(request)
     filters = _filters(request, source)
     start, end = _range(request)
     step = _int(request, "step", None, 1, 2**53) if request.get("step") is not None else max(1, (end - start) // 100)
     if (end - start + step - 1) // step > MAX_BUCKETS:
         raise RequestError(f"at most {MAX_BUCKETS} buckets, make step larger")
-    plan = _Plan(con, source, [], filters, start, end, ephemeral)
+    peak = _int(request, "peak", None, 1, step) if request.get("peak") is not None else None
+    plan = _Plan(con, source, [], filters, start, end, settings.ephemeral)
     result: dict = {**plan.info(), "step": step, "buckets": []}
+    if peak is not None:
+        # a write window's rows share one contime, so a stretch shorter than the window would
+        # count the window's bytes as if they came in that stretch
+        result["peak"] = max(peak, settings.write_window)
     if not plan.parts:
         return result
     # buckets count from the requested start, so they stay put when a dimension clips the range
-    union, params = plan.union(lambda rollup: f"(t.{'period' if rollup else 'contime'} - ?) / ?", lambda: [start, step])
-    for bucket, a, b in con.execute(f"SELECT k, SUM(a), SUM(b) FROM ({union}) GROUP BY k ORDER BY k", params):
-        result["buckets"].append([start + bucket * step, a, b])
+    if peak is None:
+        union, params = plan.union(lambda rollup: f"(t.{'period' if rollup else 'contime'} - ?) / ?", lambda: [start, step])
+        for bucket, a, b in con.execute(f"SELECT k, SUM(a), SUM(b) FROM ({union}) GROUP BY k ORDER BY k", params):
+            result["buckets"].append([start + bucket * step, a, b])
+        return result
+    a_column, b_column = source.values
+    selects, params = [], []
+    for rollup, part_start, part_end in plan.parts:
+        # a rollup holds nothing finer than its period
+        column, length = ("period", max(peak, settings.rollup_period)) if rollup else ("contime", result["peak"])
+        from_where, part_params = plan.from_where(rollup, part_start, part_end)
+        selects.append(
+            f"SELECT (t.{column} - ?) / ? AS k, SUM(t.{a_column}) AS a, SUM(t.{b_column}) AS b,"
+            f" SUM(t.{a_column}) * 1.0 / {length} AS ra, SUM(t.{b_column}) * 1.0 / {length} AS rb {from_where} GROUP BY k, (t.{column} - ?) / {length}"
+        )
+        params += [start, step, *part_params, start]
+    union = " UNION ALL ".join(selects)
+    for bucket, a, b, rate_a, rate_b in con.execute(f"SELECT k, SUM(a), SUM(b), MAX(ra), MAX(rb) FROM ({union}) GROUP BY k ORDER BY k", params):
+        result["buckets"].append([start + bucket * step, a, b, rate_a, rate_b])
     return result
 
 
-def describe(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
+def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
     """the sources, their dimensions and the time each covers"""
     sources = {}
     for name, source in SOURCES.items():
@@ -374,7 +409,7 @@ def describe(con: sqlite3.Connection, request: dict, ephemeral: int) -> dict:
     return {"now": int(time.time()), "sources": sources}
 
 
-OPS: dict[str, Callable[[sqlite3.Connection, dict, int], dict]] = {"describe": describe, "aggregate": aggregate, "timeline": timeline}
+OPS: dict[str, Callable[[sqlite3.Connection, dict, Settings], dict]] = {"describe": describe, "aggregate": aggregate, "timeline": timeline}
 
 
 def open_database(db_path: Path) -> sqlite3.Connection:
@@ -394,9 +429,16 @@ def open_database(db_path: Path) -> sqlite3.Connection:
 
 
 class QueryServer:
-    def __init__(self, db_path: Path = DB_PATH, ephemeral: int | None = None) -> None:
+    def __init__(self, db_path: Path = DB_PATH, ephemeral: int | None = None, write_window: int | None = None, rollup_period: int | None = None) -> None:
         self.db_path = db_path
-        self.ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
+        # the daemon's config, which the database was written with; a change of it applies to the
+        # history from then on, and the peaks of older history take the current values
+        database = load_config().database if write_window is None or rollup_period is None else None
+        self.settings = Settings(
+            ephemeral_port_start() if ephemeral is None else ephemeral,
+            database.write_limit_seconds if write_window is None else write_window,
+            database.rollup_period_minutes * 60 if rollup_period is None else rollup_period,
+        )
         self._lock = threading.Lock()
         self._clients = 0
 
@@ -413,7 +455,7 @@ class QueryServer:
         deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
         con.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
         try:
-            return {"ok": True, **op(con, request, self.ephemeral)}
+            return {"ok": True, **op(con, request, self.settings)}
         except RequestError as e:
             return {"ok": False, "error": str(e)}
         except sqlite3.Error as e:

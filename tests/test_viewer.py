@@ -16,7 +16,8 @@ pytest.importorskip("textual")
 
 from tcoda.dialogs import SettingsDialog  # noqa: E402
 from tcoda.settings import config, configure  # noqa: E402
-from test_query_server import P0, VPN, H, _db  # noqa: E402
+from test_query_server import VPN, _db  # noqa: E402
+from textual.content import Content  # noqa: E402
 from textual.widgets import DataTable, TabbedContent, TabPane, Tabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
@@ -25,7 +26,7 @@ from tracct.viewer.app import TimeRange, ViewerApp  # noqa: E402
 from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
-from tracct.viewer.timeline import Timeline  # noqa: E402
+from tracct.viewer.plot import ALL_ROWS, BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +121,20 @@ def test_bucket_step():
     assert bucket_step(10**12, 100) == 365 * 86400
 
 
+def test_plot_axes():
+    axis = TimeAxis()
+    axis.columns = 100
+    # a day in round hours, its midnight named by its date
+    ticks = axis.get_ticks(0, 86400)
+    assert ticks == [k * 6 * 3600.0 for k in range(5)]
+    assert axis.get_labels_for_ticks(ticks) == ["Jan 01", "06:00", "12:00", "18:00", "Jan 02"]
+    rates = RateAxis()
+    rates.rows = 10
+    ticks = rates.get_ticks(0, 7000)
+    assert ticks == [0.0, 2000.0, 4000.0, 6000.0]
+    assert rates.get_labels_for_ticks(ticks) == ["0", "2.0 kB/s", "4.0 kB/s", "6.0 kB/s"]
+
+
 async def _until(pilot, condition, timeout=10.0):
     deadline = time.monotonic() + timeout
     while not condition():
@@ -130,7 +145,7 @@ async def _until(pilot, condition, timeout=10.0):
 def _server(tmp_path):
     db = _db(tmp_path)
     listener, _ = query_server.listening_socket(tmp_path / "query.sock")
-    threading.Thread(target=query_server.QueryServer(db, ephemeral=32768).serve, args=(listener, None), daemon=True).start()
+    threading.Thread(target=query_server.QueryServer(db, ephemeral=32768, write_window=10, rollup_period=3600).serve, args=(listener, None), daemon=True).start()
     return listener
 
 
@@ -152,10 +167,10 @@ def test_history_drill_down(tmp_path):
             assert app.query_one(TabbedContent).active == "processes"
             assert _values(processes) == ["/usr/bin/curl", "/usr/sbin/nginx"]
             assert processes.result["totals"] == [1111 + 5300, 11022 + 530]
-            # the timeline follows the highlighted row
-            timeline = processes.query_one(Timeline)
-            await _until(pilot, lambda: "curl" in timeline.subject)
-            assert sum(a for a, _ in timeline.values.values()) == 1111
+            # the plot follows the highlighted row
+            plot = processes.query_one(TrafficPlot)
+            await _until(pilot, lambda: "curl" in plot.subject)
+            assert sum(a for a, _ in plot.values.values()) == 1111
             # Enter keeps the highlighted row, e excludes it, Backspace pops the filter
             processes.query_one(DataTable).focus()
             await pilot.press("down", "enter")
@@ -184,18 +199,63 @@ def test_history_drill_down(tmp_path):
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(interfaces.result))
             assert _values(interfaces) == ["host/eth0", f"{VPN}/tun0"]
-            # zooming into the timeline's busiest bucket narrows every tab to it
-            timeline = interfaces.query_one(Timeline)
-            await _until(pilot, lambda: bool(timeline.values))
-            timeline.focus()
-            await pilot.press("enter")
-            await _until(pilot, lambda: bool(app.time_range.zooms))
-            start, end = app.time_range.zooms[-1]
-            assert start <= P0 + H < end
-            await pilot.press("z")
-            await _until(pilot, lambda: not app.time_range.zooms)
+            # zooming the plot narrows every tab to what it shows; r and z return to the span
+            plot = interfaces.query_one(TrafficPlot)
+            await _until(pilot, lambda: bool(plot.values))
+            start, end = interfaces.bounds()
+            plot.focus()
+            for key in ("r", "z"):
+                await pilot.press("plus")
+                await _until(pilot, lambda: bool(app.time_range.zooms))
+                zoomed_start, zoomed_end = app.time_range.zooms[-1]
+                assert start <= zoomed_start < zoomed_end <= end and zoomed_end - zoomed_start < end - start
+                await _until(pilot, lambda: plot.start == zoomed_start)
+                await pilot.press(key)
+                await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
             await pilot.press("u")
             assert app.unit == "B"
+
+    try:
+        asyncio.run(drive())
+    finally:
+        listener.close()
+
+
+def test_plot_title_and_busy(tmp_path):
+    listener = _server(tmp_path)
+    slow = threading.Event()
+
+    async def drive():
+        app = ViewerApp(tmp_path / "events.sock", tmp_path / "query.sock", "interfaces")
+        app.time_range = TimeRange(0)
+        ask = app.ask
+
+        def delayed(op, **params):
+            if slow.is_set():
+                time.sleep(1.0)
+            return ask(op, **params)
+
+        app.ask = delayed
+        async with app.run_test(size=(140, 45)) as pilot:
+            pane = app.query_one("#interfaces HistoryPane", HistoryPane)
+            plot = pane.query_one(TrafficPlot)
+            shown = []
+            set_busy = plot.set_busy
+            plot.set_busy = lambda busy: (shown.append(busy), set_busy(busy))
+            await _until(pilot, lambda: bool(plot.values) and not pane._fetching)
+            # answers within milliseconds never show the glyph
+            assert True not in shown and BUSY not in _title(plot)
+            # the highlighted row is in the table; the title only has the key and the rate
+            assert _title(plot) == "━━ sent ━━ received · peak 10 s rate"
+            # a slow answer shows it until the rows and the plot are both in
+            slow.set()
+            app.action_refresh()
+            await _until(pilot, lambda: plot.busy and _title(plot).endswith(f" · {BUSY}"))
+            slow.clear()
+            await _until(pilot, lambda: not plot.busy and BUSY not in _title(plot))
+            # the plot of all rows says so, as no row in the table stands for it
+            await pilot.press("a")
+            await _until(pilot, lambda: _title(plot).startswith(f"{ALL_ROWS} · "))
 
     try:
         asyncio.run(drive())
@@ -280,6 +340,11 @@ def test_live_tab(tmp_path, monkeypatch):
 
 def _keys(table: DataTable) -> list[str]:
     return [row.key.value for row in table.ordered_rows]
+
+
+def _title(plot: TrafficPlot) -> str:
+    """the plot's title as shown: Textual keeps it as markup"""
+    return Content.from_markup(plot.border_title).plain
 
 
 def test_live_limits(tmp_path, monkeypatch):

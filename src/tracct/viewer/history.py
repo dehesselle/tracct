@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: 0BSD
 
 """a history tab: one source of the query server, grouped by one dimension, narrowed by a stack
-of filters, over the viewer's time range, with the timeline of the highlighted row"""
+of filters, over the viewer's time range, with the plot of the highlighted row"""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from textual.worker import get_current_worker
 
 from tracct.query import QueryError
 from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, display, moment, value_cell
-from tracct.viewer.timeline import Timeline
+from tracct.viewer.plot import ALL_ROWS, TrafficPlot
 
 if TYPE_CHECKING:
     from tracct.viewer.app import ViewerApp
@@ -32,6 +32,12 @@ TIMELINE_DELAY = 0.25
 # timeline bucket lengths; none is shorter than the default write window, whose rows would
 # otherwise leave every other bucket empty
 BUCKET_STEPS = (10, 30, 60, 120, 300, 600, 900, 1800, 3600, 3 * 3600, 6 * 3600, 12 * 3600, 86400, 7 * 86400, 30 * 86400, 365 * 86400)
+# the stretch, in seconds, whose highest rate a plot's point shows; the default write window,
+# which the query server lengthens it to if the daemon writes less often
+PEAK_SECONDS = 10
+# how long a fetch has to take before the plot's title says so; most answer within
+# milliseconds, and the glyph would flicker on every refresh
+BUSY_DELAY = 0.3
 
 
 def bucket_step(span: int, columns: int) -> int:
@@ -59,7 +65,7 @@ class HistoryPane(Vertical):
         Binding("r", "app.refresh", "refresh"),
         Binding("e", "filter(True)", "exclude row"),
         Binding("backspace", "pop_filter", "pop filter"),
-        Binding("a", "toggle_subject", "timeline of all rows"),
+        Binding("a", "toggle_subject", "plot of all rows"),
     ]
 
     def __init__(self, source: str, *, id: str | None = None) -> None:
@@ -76,6 +82,11 @@ class HistoryPane(Vertical):
         self.all_rows = False
         self.error = ""
         self._timeline_timer = None
+        # the row the plot was last asked for, so refilling the table does not ask again
+        self._plot_subject: tuple[str, object] | None = None
+        # what is being fetched, "rows" and "plot", and the timer that then marks the plot busy
+        self._fetching: set[str] = set()
+        self._busy_timer = None
         self._configured = False
 
     @property
@@ -88,7 +99,7 @@ class HistoryPane(Vertical):
         with Horizontal():
             yield OptionList(id="dimensions")
             with Vertical():
-                yield Timeline()
+                yield TrafficPlot()
                 yield DataTable(cursor_type="row", zebra_stripes=True)
         yield Static(classes="status")
 
@@ -123,6 +134,7 @@ class HistoryPane(Vertical):
         if not self.info:
             return
         start, end = self.bounds()
+        self.fetching("rows", True)
         self._load(start, end, list(self.filters), self.group_by)
 
     @work(thread=True, exclusive=True, group="history-table")
@@ -139,38 +151,67 @@ class HistoryPane(Vertical):
 
     def load_timeline(self) -> None:
         if not self.info:
+            self.fetching("plot", False)
             return
+        self.fetching("plot", True)
         start, end = self.bounds()
-        timeline = self.query_one(Timeline)
-        step = bucket_step(end - start, max(10, timeline.content_size.width or 80))
+        step = bucket_step(end - start, self.query_one(TrafficPlot).points())
         # buckets on whole steps of local time, so their times read well
+        origin = start
         if step <= 86400:
-            start -= (start + time.localtime(start).tm_gmtoff) % step
-        subject = self.subject()
+            origin -= (start + time.localtime(start).tm_gmtoff) % step
+        subject = self._plot_subject = self.subject()
         filters = [list(f) for f in self.filters] + ([[subject[0], subject[1], False]] if subject else [])
-        label = f"{self.labels().get(subject[0], subject[0])} = {display(*subject)}" if subject else "all rows"
-        self._load_timeline(start, end, step, filters, label)
+        label = f"{self.labels().get(subject[0], subject[0])} = {display(*subject)}" if subject else ALL_ROWS
+        self._load_timeline(start, end, origin, step, filters, label)
 
     @work(thread=True, exclusive=True, group="history-timeline")
-    def _load_timeline(self, start: int, end: int, step: int, filters: list, label: str) -> None:
+    def _load_timeline(self, start: int, end: int, origin: int, step: int, filters: list, label: str) -> None:
         worker = get_current_worker()
         try:
-            result = self.viewer.ask("timeline", source=self.source, filters=filters, start=start, end=end, step=step)
+            result = self.viewer.ask("timeline", source=self.source, filters=filters, start=origin, end=end, step=step, peak=PEAK_SECONDS)
         except QueryError as e:
             if not worker.is_cancelled:
                 self.app.call_from_thread(self.show_error, str(e))
             return
         if not worker.is_cancelled:
-            self.app.call_from_thread(self.query_one(Timeline).show, start, end, step, result["split"], result["buckets"], label)
+            labels = tuple(self.info.get("values", ["sent", "received"]))
+            self.app.call_from_thread(self.show_timeline, start, end, origin, step, result, label, labels)
 
     def schedule_timeline(self) -> None:
         if self._timeline_timer is not None:
             self._timeline_timer.stop()
         self._timeline_timer = self.set_timer(TIMELINE_DELAY, self.load_timeline)
 
+    def fetching(self, what: str, active: bool) -> None:
+        """the plot's title says the tab is updating while its rows or its plot are being fetched,
+        from BUSY_DELAY on; until the rows are in, the plot waits to be fetched after them"""
+        if active:
+            self._fetching.add(what)
+        else:
+            self._fetching.discard(what)
+        if self._fetching and self._busy_timer is None:
+            self._busy_timer = self.set_timer(BUSY_DELAY, self._show_busy)
+        elif not self._fetching:
+            if self._busy_timer is not None:
+                self._busy_timer.stop()
+                self._busy_timer = None
+            self.query_one(TrafficPlot).set_busy(False)
+
+    def _show_busy(self) -> None:
+        self._busy_timer = None
+        if self._fetching:
+            self.query_one(TrafficPlot).set_busy(True)
+
     # ── showing results ─────────────────────────────────────────────
 
+    def show_timeline(self, start: int, end: int, origin: int, step: int, result: dict, label: str, labels: tuple[str, str]) -> None:
+        self.fetching("plot", False)
+        self.query_one(TrafficPlot).show(start, end, origin, step, result["peak"], result["split"], result["buckets"], label, labels)
+
     def show_error(self, message: str) -> None:
+        self.fetching("rows", False)
+        self.fetching("plot", False)
         self.error = message
         status = self.query_one(".status", Static)
         status.add_class("-error")
@@ -180,7 +221,10 @@ class HistoryPane(Vertical):
         self.result = result
         self.rows = result["rows"]
         self.render_rows()
-        self.schedule_timeline()
+        # at once: the rows that came in are the plot's too, and the highlight has not moved
+        self.load_timeline()
+        # after the plot is asked for, so the title does not drop the glyph in between
+        self.fetching("rows", False)
 
     def render_rows(self) -> None:
         table = self.query_one(DataTable)
@@ -246,14 +290,19 @@ class HistoryPane(Vertical):
             self.reload()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if not self.all_rows:
+        # refilling the table highlights the row again; only another row needs another plot
+        if not self.all_rows and self.subject() != self._plot_subject:
             self.schedule_timeline()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_filter(False)
 
-    def on_timeline_zoom(self, event: Timeline.Zoom) -> None:
-        self.viewer.zoom(event.start, event.end)
+    def on_traffic_plot_viewed(self, event: TrafficPlot.Viewed) -> None:
+        # exactly what the plot shows, empty time included: the plot keeps its own limits
+        self.viewer.view(event.start, event.end)
+
+    def on_traffic_plot_reset(self, event: TrafficPlot.Reset) -> None:
+        self.viewer.reset_view()
 
     def action_filter(self, exclude: bool) -> None:
         subject = self.subject() if not self.all_rows else None

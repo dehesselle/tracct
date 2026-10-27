@@ -256,7 +256,12 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
 The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
 source (connections, interfaces or forwarded flows) grouped by one dimension, narrowed by a
 list of include and exclude filters and a time range, and the same sums per time bucket for a
-timeline. The dimensions are a fixed table mapped to SQL in `query_server.py`; values are
+timeline. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
+given length within it, never shorter than a write window, whose rows share one `contime`; a
+rollup counts as one stretch of its period. A wide bucket averages a short spike away, its
+peak does not. The write window and the period come from the daemon's config, so after a
+change of either the peaks of older history are reckoned with the new lengths. The
+dimensions are a fixed table mapped to SQL in `query_server.py`; values are
 bound, so a request carries no SQL. Each part of a request groups by the lookup ids and
 filters by id sets, so the `(exe_id, contime)` indexes serve a drill-down; the text is looked
 up once per group. Requests are bounded in size, filters, rows, buckets, response bytes, run
@@ -271,11 +276,14 @@ the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
 
 `tracct view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
-and a history tab per source with one time range shared between them. A tab's timeline shows
-the highlighted row rather than the sum of all rows, so layers or interfaces are not added
-up unless asked for; choosing a bucket narrows the range to it, which every tab then shows.
-The viewer imports only `live_feed`, `query` and `utils`; it reaches the daemon through the
-two sockets alone.
+and a history tab per source with one time range shared between them. A tab's plot
+(textual-plot) shows the highlighted row rather than the sum of all rows, so layers or
+interfaces are not added up unless asked for, and it draws peaks, not averages. Its time
+axis is the shared range: what it shows after zooming or panning comes to rest is exactly
+the range every tab then asks for, empty time included, and the plot's own limits (a minute
+to ten years, nothing before 1970) keep it within what the query server answers. The viewer
+imports only `live_feed`, `query` and `utils`; it reaches the daemon through the two sockets
+alone.
 
 ## Relationship to picosnitch
 

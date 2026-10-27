@@ -70,8 +70,8 @@ def _db(tmp_path):
     return db
 
 
-def _ask(db, op, **request):
-    response = query_server.QueryServer(db, ephemeral=EPHEMERAL).answer({"op": op, **request})
+def _ask(db, op, write_window=10, **request):
+    response = query_server.QueryServer(db, ephemeral=EPHEMERAL, write_window=write_window, rollup_period=H).answer({"op": op, **request})
     assert response["ok"], response.get("error")
     return response
 
@@ -155,6 +155,26 @@ def test_timeline(tmp_path):
     assert response["buckets"] == [[P0 + H, 5000, 500], [P0 + 3 * H, 300, 30]]
     with pytest.raises(AssertionError, match="buckets"):
         _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=1)
+
+
+def test_timeline_peaks(tmp_path):
+    db = _db(tmp_path)
+    response = _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=10)
+    assert response["peak"] == 10
+    # a rollup is one stretch as long as its period; raw rows are per stretch of 10 s, so the
+    # last hour's two windows, 10 s apart, peak at the larger one
+    assert response["buckets"] == [
+        [P0, 1000, 10000, pytest.approx(1000 / H), pytest.approx(10000 / H)],
+        [P0 + H, 5100, 1500, pytest.approx(5100 / H), pytest.approx(1500 / H)],
+        [P0 + 2 * H, 1, 2, pytest.approx(0.1), pytest.approx(0.2)],
+        [P0 + 3 * H, 310, 50, pytest.approx(30.0), pytest.approx(3.0)],
+    ]
+    # a stretch is never shorter than a write window: one of 30 s holds both windows
+    response = _ask(db, "timeline", write_window=30, source="connections", start=P0 + 3 * H, end=P0 + 4 * H, step=H, peak=10)
+    assert response["peak"] == 30 and response["buckets"] == [[P0 + 3 * H, 310, 50, pytest.approx(310 / 30), pytest.approx(50 / 30)]]
+    # a stretch longer than the bucket says nothing about it
+    with pytest.raises(AssertionError, match="peak"):
+        _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=2 * H)
 
 
 def test_describe(tmp_path):
