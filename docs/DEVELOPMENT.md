@@ -1,7 +1,7 @@
 # Development
 
-This document covers the code layout, building, the checks, licensing, the tests and the
-benchmark.
+This document covers the code layout, building, the checks, licensing, the tests,
+releasing and the benchmark.
 
 ## Layout
 
@@ -115,8 +115,15 @@ in `pyproject.toml`).
   `test_viewer.py` the Textual viewer headless against both sockets (skipped without
   Textual), `test_install.py` `install` into a scratch root. These run unprivileged.
 
-CI (`.github/workflows/ci.yml`) runs the checks, builds the sdist and x86_64 and aarch64
-wheels, and runs the tests as root from the wheels on Python 3.12 to 3.14.
+CI (`.github/workflows/build.yml`) runs the checks, builds the sdist and, with the BPF
+object, the x86_64 and aarch64 wheels, and runs the tests as root from the wheels on Python
+3.12 to 3.14.
+
+## Releasing
+
+Pushing a tag `v<version>` runs the same workflow, which checks that the wheels carry that
+version and then creates a draft GitHub release with the sdist and both wheels attached,
+which the README's install uses. Look it over and publish it.
 
 ## Comparing with picosnitch
 

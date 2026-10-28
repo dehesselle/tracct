@@ -13,16 +13,19 @@ terminal viewer shows live and recorded traffic.
 ## Install
 
 You need a kernel with BTF (`/sys/kernel/btf/vmlinux`), Python 3.12 or newer,
-[uv](https://docs.astral.sh/uv/), `clang` and `libbpf-dev` to build, and `libbpf1` to run.
-As root, from a git checkout (the version is taken from its tags):
+[uv](https://docs.astral.sh/uv/) and `libbpf1`. As root, with the wheel for your
+architecture (x86_64 or aarch64) from a [release](https://github.com/dehesselle/tracct/releases):
 
 ```sh
 uv venv /opt/tracct
-VIRTUAL_ENV=/opt/tracct uv pip install '.[viewer]'
+VIRTUAL_ENV=/opt/tracct uv pip install 'tracct[viewer] @ https://github.com/dehesselle/tracct/releases/download/v<version>/<wheel>'
 /opt/tracct/bin/tracct install
 systemd-sysusers
 systemctl daemon-reload && systemctl enable --now tracct tracct-query.socket
 ```
+
+To build from a git checkout instead, which also needs `clang` and `libbpf-dev`, install
+`'.[viewer]'` in its place.
 
 `tracct install` writes the systemd units, the sysusers file and the base configuration,
 and prints what went where; it replaces nothing without `-f`, and without permission it

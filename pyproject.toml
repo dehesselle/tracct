@@ -80,7 +80,7 @@ dev = [
 [tool.ruff]
 # Ruff comes from outside the project, and its defaults change between minor
 # releases; bump this once a new minor's findings have been reviewed, together
-# with the pin in .github/workflows/ci.yml.
+# with the pin in .github/workflows/build.yml.
 required-version = "~=0.16.0"
 target-version = "py312"
 exclude = [".venv", "build", "dist"]
