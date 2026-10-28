@@ -19,7 +19,7 @@ FIND_PLACEHOLDER = "find in the rows shown (Enter keeps it, Escape clears)"
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")
 _FACTORS = {"kB": 10**3, "MB": 10**6, "GB": 10**9}
 PROTOCOLS = {0: "", 1: "icmp", 2: "igmp", 6: "tcp", 17: "udp", 33: "dccp", 47: "gre", 50: "esp", 58: "icmpv6", 132: "sctp", 136: "udplite"}
-# the history spans `t` cycles through, in seconds; 0 is all of it
+# the history spans `s` picks from, in seconds; 0 is all of it
 SPANS = (
     ("all", 0),
     ("1 minute", 60),

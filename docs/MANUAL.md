@@ -64,8 +64,8 @@ shows a bucket's bytes and peaks in the bottom border.
 
 The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
 dragging or `←` and `→` pan, and a moment after the plot comes to rest the tables follow.
-`z` returns to the span. `t` picks the span (last hour, last day, ...) from a list, typing
-narrows it, and spans past the oldest data say so; `Shift+←` and
+`s` picks the span (last hour, last day, ...) from a list, where spans past the oldest data
+say so; after a zoom, `s` pressed again in the list returns to the span; `Shift+←` and
 `Shift+→` step back and forward by a whole span of local time (with "1 day", yesterday from
 midnight to midnight), `u` cycles the byte units, `/` finds text in the rows shown (on every
 tab; `c` clears it), `r` refreshes. A range that ends now refreshes every 10 seconds. While a

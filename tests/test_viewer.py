@@ -77,11 +77,11 @@ def test_tab_keys(tmp_path):
             await pilot.press("p")
             assert tabs.active == "processes"
             # the time range and units belong to the history tabs only
-            await _until(pilot, lambda: {"t", "shift+left", "shift+right", "z", "u"} <= set(app.screen.active_bindings))
+            await _until(pilot, lambda: {"s", "shift+left", "shift+right", "u"} <= set(app.screen.active_bindings))
             for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
                 await pilot.press(key)
                 assert tabs.active == tab
-            await _until(pilot, lambda: not {"t", "shift+left", "shift+right", "z", "u"} & set(app.screen.active_bindings))
+            await _until(pilot, lambda: not {"s", "shift+left", "shift+right", "u"} & set(app.screen.active_bindings))
             await pilot.press("u")
             assert app.unit == "auto"
 
@@ -93,23 +93,31 @@ def test_span_picker(tmp_path):
         app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
         app.time_range.zooms.append((5, 10))
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("t")
+            await pilot.press("s")
             await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
             picker = app.screen
             options = picker.query_one("#picker-results")
-            # shortest first, the whole history last, opened on the current span
+            # shortest first, the whole history last, opened on the current span, which s returns
+            # to while zoomed
             assert [span_label(i) for i in picker._shown][:2] == ["1 minute", "5 minutes"] and span_label(picker._shown[-1]) == "all history"
             assert picker._shown[options.highlighted] == app.time_range.span
-            assert str(options.get_option_at_index(options.highlighted).prompt).endswith("(current)")
+            assert str(options.get_option_at_index(options.highlighted).prompt).rstrip().endswith("(current)  (press s to select)")
             # Escape changes nothing
             await pilot.press("escape")
             await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
             assert app.time_range.zooms == [(5, 10)]
-            # typing narrows the list, Enter takes the first match, which ends the zoom
-            await pilot.press("t", "7")
-            await _until(pilot, lambda: isinstance(app.screen, SpanPicker) and [span_label(i) for i in app.screen._shown] == ["7 days"])
-            await pilot.press("enter")
-            await _until(pilot, lambda: span_label(app.time_range.span) == "7 days" and not app.time_range.zooms)
+            # Enter takes the highlighted span, which ends the zoom
+            span = app.time_range.span
+            await pilot.press("s", "down", "enter")
+            await _until(pilot, lambda: app.time_range.span != span and not app.time_range.zooms)
+            # without a zoom, s in the picker has nothing to return to: no hint, and it stays open
+            await pilot.press("s")
+            await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
+            options = app.screen.query_one("#picker-results")
+            assert "press s" not in str(options.get_option_at_index(options.highlighted).prompt)
+            await pilot.press("s")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, SpanPicker)
 
     asyncio.run(drive())
 
@@ -278,7 +286,7 @@ def test_history_drill_down(tmp_path):
             start, end = interfaces.bounds()
             plot.focus()
             # the plot keeps only its time keys; up and down do not move it, r refreshes as anywhere
-            await _until(pilot, lambda: {"plus", "minus", "left", "right", "r", "z"} <= set(app.screen.active_bindings))
+            await _until(pilot, lambda: {"plus", "minus", "left", "right", "r", "s"} <= set(app.screen.active_bindings))
             assert app.screen.active_bindings["r"][1].action == "app.refresh"
             assert not {"up", "down", "ctrl+equals_sign", "ctrl+shift+minus"} & set(app.screen.active_bindings)
             await pilot.press("plus")
@@ -289,7 +297,8 @@ def test_history_drill_down(tmp_path):
             await pilot.press("r")
             await pilot.pause(0.3)
             assert app.time_range.zooms == [(zoomed_start, zoomed_end)]
-            await pilot.press("z")
+            # s twice: the picker, then back from the zoom to the span
+            await pilot.press("s", "s")
             await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
             await pilot.press("u")
             assert app.unit == "B"

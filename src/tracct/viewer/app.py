@@ -25,7 +25,7 @@ from tracct.viewer.format import BYTE_UNITS, SPANS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
 from tracct.viewer.plot import TrafficPlot
-from tracct.viewer.span_picker import SpanPicker
+from tracct.viewer.span_picker import TO_SPAN, SpanPicker
 
 # a range that ends now is asked again this often while its tab is shown
 REFRESH_SECONDS = 10.0
@@ -203,9 +203,14 @@ class ViewerApp(ChordMixin, App):
         pane = self.active_history()
         oldest = pane.info.get("oldest") if pane is not None else None
         covered = int(time.time()) - oldest if oldest else None
-        self.push_screen(SpanPicker(self.time_range.span, covered), self._span_picked)
+        self.push_screen(SpanPicker(self.time_range.span, covered, bool(self.time_range.zooms)), self._span_picked)
 
     def _span_picked(self, span: int | None) -> None:
+        if span == TO_SPAN:
+            # back from the zoom to the span, stepped back as it was
+            self.time_range.zooms.clear()
+            self.reload_active()
+            return
         # the span picked again still ends a step back or a zoom, as it did when cycled to
         if span is None or (span == self.time_range.span and self.time_range.ends_now()):
             return
@@ -216,16 +221,11 @@ class ViewerApp(ChordMixin, App):
 
     def action_earlier(self, delta: int) -> None:
         if SPANS[self.time_range.span][1] == 0:
-            self.notify("pick a span with t first; all history has no earlier or later", timeout=3)
+            self.notify("pick a span with s first; all history has no earlier or later", timeout=3)
             return
         self.time_range.zooms.clear()
         self.time_range.back = max(0, self.time_range.back + delta)
         self.reload_active()
-
-    def action_reset_zoom(self) -> None:
-        if self.time_range.zooms:
-            self.time_range.zooms.clear()
-            self.reload_active()
 
     def action_units(self) -> None:
         self.unit = BYTE_UNITS[(BYTE_UNITS.index(self.unit) + 1) % len(BYTE_UNITS)]

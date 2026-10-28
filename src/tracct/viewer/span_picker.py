@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: 0BSD
 
 """the span of the history tabs, picked from a list rather than cycled through, so a choice is
-one reload and not one per span passed on the way; laid out like nivaria's PickerDialog, until
-a picker moves to tcoda"""
+one reload and not one per span passed on the way; s again returns from a zoom to the span, as
+snakecam's f toggles its filter"""
 
 from __future__ import annotations
 
@@ -15,10 +15,13 @@ from tcoda.dialogs import Dialog
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.widgets import Input, Label, OptionList
+from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
 
 from tracct.viewer.format import SPANS
+
+# what the picker dismisses with for s: back from the zoom to the span, as it was stepped back
+TO_SPAN = -1
 
 
 def span_label(index: int) -> str:
@@ -27,68 +30,49 @@ def span_label(index: int) -> str:
 
 
 class SpanPicker(Dialog[int]):
-    """pick an index of SPANS, or dismiss with None"""
+    """pick an index of SPANS, return to the span from a zoom with TO_SPAN, or dismiss with None"""
 
     DEFAULT_CSS = """
-    SpanPicker > #dialog { width: 40; max-height: 80%; }
-    SpanPicker #picker-query { margin: 1 0; }
-    SpanPicker #picker-results { height: auto; max-height: 20; }
+    SpanPicker > #dialog { width: 64; max-height: 80%; }
+    SpanPicker #picker-results { height: auto; max-height: 20; margin-top: 1; }
     """
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("down", "to_list", show=False),
-        Binding("enter", "choose", show=False),
+        Binding("s", "to_span", "back to span"),
     ]
+    HINT: ClassVar[str] = "(press s to select)"
 
-    def __init__(self, current: int, covered: int | None) -> None:
+    def __init__(self, current: int, covered: int | None, zoomed: bool) -> None:
         """covered is how many seconds of history there are, None if not known"""
         super().__init__()
         self._current = current
         self._covered = covered
+        self._zoomed = zoomed
         # shortest first, the whole history last
-        self._order = sorted(range(len(SPANS)), key=lambda i: SPANS[i][1] or float("inf"))
-        self._shown: list[int] = []
+        self._shown = sorted(range(len(SPANS)), key=lambda i: SPANS[i][1] or float("inf"))
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("Span", id="title")
-            yield Input(placeholder="type to filter", id="picker-query")
-            yield OptionList(id="picker-results")
+            yield OptionList(*[Option(self._text(i)) for i in self._shown], id="picker-results")
 
     def on_mount(self) -> None:
-        self._refresh("")
-        self.query_one("#picker-query", Input).focus()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        event.stop()
-        self._refresh(event.value)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        event.stop()
-        self.action_choose()
+        options = self.query_one("#picker-results", OptionList)
+        options.highlighted = self._shown.index(self._current)
+        options.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
         self.dismiss(self._shown[event.option_index])
 
-    def action_to_list(self) -> None:
-        if self._shown:
-            self.query_one("#picker-results", OptionList).focus()
-
-    def action_choose(self) -> None:
-        if self._shown:
-            self.dismiss(self._shown[self.query_one("#picker-results", OptionList).highlighted or 0])
-
-    def _refresh(self, needle: str) -> None:
-        self._shown = [i for i in self._order if needle.lower() in span_label(i)]
-        options = self.query_one("#picker-results", OptionList)
-        options.clear_options()
-        options.add_options([Option(self._text(i)) for i in self._shown])
-        if self._shown:
-            # on the current span while nothing is typed, else on the first match
-            options.highlighted = self._shown.index(self._current) if not needle and self._current in self._shown else 0
+    def action_to_span(self) -> None:
+        # without a zoom the span is shown already; the picker stays open
+        if self._zoomed:
+            self.dismiss(TO_SPAN)
 
     def _text(self, index: int) -> Text:
-        text = Text(span_label(index))
+        column = max(len(span_label(i)) for i in self._shown) + 3
+        label = span_label(index)
+        text = Text(label + " " * (column - len(label)))
         notes = []
         seconds = SPANS[index][1]
         # a span longer than the history shows all of it, as the whole history does
@@ -96,6 +80,7 @@ class SpanPicker(Dialog[int]):
             notes.append("all of it")
         if index == self._current:
             notes.append("(current)")
-        if notes:
-            text.append(f"  {'  '.join(notes)}", style="dim")
+        text.append("  ".join(notes), style="dim")
+        if index == self._current and self._zoomed:
+            text.append(f"  {self.HINT}", style="italic")
         return text

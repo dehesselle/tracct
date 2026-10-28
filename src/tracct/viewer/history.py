@@ -62,12 +62,12 @@ class HistoryPane(Vertical):
     """
     BINDINGS = [
         # the time range and units are the app's, shared by the history tabs
-        Binding("t", "app.span", "span"),
-        # by a whole span of local time, next to t that picks its length; the range is the tab's,
+        # the picker's s again returns from a zoom to the span
+        Binding("s", "app.span", "span"),
+        # by a whole span of local time, next to s that picks its length; the range is the tab's,
         # not only the plot's, whose arrows pan by a few columns
         Binding("shift+left", "app.earlier(1)", "previous span", key_display="⇧←", group=Binding.Group("step span")),
         Binding("shift+right", "app.earlier(-1)", "next span", key_display="⇧→", group=Binding.Group("step span")),
-        Binding("z", "app.reset_zoom", "reset zoom"),
         Binding("u", "app.units", "units"),
         Binding("r", "app.refresh", "refresh"),
         # the drill-down: a filter on the highlighted row's value stays when the dimension on the
