@@ -75,7 +75,8 @@ def recv_message(sock: socket.socket, max_bytes: int) -> dict | None:
         raise ConnectionError("connection closed inside a message")
     message = json.loads(data.decode("utf-8", "replace"))
     if not isinstance(message, dict):
-        raise ValueError("message is not a JSON object")
+        # A malformed message, which the callers handle with the other ValueErrors.
+        raise ValueError("message is not a JSON object")  # noqa: TRY004
     return message
 
 

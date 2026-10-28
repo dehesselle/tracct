@@ -54,16 +54,20 @@ NO_INTERFACE = (0, "", "")
 #: as 0 so a server's rollup does not grow with its clients), and the period's bounds.
 ROLLUPS = (
     # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
-    "INSERT INTO connections_rollup SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
-    " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
-    " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
-    " domain_id, netns, iface_id, SUM(send), SUM(recv), SUM(events), COUNT(*)"
-    " FROM connections WHERE contime >= :start AND contime < :end"
-    " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns, iface_id",
+    (
+        "INSERT INTO connections_rollup SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
+        " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
+        " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
+        " domain_id, netns, iface_id, SUM(send), SUM(recv), SUM(events), COUNT(*)"
+        " FROM connections WHERE contime >= :start AND contime < :end"
+        " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns, iface_id"
+    ),
     "INSERT INTO interface_traffic_rollup SELECT :period, iface_id, SUM(rx), SUM(tx) FROM interface_traffic WHERE contime >= :start AND contime < :end GROUP BY iface_id",
-    "INSERT INTO forwarded_rollup SELECT :period, netns, protocol, src_id, CASE WHEN dport < :ephemeral THEN dport ELSE 0 END AS dp, domain_id,"
-    " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*)"
-    " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns, protocol, src_id, dp, domain_id",
+    (
+        "INSERT INTO forwarded_rollup SELECT :period, netns, protocol, src_id, CASE WHEN dport < :ephemeral THEN dport ELSE 0 END AS dp, domain_id,"
+        " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*)"
+        " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns, protocol, src_id, dp, domain_id"
+    ),
 )
 #: The tables purged past the raw and the rollup retention, with their time column.
 RAW_TABLES = (
@@ -79,18 +83,28 @@ ROLLUP_TABLES = (
 #: Lookup entries nothing refers to, one transaction each; executables uses the exe_id
 #: and pexe_id indexes, the others scan the tables referring to them.
 ORPHAN_DELETES = (
-    "DELETE FROM executables WHERE id != 0"
-    " AND NOT EXISTS (SELECT 1 FROM connections WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections WHERE pexe_id = executables.id)"
-    " AND NOT EXISTS (SELECT 1 FROM connections_rollup WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections_rollup WHERE pexe_id = executables.id)",
+    (
+        "DELETE FROM executables WHERE id != 0"
+        " AND NOT EXISTS (SELECT 1 FROM connections WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections WHERE pexe_id = executables.id)"
+        " AND NOT EXISTS (SELECT 1 FROM connections_rollup WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections_rollup WHERE pexe_id = executables.id)"
+    ),
     "DELETE FROM units WHERE id != 0 AND id NOT IN (SELECT unit_id FROM connections UNION SELECT unit_id FROM connections_rollup)",
-    "DELETE FROM domains WHERE id != 0 AND id NOT IN"
-    " (SELECT domain_id FROM connections UNION SELECT domain_id FROM connections_rollup UNION SELECT domain_id FROM forwarded UNION SELECT domain_id FROM forwarded_rollup)",
-    "DELETE FROM addresses WHERE id != 0 AND id NOT IN"
-    " (SELECT laddr_id FROM connections UNION SELECT raddr_id FROM connections UNION SELECT src_id FROM forwarded UNION SELECT dst_id FROM forwarded UNION SELECT src_id FROM forwarded_rollup)",
-    "DELETE FROM interfaces WHERE id != 0 AND id NOT IN"
-    " (SELECT iface_id FROM connections UNION SELECT iface_id FROM connections_rollup UNION SELECT iface_id FROM interface_traffic UNION SELECT iface_id FROM interface_traffic_rollup)",
-    "DELETE FROM netns WHERE inode NOT IN"
-    " (SELECT netns FROM connections UNION SELECT netns FROM connections_rollup UNION SELECT netns FROM interfaces UNION SELECT netns FROM forwarded UNION SELECT netns FROM forwarded_rollup)",
+    (
+        "DELETE FROM domains WHERE id != 0 AND id NOT IN"
+        " (SELECT domain_id FROM connections UNION SELECT domain_id FROM connections_rollup UNION SELECT domain_id FROM forwarded UNION SELECT domain_id FROM forwarded_rollup)"
+    ),
+    (
+        "DELETE FROM addresses WHERE id != 0 AND id NOT IN"
+        " (SELECT laddr_id FROM connections UNION SELECT raddr_id FROM connections UNION SELECT src_id FROM forwarded UNION SELECT dst_id FROM forwarded UNION SELECT src_id FROM forwarded_rollup)"
+    ),
+    (
+        "DELETE FROM interfaces WHERE id != 0 AND id NOT IN"
+        " (SELECT iface_id FROM connections UNION SELECT iface_id FROM connections_rollup UNION SELECT iface_id FROM interface_traffic UNION SELECT iface_id FROM interface_traffic_rollup)"
+    ),
+    (
+        "DELETE FROM netns WHERE inode NOT IN"
+        " (SELECT netns FROM connections UNION SELECT netns FROM connections_rollup UNION SELECT netns FROM interfaces UNION SELECT netns FROM forwarded UNION SELECT netns FROM forwarded_rollup)"
+    ),
 )
 
 
@@ -713,8 +727,7 @@ def run_writer(
             if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
                 raise
             log_error(
-                "SQLite execute %s%s on line %s, will retry %s entries"
-                % (
+                "SQLite execute {}{} on line {}, will retry {} entries".format(
                     type(e).__name__,
                     str(e.args),
                     e.__traceback__.tb_lineno if e.__traceback__ else "?",
@@ -850,8 +863,7 @@ def run_writer(
                     quarantine_database(file_path)
                     raise
                 log_error(
-                    "writer %s%s on line %s"
-                    % (
+                    "writer {}{} on line {}".format(
                         type(e).__name__,
                         str(e.args),
                         e.__traceback__.tb_lineno if e.__traceback__ else "?",

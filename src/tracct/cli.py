@@ -258,9 +258,6 @@ def main() -> int:
 
 def start_tracct() -> int:
     """Command line interface, pre-startup checks, and run."""
-    if sys.version_info < (3, 12):
-        logger.error("Python version >= 3.12 is required")
-        return 1
     if not sys.platform.startswith("linux"):
         logger.error("Did not detect a supported operating system")
         return 1

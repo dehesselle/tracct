@@ -718,8 +718,7 @@ def run_monitor(
             )
         except Exception as e:
             log_error(
-                "Init BPF %s%s on line %s"
-                % (
+                "Init BPF {}{} on line {}".format(
                     type(e).__name__,
                     str(e.args),
                     e.__traceback__.tb_lineno if e.__traceback__ else "?",
@@ -839,8 +838,7 @@ def run_monitor(
                 entries = b.drain_map(map_name, key_type, ConnVal)
             except Exception as e:
                 log_error(
-                    "BPF drain %s %s%s on line %s"
-                    % (
+                    "BPF drain {} {}{} on line {}".format(
                         map_name,
                         type(e).__name__,
                         str(e.args),
@@ -874,12 +872,18 @@ def run_monitor(
             exe_cache: dict[tuple[int, int, int, bytes], tuple[int, int, str]] = {}
 
             def resolve_cached(
-                st_dev: int, st_ino: int, pid: int, comm: bytes
+                st_dev: int,
+                st_ino: int,
+                pid: int,
+                comm: bytes,
+                cache: dict[
+                    tuple[int, int, int, bytes], tuple[int, int, str]
+                ] = exe_cache,
             ) -> tuple[int, int, str]:
                 cache_key = (st_dev, st_ino, pid, comm)
-                resolved = exe_cache.get(cache_key)
+                resolved = cache.get(cache_key)
                 if resolved is None:
-                    resolved = exe_cache[cache_key] = resolver.resolve(
+                    resolved = cache[cache_key] = resolver.resolve(
                         st_dev, st_ino, pid, comm.decode(errors="replace")
                     )
                 return resolved
@@ -947,8 +951,7 @@ def run_monitor(
                         outgoing = []
                 except Exception as e:
                     log_error(
-                        "BPF drain entry %s%s on line %s"
-                        % (
+                        "BPF drain entry {}{} on line {}".format(
                             type(e).__name__,
                             str(e.args),
                             e.__traceback__.tb_lineno if e.__traceback__ else "?",
@@ -1072,8 +1075,7 @@ def run_monitor(
                     next_drain = now + drain_interval
             except Exception as e:
                 log_error(
-                    "BPF %s%s on line %s"
-                    % (
+                    "BPF {}{} on line {}".format(
                         type(e).__name__,
                         str(e.args),
                         e.__traceback__.tb_lineno if e.__traceback__ else "?",
