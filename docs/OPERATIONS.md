@@ -31,6 +31,7 @@ are in the [README](../README.md).
 Day to day:
 
 ```sh
+tracct status                # files, drop-ins, units, conntrack, database
 systemctl status tracct
 journalctl -u tracct -f
 systemctl restart tracct     # after a config change
@@ -249,6 +250,13 @@ the schema version, the daemon refuses the old database: stop the unit, move
 `/var/lib/private/tracct/tracct.db` aside (with its `-wal` and `-shm` files), and
 start it again to get a new one.
 
+### Uninstalling
+
+`tracct uninstall` stops the units and removes the files `install` wrote, after listing
+them and asking; the drop-ins and the database stay unless `--purge` is given (see
+[MANUAL.md](MANUAL.md#uninstall)). tracct cannot uninstall itself. If no one needs it any
+more, remove the group too (`groupdel tracct-viewer`).
+
 ### Moving from a picosnitch install
 
 Installs from before the rename used the name picosnitch for the unit, user, group and
@@ -278,7 +286,8 @@ with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
 ## Troubleshooting
 
 - **`Missing capabilities: …`**: the unit file in `/etc/systemd/system` is older than the
-  installed version; run `tracct install -f` and `systemctl daemon-reload`.
+  installed version (`tracct status` shows it `modified`); run `tracct install -f` and
+  `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
 - **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that

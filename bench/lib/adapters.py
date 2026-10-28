@@ -196,7 +196,7 @@ class Tracct(ToolAdapter):
         if r.returncode != 0:
             raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
         # the units, the sysusers file and the base config of the tree under test
-        r = sh(f"{self.PREFIX}/bin/tracct install -f")
+        r = sh(f"{self.PREFIX}/bin/tracct install -f -y")
         if r.returncode != 0:
             raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
         # unconditionally: local DB, fine time resolution -- a pre-existing install must not

@@ -2,27 +2,42 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""`tracct install` into a scratch root; unprivileged, and never writes to the system."""
+"""`tracct install` and `tracct uninstall` in a scratch root, with a fake systemctl;
+unprivileged, and never touches the system.
+"""
 
-import tempfile
+import io
+import subprocess
 
 import pytest
 
 from tracct import install
-from tracct.install import PACKAGED_COMMAND, tracct_command
+from tracct.install import PACKAGED_COMMAND, tracct_command, uninstall
 from tracct.install import install as run
 
 UNIT = "etc/systemd/system/tracct.service"
 CONFIG = "etc/opt/tracct/config.toml"
 
 
-def test_install_into_root(tmp_path, capsys):
-    assert run(tmp_path, force=False, conntrack=False) == 0
+class Terminal(io.StringIO):
+    """Standard input as a terminal, with the answers typed in advance."""
+
+    def isatty(self):
+        return True
+
+
+def test_install_into_root(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", Terminal("y\n"))
+    assert run(tmp_path, force=False, conntrack=False, yes=False) == 0
     out = capsys.readouterr().out
+    assert out.startswith("This will:\n")
+    assert "Continue? [y/N]" in out
     for path in install.FILES.values():
         assert (tmp_path / path).is_file()
-        assert f"wrote  {tmp_path / path}" in out
+        assert f"  write {tmp_path / path}\n" in out
+        assert f"wrote {tmp_path / path}\n" in out
         assert (tmp_path / path).stat().st_mode & 0o777 == 0o644
+    assert f"  create {tmp_path / install.DROP_INS}/" in out
     assert (tmp_path / install.DROP_INS).is_dir()
     assert not (tmp_path / "etc/modprobe.d").exists()
     unit = (tmp_path / UNIT).read_text()
@@ -32,20 +47,42 @@ def test_install_into_root(tmp_path, capsys):
     assert "systemctl" not in out
 
 
+@pytest.mark.parametrize("answer", ["\n", "n\n", ""])
+def test_install_declined(tmp_path, monkeypatch, capsys, answer):
+    """Nothing is written unless the answer is yes; Enter and end of input mean no."""
+    monkeypatch.setattr("sys.stdin", Terminal(answer))
+    assert run(tmp_path, force=False, conntrack=False, yes=False) == 1
+    assert "Nothing changed." in capsys.readouterr().out
+    assert not (tmp_path / "etc").exists()
+
+
+def test_install_without_terminal(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("y\n"))
+    assert run(tmp_path, force=False, conntrack=False, yes=False) == 1
+    assert "no terminal to ask on" in capsys.readouterr().out
+    assert not (tmp_path / "etc").exists()
+
+
 def test_install_again_keeps_or_forces(tmp_path, capsys):
-    run(tmp_path, force=False, conntrack=False)
+    run(tmp_path, force=False, conntrack=False, yes=True)
     capsys.readouterr()
-    assert run(tmp_path, force=False, conntrack=False) == 0
-    assert f"same   {tmp_path / CONFIG}" in capsys.readouterr().out
+    # Everything in place: nothing to ask about.
+    assert run(tmp_path, force=False, conntrack=False, yes=False) == 0
+    out = capsys.readouterr().out
+    assert f"  {tmp_path / CONFIG} (already in place)" in out
+    assert "Nothing to write." in out
+    assert "Continue?" not in out
     (tmp_path / CONFIG).write_text("[database]\nraw_retention_days = 7\n")
     (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
-    assert run(tmp_path, force=False, conntrack=False) == 0
-    assert f"kept   {tmp_path / CONFIG} (differs; -f replaces it)" in (
+    assert run(tmp_path, force=False, conntrack=False, yes=True) == 0
+    assert f"  {tmp_path / CONFIG} (differs; -f replaces it)" in (
         capsys.readouterr().out
     )
     assert "raw_retention_days = 7" in (tmp_path / CONFIG).read_text()
-    assert run(tmp_path, force=True, conntrack=False) == 0
-    assert f"wrote  {tmp_path / CONFIG}" in capsys.readouterr().out
+    assert run(tmp_path, force=True, conntrack=False, yes=True) == 0
+    out = capsys.readouterr().out
+    assert f"  replace {tmp_path / CONFIG}" in out
+    assert f"wrote {tmp_path / CONFIG}" in out
     assert "raw_retention_days = 30" in (tmp_path / CONFIG).read_text()
     assert (tmp_path / install.DROP_INS / "50-local.toml").read_text() == (
         "[log]\nports = false\n"
@@ -53,7 +90,7 @@ def test_install_again_keeps_or_forces(tmp_path, capsys):
 
 
 def test_install_conntrack(tmp_path):
-    run(tmp_path, force=False, conntrack=True)
+    run(tmp_path, force=False, conntrack=True, yes=True)
     assert (
         (tmp_path / "etc/modules-load.d/tracct.conf")
         .read_text()
@@ -66,28 +103,122 @@ def test_install_conntrack(tmp_path):
 
 
 @pytest.mark.parametrize("root", [True, False])
-def test_install_unwritable(tmp_path, monkeypatch, capsys, root):
-    """Nothing reaches a target that can't be written: with --root that is an error,
-    for the system every file goes to a new temporary tree instead.
+def test_install_unwritable(tmp_path, monkeypatch, capsys, caplog, root):
+    """A target that cannot be written stops it before the question, with nothing
+    written; for the system the error says to run as root.
     """
-    system = tmp_path / "system"
-    (system / "etc/opt/tracct").mkdir(parents=True)
-    (system / CONFIG).write_text("[viewer]\ngroup = 'mine'\n")
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setattr(install, "writable", lambda path: "systemd" not in str(path))
+    monkeypatch.setattr("sys.stdin", Terminal("y\n"))
     if root:
-        assert run(system, force=False, conntrack=False) == 1
-        assert not (system / "etc/sysusers.d").exists()
-        return
-    assert run(None, force=False, conntrack=False, system=system) == 0
+        assert run(tmp_path, force=False, conntrack=False, yes=False) == 1
+    else:
+        assert run(None, force=False, conntrack=False, yes=False, system=tmp_path) == 1
     out = capsys.readouterr().out
-    assert not (system / "etc/sysusers.d").exists()
-    (staged,) = tmp_path.glob("tracct-install-*")
-    assert "Cannot write /etc/systemd/system/tracct-query.service and 2 more" in out
-    assert (staged / UNIT).is_file()
-    assert f"install -D -m 644 {staged / UNIT} /{UNIT}" in out
-    assert f"install -d -m 755 /{install.DROP_INS}" in out
-    # The differing config is kept, so it is neither staged nor copied.
-    assert f"kept   {system / CONFIG}" in out
-    assert not (staged / CONFIG).exists()
-    assert "systemctl daemon-reload" in out
+    assert f"  write {tmp_path / UNIT}" in out
+    assert "Continue?" not in out
+    assert f"cannot write {tmp_path / 'etc/systemd/system/tracct-query.service'}" in (
+        caplog.text
+    )
+    assert ("run as root" in caplog.text) is not root
+    assert not (tmp_path / "etc").exists()
+
+
+@pytest.fixture
+def systemd(monkeypatch):
+    """A systemctl with every unit loaded, recording what it is asked to do."""
+    calls = []
+
+    def systemctl(*args):
+        if args[0] == "show":
+            blocks = ["LoadState=loaded\nActiveState=active"] * len(install.UNITS)
+            return subprocess.CompletedProcess(args, 0, "\n\n".join(blocks) + "\n", "")
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(install, "systemctl", systemctl)
+    return calls
+
+
+@pytest.mark.parametrize("answer", ["\n", "n\n", "yes please\n", ""])
+def test_uninstall_declined(tmp_path, monkeypatch, capsys, systemd, answer):
+    """Nothing changes unless the answer is yes; Enter and end of input mean no."""
+    run(tmp_path, force=False, conntrack=False, yes=True)
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", Terminal(answer))
+    assert uninstall(purge=False, yes=False, system=tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "stop and disable tracct.service tracct-query.socket" in out
+    assert "stop tracct-query.service" in out
+    assert f"remove {tmp_path / UNIT}" in out
+    assert f"remove {tmp_path / install.DROP_INS}/" in out
+    assert "Continue? [y/N]" in out
+    assert "Nothing changed." in out
+    assert systemd == []
+    assert (tmp_path / UNIT).is_file()
+
+
+def test_uninstall_without_terminal(tmp_path, monkeypatch, capsys, systemd):
+    run(tmp_path, force=False, conntrack=False, yes=True)
+    monkeypatch.setattr("sys.stdin", io.StringIO("y\n"))
+    assert uninstall(purge=False, yes=False, system=tmp_path) == 1
+    assert "no terminal to ask on" in capsys.readouterr().out
+    assert systemd == []
+    assert (tmp_path / UNIT).is_file()
+
+
+def test_uninstall_keeps_drop_ins_and_database(tmp_path, monkeypatch, capsys, systemd):
+    run(tmp_path, force=False, conntrack=False, yes=True)
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.STATE).mkdir(parents=True)
+    (tmp_path / install.STATE / "tracct.db").write_bytes(b"")
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", Terminal("y\n"))
+    assert uninstall(purge=False, yes=False, system=tmp_path) == 0
+    out = capsys.readouterr().out
+    for path in install.FILES.values():
+        assert not (tmp_path / path).exists()
+        assert f"removed {tmp_path / path}" in out
+    assert (tmp_path / install.DROP_INS / "50-local.toml").is_file()
+    assert "with 50-local.toml (--purge removes them)" in out
+    assert (tmp_path / install.STATE / "tracct.db").is_file()
+    assert f"the database in {tmp_path / install.STATE}/" in out
+    assert systemd == [
+        ("disable", "--now", "tracct.service", "tracct-query.socket"),
+        ("stop", "tracct-query.service"),
+        ("daemon-reload",),
+    ]
+
+
+def test_uninstall_purge(tmp_path, capsys, systemd):
+    run(tmp_path, force=False, conntrack=True, yes=True)
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.STATE).mkdir(parents=True)
+    (tmp_path / install.STATE / "tracct.db").write_bytes(b"")
+    (tmp_path / "var/lib/tracct").symlink_to(tmp_path / install.STATE)
+    capsys.readouterr()
+    assert uninstall(purge=True, yes=True, system=tmp_path) == 0
+    out = capsys.readouterr().out
+    assert f"remove {tmp_path / install.DROP_INS}/ with 50-local.toml" in out
+    assert f"remove {tmp_path / install.STATE}/ and everything in it" in out
+    assert "Continue?" not in out
+    assert not (tmp_path / "etc/opt/tracct").exists()
+    assert not (tmp_path / "etc/modprobe.d/tracct.conf").exists()
+    assert not (tmp_path / install.STATE).exists()
+    assert not (tmp_path / "var/lib/tracct").is_symlink()
+
+
+def test_uninstall_unwritable(tmp_path, monkeypatch, caplog, systemd):
+    """A file that cannot be removed stops it before the question and the units."""
+    run(tmp_path, force=False, conntrack=False, yes=True)
+    monkeypatch.setattr(install, "removable", lambda path: "systemd" not in str(path))
+    monkeypatch.setattr("sys.stdin", Terminal("y\n"))
+    assert uninstall(purge=False, yes=False, system=tmp_path) == 1
+    assert "run as root" in caplog.text
+    assert systemd == []
+    assert (tmp_path / CONFIG).is_file()
+
+
+def test_uninstall_nothing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(install, "systemctl", lambda *args: None)
+    assert uninstall(purge=True, yes=False, system=tmp_path) == 0
+    assert "Nothing to uninstall." in capsys.readouterr().out

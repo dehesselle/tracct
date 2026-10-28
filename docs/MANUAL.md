@@ -6,7 +6,7 @@ daemon and viewers use. Installing and running the unit is in [OPERATIONS.md](OP
 ## Commands
 
 ```text
-tracct [-h] [--version] {run,view,query-server,install}
+tracct [-h] [--version] {run,view,query-server,install,uninstall,status}
 ```
 
 | Command | What it does | Needs |
@@ -14,7 +14,9 @@ tracct [-h] [--version] {run,view,query-server,install}
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
 | `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[viewer]`, access to `events.sock` and the query socket |
 | `query-server` | answer the viewer's history queries; this is what `tracct-query.service` starts | read access to the database |
-| `install` | write the systemd units, the sysusers file and the base configuration | root, else it writes into a temporary directory |
+| `install` | write the systemd units, the sysusers file and the base configuration | root |
+| `uninstall` | stop the units and remove what `install` wrote | root |
+| `status` | show what is installed, the units, conntrack accounting, the viewer group and the database | nothing; root for the database |
 
 `--version` prints the version. `-h` prints the usage, and on its own also the resolved
 paths; after a command it prints that command's options.
@@ -119,11 +121,14 @@ tracct view --query-socket /tmp/tracct-query.sock --events-socket /tmp/tracct-ev
 ### Install
 
 ```text
-tracct install [-f] [--conntrack] [--root DIR]
+tracct install [-f] [-y] [--conntrack] [--root DIR]
 ```
 
-`install` writes these files and prints each one's path with what happened to it: `wrote`,
-`same` when it already had this content, or `kept` when it differs:
+`install` writes these files. It first lists the ones it will write (`write`, or `replace`
+with `-f`) and the ones it keeps, as `already in place` or as differing, and asks
+`Continue? [y/N]`, as `uninstall` does: anything but `y` or `yes`, and no terminal to ask
+on, changes nothing and exits 1. `-y` goes ahead without asking. When everything is in
+place there is nothing to ask. Each file written is then printed as `wrote`.
 
 | File | Written to |
 | --- | --- |
@@ -138,11 +143,54 @@ kept unless `-f` is given; nothing in `config.d/` is ever written, so settings t
 `install -f` after an upgrade. Then it prints the commands that create the group and start
 the units.
 
-Before writing anything, `install` checks that it may write every file. If one is refused,
-nothing goes to the system: every file it would write goes into a new directory such as
-`/tmp/tracct-install-k3x9q2`, under the same paths, and it prints the `install` commands
-that copy each one in place as root. `--root DIR` writes under `DIR` instead of `/`, for
-packaging or to look at the files; there a refused file is an error.
+Before asking, `install` checks that it may write every file; if one is refused, it says
+which and writes nothing, as `uninstall` does. `--root DIR` writes under `DIR` instead of
+`/`, for packaging or to look at the files, and prints no next steps.
+
+### Uninstall
+
+```text
+tracct uninstall [--purge] [-y]
+```
+
+`uninstall` stops and disables `tracct.service` and `tracct-query.socket`, stops
+`tracct-query.service`, removes every file `install` writes that is there (the conntrack
+files too) and reloads systemd. `config.d/` goes only when it is empty, and
+`/etc/opt/tracct/` when nothing else is left in it. It first prints all of this, then what
+it keeps, and asks `Continue? [y/N]`; anything but `y` or `yes`, and no terminal to ask on,
+changes nothing and exits 1. `-y` goes ahead without asking.
+
+It keeps the drop-ins in `config.d/` and the database in `/var/lib/private/tracct/`;
+`--purge` removes both, with the query service's cache in `/var/cache/private/tracct-query/`
+and the symlinks to the two. The group `tracct-viewer` stays (`groupdel tracct-viewer`), as
+does tracct itself. If a file cannot be removed, it stops before asking and touches nothing.
+
+### Status
+
+```text
+tracct status
+```
+
+`status` shows, without needing privileges:
+
+- **Files**: each file `install` writes as `same`, `modified` (not what this tracct's
+  `install` writes, which `install -f` replaces; for a unit also one an older or another
+  tracct wrote) or `missing`.
+- **Drop-ins** in `config.d/`, and files there that are not read because they do not end in
+  `.toml`.
+- **Services**: each unit's enablement and state, the unit file when it is not the one
+  `install` wrote, and its drop-ins from `systemctl edit`.
+- **Conntrack**: `[monitoring] conntrack`, then, as the kernel shows them, the sysctl
+  `net.netfilter.nf_conntrack_acct` of the namespace `status` runs in and the `acct`
+  parameter of the `nf_conntrack` module, which namespaces created later start from; or
+  that the module is not loaded. What they mean for forwarded traffic is in
+  [OPERATIONS.md](OPERATIONS.md#forwarded-traffic).
+- **Viewer**: whether `[viewer] group` is `tracct-viewer`, the group exists and you are in it
+  (or will be from your next login).
+- **Database**: its size with the WAL; without root, only that it cannot be read.
+
+It reads the files `install` writes under `/etc`, not the paths `$TRACCT_CONFIG` or the
+systemd variables point to.
 
 ## Configuration
 

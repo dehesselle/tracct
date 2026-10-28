@@ -28,9 +28,9 @@ To build from a git checkout instead, which also needs `clang` and `libbpf-dev`,
 `'.[viewer]'` in its place.
 
 `tracct install` writes the systemd units, the sysusers file and the base configuration,
-and prints what went where; it replaces nothing without `-f`, and without permission it
-writes into a temporary directory instead (see [MANUAL.md](docs/MANUAL.md#install)). The
-`viewer` extra installs `tracct view`; the daemon itself needs only the standard library.
+after saying what it will write and asking; it replaces nothing without `-f` (see
+[MANUAL.md](docs/MANUAL.md#install)). The `viewer` extra installs `tracct view`; the
+daemon itself needs only the standard library.
 Forwarded traffic is recorded once `nf_conntrack` is loaded with `acct=1`, which
 `tracct install --conntrack` sets up, see
 [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).

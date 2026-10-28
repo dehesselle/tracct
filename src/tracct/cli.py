@@ -25,9 +25,10 @@ from tracct.constants import (
     VERSION,
 )
 from tracct.install import add_arguments as add_install_arguments
-from tracct.install import run_install
+from tracct.install import add_uninstall_arguments, run_install, run_uninstall
 from tracct.main_loop import run_main_loop
 from tracct.query_server import run_query_server
+from tracct.status import status
 from tracct.utils import (
     connect_db_readonly,
     quarantine_database,
@@ -293,12 +294,31 @@ def start_tracct() -> int:
         help="write the units, the sysusers file and the base config",
         description=(
             "Write tracct's systemd units, sysusers file and base config.toml, with the "
-            "units starting this tracct, and print what went where. Files that differ "
-            "are kept unless --force is given. If any target cannot be written, all "
-            "files go into a new temporary directory instead."
+            "units starting this tracct, after saying what will be written and asking. "
+            "Files that differ are kept unless --force is given. If any target cannot "
+            "be written, nothing is written."
         ),
     )
     add_install_arguments(install)
+    uninstall = commands.add_parser(
+        "uninstall",
+        help="stop the units and remove what install wrote",
+        description=(
+            "Stop and disable tracct's units and remove the files install wrote, after "
+            "saying what will go and asking. The drop-ins in config.d and the database "
+            "stay unless --purge is given."
+        ),
+    )
+    add_uninstall_arguments(uninstall)
+    commands.add_parser(
+        "status",
+        help="show what is installed and running",
+        description=(
+            "Show the installed files and whether they were modified, the drop-ins, the "
+            "units, conntrack accounting, the viewer group and the database. Only the "
+            "database needs root."
+        ),
+    )
     args = parser.parse_args()
     if args.command == "run":
         if err := check_capabilities():
@@ -315,6 +335,10 @@ def start_tracct() -> int:
             return 1
     elif args.command == "install":
         return run_install(args)
+    elif args.command == "uninstall":
+        return run_uninstall(args)
+    elif args.command == "status":
+        return status()
     else:
         return run_query_server()
 

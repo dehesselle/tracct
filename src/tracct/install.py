@@ -2,19 +2,23 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""`tracct install`: put the units, the sysusers file and the base config in place.
+"""`tracct install`: put the units, the sysusers file and the base config in place, and
+`tracct uninstall`: stop the units and take them away again.
 
-An existing file is replaced only with --force, and the drop-ins in config.d are never
-touched. When any target cannot be written, nothing goes to the system: every file goes
-into a new temporary tree instead, and the commands that copy them over are printed.
+Both say what they will do and ask first, and change nothing when any target cannot be
+written. An existing file is replaced only with --force, and the drop-ins in config.d
+are never touched. Uninstall keeps the drop-ins and the database unless --purge is given.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import grp
 import logging
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from importlib import resources
@@ -39,7 +43,29 @@ CONNTRACK_FILES: dict[str, str] = {
 }
 #: Where local settings go: created empty, never written into.
 DROP_INS = "etc/opt/tracct/config.d"
-FORWARDED_TRAFFIC_DOCS = "https://github.com/dehesselle/tracct/blob/master/docs/OPERATIONS.md#forwarded-traffic"
+#: The units in FILES; tracct-query.service is started by its socket and not enabled.
+UNITS = ("tracct.service", "tracct-query.socket", "tracct-query.service")
+UNIT_PROPERTIES = (
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "FragmentPath",
+    "DropInPaths",
+    "ActiveEnterTimestamp",
+)
+#: The group from tracct.sysusers.
+VIEWER_GROUP = "tracct-viewer"
+#: Where DynamicUser= keeps the state directory, which holds the database.
+STATE = "var/lib/private/tracct"
+#: What --purge removes besides the drop-ins: the state directory and the query
+#: service's cache, each with the symlink systemd reaches it by.
+PURGED = (
+    "var/lib/tracct",
+    STATE,
+    "var/cache/tracct-query",
+    "var/cache/private/tracct-query",
+)
 
 
 @dataclasses.dataclass
@@ -119,9 +145,14 @@ def write(path: Path, content: bytes | None) -> None:
 
 
 def install(
-    root: Path | None, force: bool, conntrack: bool, system: Path = Path("/")
+    root: Path | None,
+    force: bool,
+    conntrack: bool,
+    yes: bool,
+    system: Path = Path("/"),
 ) -> int:
-    """Write the files under `root`, or the system when None; return the exit code.
+    """Write the files under `root`, or the system when None, once confirmed; return
+    the exit code.
 
     `system` is the system's root, which a test moves.
     """
@@ -130,40 +161,44 @@ def install(
     for target in planned:
         compare(target, base, force)
     pending = [target for target in planned if target.state == "write"]
-    refused = [t.path for t in pending if not writable(base / t.path)]
-    staged = None
-    if refused and root is not None:
-        logger.error(f"cannot write {root / refused[0]}")
-        return 1
-    if refused:
-        staged = Path(tempfile.mkdtemp(prefix="tracct-install-"))
-        print(
-            f"Cannot write /{refused[0]}"
-            + (f" and {len(refused) - 1} more" if len(refused) > 1 else "")
-            + f", so nothing went to the system; the files are in {staged} instead."
+
+    if pending:
+        print("This will:")
+    for target in pending:
+        path = base / target.path
+        if target.content is None:
+            print(f"  create {path}/")
+        else:
+            print(f"  {'replace' if present(path) else 'write'} {path}")
+    kept = [target for target in planned if target.state != "write"]
+    if kept:
+        print("It keeps:")
+    for target in kept:
+        suffix = "/" if target.content is None else ""
+        note = (
+            "differs; -f replaces it" if target.state == "kept" else "already in place"
         )
-    destination = staged or base
+        print(f"  {base / target.path}{suffix} ({note})")
+    refused = [target.path for target in pending if not writable(base / target.path)]
+    if refused:
+        hint = ": run as root" if root is None else ""
+        logger.error(f"cannot write {base / refused[0]}{hint}")
+        return 1
+    if not pending:
+        print("Nothing to write.")
+    elif not yes and not confirm("Continue?"):
+        print("Nothing changed.")
+        return 1
+
     try:
         for target in pending:
-            write(destination / target.path, target.content)
+            write(base / target.path, target.content)
     except OSError as e:
         logger.error(f"cannot write {e.filename}: {e.strerror}")
         return 1
-    for target in planned:
-        shown = (
-            destination / target.path if target.state == "write" else base / target.path
-        )
+    for target in pending:
         suffix = "/" if target.content is None else ""
-        note = " (differs; -f replaces it)" if target.state == "kept" else ""
-        verb = {"write": "wrote", "same": "same", "kept": "kept"}[target.state]
-        print(f"{verb:6} {shown}{suffix}{note}")
-    if staged is not None:
-        print("\nTo put them in place, as root:")
-        for target in pending:
-            if target.content is None:
-                print(f"  install -d -m 755 /{target.path}")
-            else:
-                print(f"  install -D -m 644 {staged / target.path} /{target.path}")
+        print(f"wrote {base / target.path}{suffix}")
     if root is None:
         print_next_steps(conntrack)
     return 0
@@ -180,15 +215,194 @@ def print_next_steps(conntrack: bool) -> None:
         "Local settings go in /etc/opt/tracct/config.d/*.toml."
     )
     if conntrack:
-        print(
-            "The conntrack options apply from the next boot; to apply them now, see "
-            + FORWARDED_TRAFFIC_DOCS
-        )
+        print("The conntrack options apply from the next boot.")
     else:
         print(
-            "Forwarded traffic needs nf_conntrack with acct=1: run again with "
-            "--conntrack, or see " + FORWARDED_TRAFFIC_DOCS
+            "Forwarded traffic needs nf_conntrack with acct=1: run again with --conntrack"
         )
+
+
+def systemctl(*args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run systemctl with `args`; None when there is no systemctl."""
+    try:
+        return subprocess.run(
+            ["systemctl", *args], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:
+        return None
+
+
+def run_systemctl(*args: str) -> int:
+    """Run systemctl with `args`, reporting a failure; return the exit code."""
+    result = systemctl(*args)
+    if result is None or result.returncode != 0:
+        reason = "not found" if result is None else result.stderr.strip()
+        logger.error(f"systemctl {' '.join(args)}: {reason}")
+        return 1
+    return 0
+
+
+def unit_states() -> dict[str, dict[str, str]] | str:
+    """Return the UNIT_PROPERTIES of each of UNITS, or why systemd cannot tell them.
+
+    This needs no privileges; a unit that isn't there has LoadState not-found.
+    """
+    result = systemctl("show", f"--property={','.join(UNIT_PROPERTIES)}", *UNITS)
+    if result is None:
+        return "systemctl not found"
+    if result.returncode != 0:
+        lines = result.stderr.strip().splitlines()
+        return lines[0] if lines else f"systemctl show exited with {result.returncode}"
+    blocks = result.stdout.strip().split("\n\n")
+    return {
+        unit: dict(line.partition("=")[::2] for line in block.splitlines())
+        for unit, block in zip(UNITS, blocks)
+    }
+
+
+def present(path: Path) -> bool:
+    """Whether `path` is there, a dangling symlink too; True when it cannot be told."""
+    try:
+        path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def directory(path: Path) -> bool:
+    """Whether `path` is a directory and no symlink; False when it cannot be told."""
+    return os.path.isdir(path) and not os.path.islink(path)
+
+
+def removable(path: Path) -> bool:
+    """Whether `path` can be removed: its directory can be written."""
+    return os.access(path.parent, os.W_OK | os.X_OK)
+
+
+def remove(path: Path, tree: bool) -> None:
+    """Remove a file or symlink, an empty directory, or with `tree` a directory and
+    what it holds.
+    """
+    if not directory(path):
+        path.unlink()
+    elif tree:
+        shutil.rmtree(path)
+    else:
+        path.rmdir()
+
+
+def confirm(question: str) -> bool:
+    """Ask `question`, which defaults to no; without a terminal the answer is no."""
+    if not sys.stdin.isatty():
+        print(f"{question} [y/N] no terminal to ask on, so no; -y answers yes")
+        return False
+    try:
+        answer = input(f"{question} [y/N] ")
+    except EOFError:
+        print()
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def uninstall(purge: bool, yes: bool, system: Path = Path("/")) -> int:
+    """Stop the units and remove what install wrote, once confirmed; return the exit
+    code.
+
+    `system` is the system's root, which a test moves.
+    """
+    states = unit_states()
+    loaded = []
+    if isinstance(states, dict):
+        loaded = [
+            unit
+            for unit in UNITS
+            if states.get(unit, {}).get("LoadState", "not-found") != "not-found"
+        ]
+    # The socket's service is static: it is stopped, there is nothing to disable.
+    disable = [unit for unit in loaded if unit != "tracct-query.service"]
+    stop = [unit for unit in loaded if unit == "tracct-query.service"]
+    reload = isinstance(states, dict) and any(
+        present(system / FILES[unit]) for unit in UNITS
+    )
+    # (path, with what it holds)
+    removals = [
+        (system / path, False)
+        for path in sorted([*FILES.values(), *CONNTRACK_FILES.values()])
+        if present(system / path)
+    ]
+    drop_ins = system / DROP_INS
+    held = sorted(drop_ins.iterdir()) if directory(drop_ins) else []
+    if directory(drop_ins) and (purge or not held):
+        removals.append((drop_ins, purge))
+    base = drop_ins.parent
+    removed = [path for path, _ in removals]
+    if directory(base) and all(path in removed for path in base.iterdir()):
+        removals.append((base, False))
+    if purge:
+        removals += [(system / path, True) for path in PURGED if present(system / path)]
+    if not loaded and not removals:
+        print("Nothing to uninstall.")
+        return 0
+
+    print("This will:")
+    if disable:
+        print(f"  stop and disable {' '.join(disable)}")
+    if stop:
+        print(f"  stop {' '.join(stop)}")
+    if isinstance(states, str):
+        print(f"  leave the units alone ({states})")
+    for path, tree in removals:
+        line = f"  remove {path}{'/' if directory(path) else ''}"
+        if path == drop_ins and held:
+            line += f" with {', '.join(p.name for p in held)}"
+        elif tree and directory(path):
+            line += " and everything in it"
+        print(line)
+    if reload:
+        print("  reload systemd")
+    print("It keeps:")
+    if held and not purge:
+        names = ", ".join(p.name for p in held)
+        print(f"  {drop_ins}/ with {names} (--purge removes them)")
+    if not purge and present(system / STATE):
+        print(f"  the database in {system / STATE}/ (--purge removes it)")
+    try:
+        grp.getgrnam(VIEWER_GROUP)
+        print(f"  the group {VIEWER_GROUP} (groupdel {VIEWER_GROUP} removes it)")
+    except KeyError:
+        pass
+    print(f"  itself in {sys.prefix} (cannot uninstall myself)")
+    refused = [path for path, _ in removals if not removable(path)]
+    if refused:
+        logger.error(f"cannot remove {refused[0]}: run as root")
+        return 1
+    if not yes and not confirm("Continue?"):
+        print("Nothing changed.")
+        return 1
+
+    if disable:
+        if err := run_systemctl("disable", "--now", *disable):
+            return err
+        print(f"stopped and disabled {' '.join(disable)}")
+    if stop:
+        if err := run_systemctl("stop", *stop):
+            return err
+        print(f"stopped {' '.join(stop)}")
+    for path, tree in removals:
+        suffix = "/" if directory(path) else ""
+        try:
+            remove(path, tree)
+        except OSError as e:
+            logger.error(f"cannot remove {path}: {e.strerror}")
+            return 1
+        print(f"removed {path}{suffix}")
+    if reload:
+        if err := run_systemctl("daemon-reload"):
+            return err
+        print("reloaded systemd")
+    return 0
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -208,7 +422,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="write under this directory instead of the system, e.g. for a package",
     )
+    parser.add_argument(
+        "-y", "--yes", action="store_true", help="go ahead without asking"
+    )
 
 
 def run_install(args: argparse.Namespace) -> int:
-    return install(args.root, args.force, args.conntrack)
+    return install(args.root, args.force, args.conntrack, args.yes)
+
+
+def add_uninstall_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="also remove the drop-ins in config.d, the database and the query cache",
+    )
+    parser.add_argument(
+        "-y", "--yes", action="store_true", help="go ahead without asking"
+    )
+
+
+def run_uninstall(args: argparse.Namespace) -> int:
+    return uninstall(args.purge, args.yes)

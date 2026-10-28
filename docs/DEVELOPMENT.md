@@ -10,7 +10,8 @@ releasing and the benchmark.
 | `src/tracct/bpf/tracct.bpf.c` | the BPF program (kept close to picosnitch's) |
 | `src/tracct/bpf_wrapper.py` | ctypes libbpf wrapper and struct mirrors (kept close to picosnitch's) |
 | `src/tracct/cli.py` | commands, capability and database checks, schema creation |
-| `src/tracct/install.py` | `install`: writes `src/tracct/files/` to the system, or to a temporary tree |
+| `src/tracct/install.py` | `install`: writes `src/tracct/files/` to the system or under a root; `uninstall` |
+| `src/tracct/status.py` | `status`: the installed files, drop-ins, units, conntrack accounting, viewer group, database |
 | `src/tracct/main_loop.py` | starts and supervises the threads, the live feed thread |
 | `src/tracct/monitor.py` | the reader thread: BPF attach, drain, attribution |
 | `src/tracct/writer.py` | the writer thread: aggregation, filters, SQLite, rollups, retention |
@@ -113,7 +114,8 @@ in `pyproject.toml`).
   struct-layout robustness, `test_live_feed.py` the socket, `test_query_server.py` the
   routing between raw rows and rollups, the dimensions, request bounds and the socket,
   `test_viewer.py` the Textual viewer headless against both sockets (skipped without
-  Textual), `test_install.py` `install` into a scratch root. These run unprivileged.
+  Textual), `test_install.py` `install` and `uninstall` in a scratch root,
+  `test_status.py` `status` of one, both with a fake `systemctl`. These run unprivileged.
 
 CI (`.github/workflows/build.yml`) runs the checks, builds the sdist and, with the BPF
 object, the x86_64 and aarch64 wheels, and runs the tests as root from the wheels on Python
