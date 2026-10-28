@@ -7,7 +7,7 @@
 /* A gray a little dimmer than an inactive tab's, so the titles in the borders stay
    readable. */
 TabPane DataTable, TabPane OptionList, TrafficPlot {
-    border: round $foreground 40%;
+    border: round $foreground 30%;
 }
 TabPane DataTable:focus, TabPane OptionList:focus, TrafficPlot:focus {
     border: round $accent;
