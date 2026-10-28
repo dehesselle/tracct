@@ -18,16 +18,16 @@ from rich.text import Text
 from tcoda.settings import config
 from tcoda.widgets import DataTable
 from textual import work
+from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.widgets import Input
 from textual.widgets.data_table import RowKey
 from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber
 from tracct.viewer.banner import Banner
 from tracct.viewer.client import feed_closed, feed_unavailable
-from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, clean, format_clock
+from tracct.viewer.format import bytes_cell, clean, format_clock
+from tracct.viewer.pane import FindablePane
 from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 
 # events waiting between the feed thread and the next redraw; fills only while the UI stalls
@@ -42,7 +42,7 @@ def remote(event: dict) -> str:
     return host + (f":{rport}" if isinstance(rport, int) and rport > 0 else "")
 
 
-class LivePane(Vertical):
+class LivePane(FindablePane):
     DEFAULT_CSS = """
     LivePane #summary { height: 2fr; }
     LivePane #events { height: 3fr; }
@@ -68,7 +68,6 @@ class LivePane(Vertical):
         self.events = 0
         self.since = time.time()
         self.paused = False
-        self.find = ""
         self.state = "connecting"
         self._dirty = True
         # numbers each event, so the events table has a row key and an order by time
@@ -77,9 +76,7 @@ class LivePane(Vertical):
         self._shown_summary: dict[str, tuple[tuple[str, str], list]] = {}
         self._shown_events: dict[str, dict] = {}
 
-    def compose(self):
-        yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
-        yield Banner()
+    def compose_content(self) -> ComposeResult:
         yield DataTable(id="summary", cursor_type="row", zebra_stripes=True)
         yield DataTable(id="events", cursor_type="row", zebra_stripes=True)
 
@@ -185,7 +182,8 @@ class LivePane(Vertical):
         if arrived or self._dirty:
             self._dirty = False
             self.render_tables(recent=not self.paused)
-        self.update_status()
+        self.update_banner()
+        self.update_titles()
 
     def apply_limits(self) -> None:
         """the limits from the settings, read on every redraw so a change applies at once"""
@@ -278,18 +276,21 @@ class LivePane(Vertical):
             # the cursor keeps its place while new events push the rows along
             _replace_rows(self.query_one("#events", DataTable), rows, follow=False)
 
-    def update_status(self) -> None:
-        """the banner, shown only while there is something to say, and the tables' titles"""
+    def update_banner(self) -> None:
+        """Say why the feed is not connected, and a kept find; nothing, no banner."""
         notes = []
         if self.state != "connected":
             notes.append(self.state)
         # while the find input is open, it says it already
-        kept = bool(self.find) and not self.query_one(".find", Input).has_class("shown")
+        kept = bool(self.find) and not self.find_open()
         if kept:
             notes.append(f"find: {self.find}")
         self.query_one(Banner).say(
             notes, "press c to clear" if kept else "", error=self.state != "connected"
         )
+
+    def update_titles(self) -> None:
+        """Count the tables' rows and the time since the tab started in their titles."""
         summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
         self.query_one(
             "#summary", DataTable
@@ -312,13 +313,9 @@ class LivePane(Vertical):
         self.since = time.time()
         self._dirty = True
 
-    def set_find(self, needle: str) -> None:
-        self.find = needle
+    def apply_find(self) -> None:
+        # on the next redraw, which comes soon enough for typing
         self._dirty = True
-
-    def update_banner(self) -> None:
-        """at once, as the find input opens or closes, rather than on the next redraw"""
-        self.update_status()
 
 
 def _int(value: object) -> int:

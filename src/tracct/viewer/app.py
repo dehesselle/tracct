@@ -16,7 +16,7 @@ from tcoda.widgets import ChordViewer
 from textual import work
 from textual.app import App
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
+from textual.widgets import Footer, TabbedContent, TabPane
 from textual.widgets.tabbed_content import ContentTabs
 
 from tracct.query import QueryError
@@ -25,6 +25,7 @@ from tracct.viewer.client import HistoryClient
 from tracct.viewer.format import BYTE_UNITS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
+from tracct.viewer.pane import FindablePane
 from tracct.viewer.pickers import UNZOOM, ByteUnitPicker, SpanPicker, Unzoom
 from tracct.viewer.plot import TrafficPlot
 from tracct.viewer.timerange import TimeRange
@@ -42,8 +43,6 @@ class TracctApp(ChordMixin, App):
     /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
     TabPane DataTable, TabPane OptionList { border: round $foreground 40%; }
     TabPane DataTable:focus, TabPane OptionList:focus { border: round $accent; }
-    .find { display: none; }
-    .find.shown { display: block; }
     """
     BINDINGS = [
         # a tab's first letter, highlighted in its title
@@ -51,12 +50,8 @@ class TracctApp(ChordMixin, App):
             Binding(title[0].lower(), f"tab('{tab}')", show=False)
             for tab, (title, _) in TABS.items()
         ),
-        Binding("slash", "find", "find"),
-        # the banner says so while a find is kept
-        Binding("c", "clear_find", "clear find", show=False),
         # chords start with a comma; the ChordViewer lists them when the next key is slow to come
         Binding("comma s", "settings", "settings", show=False),
-        Binding("escape", "close_find", show=False),
     ]
 
     def __init__(
@@ -114,12 +109,9 @@ class TracctApp(ChordMixin, App):
 
     # ── panes ───────────────────────────────────────────────────────
 
-    def active_pane(self) -> HistoryPane | LivePane | None:
-        active = self.query_one(TabbedContent).active
-        for pane in [*self.query(HistoryPane), *self.query(LivePane)]:
-            if pane.parent is not None and pane.parent.id == active:
-                return pane
-        return None
+    def active_pane(self) -> FindablePane | None:
+        tab = self.query_one(TabbedContent).active_pane
+        return None if tab is None else tab.query_one(FindablePane)
 
     def active_history(self) -> HistoryPane | None:
         pane = self.active_pane()
@@ -137,10 +129,10 @@ class TracctApp(ChordMixin, App):
             self.reload_active()
 
     def focus_pane(self) -> None:
-        """focus the shown tab's table, so its keys (filter, pause, ...) apply"""
+        """Focus the shown tab's table, so its keys (filter, pause, ...) apply."""
         pane = self.active_pane()
         if pane is not None:
-            pane.query(DataTable).first().focus()
+            pane.focus_content()
 
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
@@ -207,46 +199,6 @@ class TracctApp(ChordMixin, App):
 
     def action_settings(self) -> None:
         self.push_screen(SettingsDialog())
-
-    def action_find(self) -> None:
-        """each tab has its own find input, on its top line, where a banner shows a kept find"""
-        pane = self.active_pane()
-        if pane is not None:
-            find = pane.query_one(".find", Input)
-            find.value = pane.find
-            find.add_class("shown")
-            find.focus()
-            pane.update_banner()
-
-    def action_close_find(self) -> None:
-        pane = self.active_pane()
-        if pane is not None:
-            find = pane.query_one(".find", Input)
-            if find.has_class("shown"):
-                find.value = ""
-                pane.set_find("")
-                find.remove_class("shown")
-                pane.update_banner()
-                self.focus_pane()
-
-    def action_clear_find(self) -> None:
-        pane = self.active_pane()
-        if pane is not None and pane.find:
-            pane.query_one(".find", Input).value = ""
-            pane.set_find("")
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        pane = event.input.parent
-        if event.input.has_class("find") and isinstance(pane, HistoryPane | LivePane):
-            pane.set_find(event.value)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        pane = event.input.parent
-        if event.input.has_class("find") and isinstance(pane, HistoryPane | LivePane):
-            event.input.remove_class("shown")
-            # a kept find goes to the banner, on the line the input leaves
-            pane.update_banner()
-            self.focus_pane()
 
     def on_unmount(self) -> None:
         self.client.close()

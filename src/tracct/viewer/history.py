@@ -13,21 +13,22 @@ from typing import TYPE_CHECKING
 
 from rich.text import Text
 from textual import work
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Input, OptionList
+from textual.widgets import DataTable, OptionList
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
 from tracct.query import QueryError
 from tracct.viewer.banner import Banner
 from tracct.viewer.format import (
-    FIND_PLACEHOLDER,
     bytes_cell,
     format_time,
     format_value,
     value_cell,
 )
+from tracct.viewer.pane import FindablePane
 from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
 from tracct.viewer.timerange import bucket_grid
 
@@ -57,7 +58,7 @@ class Total:
         return f"(all · {self.layer})" if self.layer else "(all)"
 
 
-class HistoryPane(Vertical):
+class HistoryPane(FindablePane):
     DEFAULT_CSS = """
     HistoryPane OptionList { width: 30; height: 1fr; }
     HistoryPane DataTable { height: 1fr; }
@@ -105,7 +106,6 @@ class HistoryPane(Vertical):
         self.shown: list[list] = []
         self.table_rows: list[list] = []
         self.result: dict = {}
-        self.find = ""
         self.error = ""
         self._timeline_timer = None
         # the row the plot was last asked for, so refilling the table does not ask again
@@ -119,9 +119,7 @@ class HistoryPane(Vertical):
     def viewer(self) -> TracctApp:
         return self.app
 
-    def compose(self):
-        yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
-        yield Banner()
+    def compose_content(self) -> ComposeResult:
         with Horizontal():
             yield OptionList(id="dimensions")
             with Vertical():
@@ -410,7 +408,7 @@ class HistoryPane(Vertical):
             )
             keys.append(", f c to clear filters")
         # while the find input is open, it says it already
-        if self.find and not self.query_one(".find", Input).has_class("shown"):
+        if self.find and not self.find_open():
             notes.append(f"find: {self.find}")
             keys.insert(0, "c to clear")
         self.query_one(Banner).say(
@@ -481,8 +479,7 @@ class HistoryPane(Vertical):
                 self.group_by = dimension
                 options.highlighted = i
 
-    def set_find(self, needle: str) -> None:
-        self.find = needle
+    def apply_find(self) -> None:
         if self.result:
             self.render_rows()
 
