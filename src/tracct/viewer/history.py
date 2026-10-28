@@ -15,6 +15,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.reactive import reactive
 from textual.widgets import DataTable, OptionList
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
@@ -80,6 +81,10 @@ class HistoryPane(FindablePane):
     ]
     CHORD_GROUPS = {"comma f": "filter"}
 
+    #: Whether the rows are being fetched, and whether the plot is.
+    rows_loading: reactive[bool] = reactive(False, init=False)
+    plot_loading: reactive[bool] = reactive(False, init=False)
+
     def __init__(self, source: str, *, id: str | None = None) -> None:
         super().__init__(id=id)
         self.source = source
@@ -95,9 +100,15 @@ class HistoryPane(FindablePane):
         self._timeline_timer = None
         # the row the plot was last asked for, so refilling the table does not ask again
         self._plot_filter: Filter | None = None
-        # what is being fetched, "rows" and "plot", and the timer that then marks the plot busy
-        self._fetching: set[str] = set()
+        # marks the plot busy once a fetch has taken a moment
         self._busy_timer = None
+
+    def on_mount(self) -> None:
+        self.watch(self.viewer, "byte_unit", self._show_byte_unit, init=False)
+
+    def _show_byte_unit(self, byte_unit: str) -> None:
+        self.query_one(TrafficPlot).set_byte_unit(byte_unit)
+        self.render_rows()
 
     @property
     def viewer(self) -> TracctApp:
@@ -159,7 +170,7 @@ class HistoryPane(FindablePane):
         if self.info is None:
             return
         start, end = self.bounds()
-        self.fetching("rows", True)
+        self.rows_loading = True
         self._load(start, end, list(self.filters), self.group_by)
 
     @work(thread=True, exclusive=True, group="history-table")
@@ -171,16 +182,16 @@ class HistoryPane(FindablePane):
             )
         except QueryError as e:
             if not worker.is_cancelled:
-                self.app.call_from_thread(self.show_error, str(e))
+                self.viewer.call_from_thread(self.show_error, str(e))
             return
         if not worker.is_cancelled:
-            self.app.call_from_thread(self.show_rows, result)
+            self.viewer.call_from_thread(self.show_rows, result)
 
     def load_timeline(self) -> None:
         if self.info is None:
-            self.fetching("plot", False)
+            self.plot_loading = False
             return
-        self.fetching("plot", True)
+        self.plot_loading = True
         start, end = self.bounds()
         origin, step = bucket_grid(start, end, self.query_one(TrafficPlot).points())
         plot_filter = self._plot_filter = self.plot_filter()
@@ -223,10 +234,12 @@ class HistoryPane(FindablePane):
             )
         except QueryError as e:
             if not worker.is_cancelled:
-                self.app.call_from_thread(self.show_error, str(e))
+                self.viewer.call_from_thread(self.show_error, str(e))
             return
         if not worker.is_cancelled:
-            self.app.call_from_thread(self.show_timeline, timeline, heading, row_label)
+            self.viewer.call_from_thread(
+                self.show_timeline, timeline, heading, row_label
+            )
 
     def schedule_timeline(self) -> None:
         if self._timeline_timer is not None:
@@ -235,30 +248,44 @@ class HistoryPane(FindablePane):
             TIMELINE_DELAY_SECONDS, self.load_timeline
         )
 
-    def fetching(self, what: str, active: bool) -> None:
-        """the plot's title says the tab is updating while its rows or its plot are being fetched,
-        from BUSY_DELAY_SECONDS on; until the rows are in, the plot waits to be fetched after them"""
-        if active:
-            self._fetching.add(what)
+    # ── whether the tab is updating ─────────────────────────────────
+
+    def loading(self) -> bool:
+        return self.rows_loading or self.plot_loading
+
+    def watch_rows_loading(self) -> None:
+        self._loading_changed()
+
+    def watch_plot_loading(self) -> None:
+        self._loading_changed()
+
+    def _loading_changed(self) -> None:
+        """The plot's title says the tab is updating, from BUSY_DELAY_SECONDS on."""
+        if self.loading():
+            if self._busy_timer is None:
+                self._busy_timer = self.set_timer(BUSY_DELAY_SECONDS, self._show_busy)
         else:
-            self._fetching.discard(what)
-        if self._fetching and self._busy_timer is None:
-            self._busy_timer = self.set_timer(BUSY_DELAY_SECONDS, self._show_busy)
-        elif not self._fetching:
-            if self._busy_timer is not None:
-                self._busy_timer.stop()
-                self._busy_timer = None
-            self.query_one(TrafficPlot).set_busy(False)
+            # once the current message is handled: rows that just came in ask for
+            # their plot right after, and the glyph stays on through both
+            self.call_later(self._settle_busy)
 
     def _show_busy(self) -> None:
         self._busy_timer = None
-        if self._fetching:
+        if self.loading():
             self.query_one(TrafficPlot).set_busy(True)
+
+    def _settle_busy(self) -> None:
+        if self.loading():
+            return
+        if self._busy_timer is not None:
+            self._busy_timer.stop()
+            self._busy_timer = None
+        self.query_one(TrafficPlot).set_busy(False)
 
     # ── showing results ─────────────────────────────────────────────
 
     def show_timeline(self, timeline: Timeline, heading: str, row_label: str) -> None:
-        self.fetching("plot", False)
+        self.plot_loading = False
         if self.info is None:
             return
         self.query_one(TrafficPlot).show(
@@ -269,8 +296,8 @@ class HistoryPane(FindablePane):
         )
 
     def show_error(self, message: str) -> None:
-        self.fetching("rows", False)
-        self.fetching("plot", False)
+        self.rows_loading = False
+        self.plot_loading = False
         self.error = message
         self.update_banner()
 
@@ -281,7 +308,7 @@ class HistoryPane(FindablePane):
         # at once: the rows that came in are the plot's too, and the highlight has not moved
         self.load_timeline()
         # after the plot is asked for, so the title does not drop the glyph in between
-        self.fetching("rows", False)
+        self.rows_loading = False
 
     def render_rows(self) -> None:
         if self.result is None or self.info is None:
@@ -384,11 +411,6 @@ class HistoryPane(FindablePane):
         # refilling the table highlights the row again; only another row needs another plot
         if self.plot_filter() != self._plot_filter:
             self.schedule_timeline()
-
-    def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
-        # exactly what the plot shows, empty time included: the plot keeps its own limits
-        start, end = event.x_range
-        self.viewer.zoom_to(int(start), int(end))
 
     def action_filter(self, exclude: bool) -> None:
         # a row of sums has no value of the dimension to keep or exclude

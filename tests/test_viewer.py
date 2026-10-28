@@ -513,6 +513,11 @@ async def test_history_drill_down(tmp_path):
             )
             await pilot.press("u", "down", "enter")
             await _until(pilot, lambda: app.byte_unit == "B")
+            # every history tab shows it, the hidden ones too, without asking again
+            for pane in (interfaces, processes):
+                cell = str(pane.query_one(DataTable).get_cell_at((0, 1)))
+                assert pane.query_one(TrafficPlot).byte_unit == "B"
+                assert cell and not any(c.isalpha() for c in cell)
     finally:
         listener.close()
 
@@ -538,7 +543,7 @@ async def test_plot_title_and_busy(tmp_path):
             shown = []
             set_busy = plot.set_busy
             plot.set_busy = lambda busy: (shown.append(busy), set_busy(busy))
-            await _until(pilot, lambda: bool(plot.values) and not pane._fetching)
+            await _until(pilot, lambda: bool(plot.values) and not pane.loading())
             # answers within milliseconds never show the glyph
             assert True not in shown and BUSY not in _title(plot)
             # the range, then the key; the highlighted row is in the table, and the peaks' stretch

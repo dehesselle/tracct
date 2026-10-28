@@ -288,7 +288,9 @@ interfaces are not added up unless asked for, and layers never are. It draws pea
 averages. Its time
 axis is the shared range: what it shows after zooming or panning comes to rest is exactly
 the range every tab then asks for, empty time included, and the plot's own limits (a minute
-to ten years, nothing before 1970) keep it within what the query server answers. The viewer
+to ten years, nothing before 1970) keep it within what the query server answers. Only the
+tab shown asks the query server: a new range or a refresh reloads it, and a hidden tab
+catches up when it is shown. A new byte unit needs no request and redraws every tab. The viewer
 imports only `live_feed`, `query` and `utils`; it reaches the daemon through the two sockets
 alone.
 

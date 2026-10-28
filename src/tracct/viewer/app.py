@@ -16,6 +16,7 @@ from tcoda.widgets import ChordViewer
 from textual import work
 from textual.app import App
 from textual.binding import Binding
+from textual.reactive import reactive
 from textual.widgets import Footer, TabbedContent, TabPane
 from textual.widgets.tabbed_content import ContentTabs
 
@@ -55,14 +56,20 @@ class TracctApp(ChordMixin, App):
         Binding("comma s", "settings", "settings", show=False),
     ]
 
+    #: The range every history tab shows. It is changed in place, then announced with
+    #: range_changed(); only the tab shown reloads, a hidden one when it is shown.
+    time_range: reactive[TimeRange] = reactive(
+        TimeRange, init=False, always_update=True
+    )
+    #: The unit the history tabs show bytes in; every tab redraws, no request needed.
+    byte_unit: reactive[str] = reactive(BYTE_UNITS[0], init=False)
+
     def __init__(
         self, events_socket: Path, query_socket: Path, tab: str = "processes"
     ) -> None:
         super().__init__()
         self.events_socket = events_socket
         self.initial_tab = tab
-        self.time_range = TimeRange()
-        self.byte_unit = BYTE_UNITS[0]
         #: The byte unit before, which `u` pressed twice goes back to.
         self.last_byte_unit: str | None = None
         self.client = HistoryClient(query_socket)
@@ -141,10 +148,20 @@ class TracctApp(ChordMixin, App):
         self.focus_pane()
         self.reload_active()
 
-    def zoom_to(self, start: int, end: int) -> None:
-        """Show the range a plot came to rest on, in every history tab."""
-        self.time_range.zoom_to(start, end)
-        self.reload_active()
+    def range_changed(self) -> None:
+        """Announce a change made to time_range in place."""
+        self.mutate_reactive(TracctApp.time_range)
+
+    def watch_time_range(self) -> None:
+        # set before the app runs, there is no tab to reload yet
+        if self.is_running:
+            self.reload_active()
+
+    def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
+        # exactly what the plot shows, empty time included: the plot keeps its own limits
+        start, end = event.x_range
+        self.time_range.zoom_to(int(start), int(end))
+        self.range_changed()
 
     # ── actions ─────────────────────────────────────────────────────
 
@@ -164,9 +181,9 @@ class TracctApp(ChordMixin, App):
     def _span_picked(self, span: int | Unzoom | None) -> None:
         if span is UNZOOM:
             self.time_range.unzoom()
-            self.reload_active()
+            self.range_changed()
         elif isinstance(span, int) and self.time_range.pick(span):
-            self.reload_active()
+            self.range_changed()
 
     def action_step_span(self, step: int) -> None:
         """Step the span back (-1) or forward (+1) by a whole span of local time."""
@@ -177,7 +194,7 @@ class TracctApp(ChordMixin, App):
             )
             return
         self.time_range.step(step)
-        self.reload_active()
+        self.range_changed()
 
     def action_byte_unit(self) -> None:
         self.push_screen(
@@ -189,11 +206,6 @@ class TracctApp(ChordMixin, App):
         if byte_unit is None or byte_unit == self.byte_unit:
             return
         self.last_byte_unit, self.byte_unit = self.byte_unit, byte_unit
-        for plot in self.query(TrafficPlot):
-            plot.set_byte_unit(self.byte_unit)
-        for pane in self.query(HistoryPane):
-            if pane.result:
-                pane.render_rows()
 
     def action_refresh(self) -> None:
         self.reload_active()
