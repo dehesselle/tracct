@@ -291,4 +291,6 @@ with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
 - **`view`: query server unavailable**: `tracct-query.socket` is not installed or not
   enabled (`systemctl status tracct-query.socket`); with "no access", the user is not in
   `tracct-viewer`. Errors of the server itself are in `journalctl -u tracct-query`.
+- **`view` over SSH: the connection closes at once**: the remote login user has no access to
+  the sockets; see [Remote viewing](MANUAL.md#remote-viewing).
 - **`Unsupported database version N, expected M`**: see [Upgrades](#upgrades).

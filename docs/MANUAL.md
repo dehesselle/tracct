@@ -87,6 +87,33 @@ to the raw rows. The table's bottom border says from when, or where the rollups 
 tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [--query-socket PATH]
 ```
 
+### Remote viewing
+
+`view` can show another host's traffic by forwarding both sockets over SSH to local ones.
+The local machine needs `tracct[viewer]`, which runs on Linux only, ideally the same version
+as the host; nothing there needs privileges.
+
+```sh
+ssh -N -o StreamLocalBindUnlink=yes \
+    -L /tmp/tracct-query.sock:/run/tracct-query.sock \
+    -L /tmp/tracct-events.sock:/run/tracct/events.sock host
+tracct view --query-socket /tmp/tracct-query.sock --events-socket /tmp/tracct-events.sock
+```
+
+- **On the host**, sshd connects to the sockets as the user who logged in, who must be root
+  or a member of the viewer group, in a login started after `usermod -aG`. sshd's
+  `AllowStreamLocalForwarding` must allow it; it does by default.
+- **On the local machine**, ssh creates the two sockets with mode 0600
+  (`StreamLocalBindMask`), so only the user running ssh can use them.
+  `StreamLocalBindUnlink=yes` replaces sockets an earlier session left behind.
+- **Without access on the host**, each connection closes at once: the history tabs report
+  that the query server closed the connection, the live tab a closed feed it keeps
+  reconnecting to, and ssh prints `open failed: connect failed`.
+- **User names** are looked up on the local machine, so they can be wrong or missing; the
+  number in parentheses is the host's uid.
+- The protocol carries no version, so a viewer far apart in version from the host can fail
+  in unclear ways.
+
 ### Install
 
 ```text
