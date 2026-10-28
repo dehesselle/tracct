@@ -19,16 +19,17 @@ As root, from a git checkout (the version is taken from its tags):
 ```sh
 uv venv /opt/tracct
 VIRTUAL_ENV=/opt/tracct uv pip install '.[viewer]'
-install -m 644 src/tracct/files/tracct.service src/tracct/files/tracct-query.socket src/tracct/files/tracct-query.service /etc/systemd/system/
-install -m 644 src/tracct/files/tracct.sysusers /etc/sysusers.d/tracct.conf
+/opt/tracct/bin/tracct install
 systemd-sysusers
-install -d /etc/opt/tracct
-printf '[viewer]\ngroup = "tracct-viewer"\n' > /etc/opt/tracct/config.toml
 systemctl daemon-reload && systemctl enable --now tracct tracct-query.socket
 ```
 
-The `viewer` extra installs `tracct view`; the daemon itself needs only the standard
-library. Forwarded traffic is recorded once `nf_conntrack` is loaded with `acct=1`, see
+`tracct install` writes the systemd units, the sysusers file and the base configuration,
+and prints what went where; it replaces nothing without `-f`, and without permission it
+writes into a temporary directory instead (see [MANUAL.md](docs/MANUAL.md#install)). The
+`viewer` extra installs `tracct view`; the daemon itself needs only the standard library.
+Forwarded traffic is recorded once `nf_conntrack` is loaded with `acct=1`, which
+`tracct install --conntrack` sets up, see
 [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
 
 As root or as a member of `tracct-viewer`:

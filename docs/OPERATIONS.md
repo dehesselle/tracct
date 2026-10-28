@@ -57,10 +57,10 @@ from `src/tracct/files/tracct-query.socket` on the first connection:
   tmpfs on newer systemd (390 MB on a 4 GB host with systemd 259), counted against
   `MemoryMax=`; a 30-day range of 30 million rows filled it.
 
-Install and enable the socket; the service needs no enabling:
+`tracct install` writes both units; only the socket is enabled, the service needs no
+enabling:
 
 ```sh
-install -m 644 src/tracct/files/tracct-query.socket src/tracct/files/tracct-query.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now tracct-query.socket
 ```
 
@@ -74,11 +74,11 @@ namespace routing for others) are read from connection tracking, whose entries c
 counters only with `nf_conntrack_acct` on. Each network namespace has its own
 `nf_conntrack_acct`, and a new one starts from the `nf_conntrack` module's `acct` option, not
 from the host's setting. Setting the option when the module loads at boot covers the host and
-every namespace created later:
+every namespace created later; `tracct install --conntrack` writes the two files that do so:
 
-```sh
-echo nf_conntrack > /etc/modules-load.d/tracct.conf
-echo 'options nf_conntrack acct=1' > /etc/modprobe.d/tracct.conf
+```text
+/etc/modules-load.d/tracct.conf    nf_conntrack
+/etc/modprobe.d/tracct.conf        options nf_conntrack acct=1
 ```
 
 On a running system, set it for the namespaces still to come and in each existing one, then
@@ -240,7 +240,11 @@ refers to any more.
 
 ## Upgrades
 
-Install the new version into `/opt/tracct` and restart the unit. When a release changes
+Install the new version into `/opt/tracct`, run `/opt/tracct/bin/tracct install -f` to
+bring the units and the base `config.toml` up to it, then `systemctl daemon-reload` and
+restart the unit. `-f` replaces `config.toml`, so keep your own settings in `config.d/`
+(see [MANUAL.md](MANUAL.md#configuration)); move them there before the first `install -f`
+if they are still in `config.toml`. When a release changes
 the schema version, the daemon refuses the old database: stop the unit, move
 `/var/lib/private/tracct/tracct.db` aside (with its `-wal` and `-shm` files), and
 start it again to get a new one.
@@ -260,8 +264,7 @@ Then install tracct as in the [README](../README.md#install), but move the old
 configuration and database in place before the final `systemctl enable --now`:
 
 ```sh
-install -d /etc/opt/tracct
-sed 's/picosnitch-viewer/tracct-viewer/' /etc/opt/picosnitch/config.toml > /etc/opt/tracct/config.toml
+sed 's/picosnitch-viewer/tracct-viewer/' /etc/opt/picosnitch/config.toml > /etc/opt/tracct/config.d/50-local.toml
 install -d -m 700 /var/lib/private/tracct
 mv /var/lib/private/picosnitch/picosnitch.db /var/lib/private/tracct/tracct.db
 mv /var/lib/private/picosnitch/picosnitch.db-wal /var/lib/private/tracct/tracct.db-wal 2>/dev/null
@@ -275,7 +278,7 @@ with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
 ## Troubleshooting
 
 - **`Missing capabilities: …`**: the unit file in `/etc/systemd/system` is older than the
-  installed version; copy `src/tracct/files/tracct.service` again and `systemctl daemon-reload`.
+  installed version; run `tracct install -f` and `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
 - **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that

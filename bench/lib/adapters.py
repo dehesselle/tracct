@@ -182,12 +182,6 @@ class Tracct(ToolAdapter):
     SRC = BENCH.parent
 
     def install(self):
-        # config first, unconditionally: local DB, fine time resolution -- a
-        # pre-existing install must not run the benchmark under different settings.
-        Path("/etc/opt/tracct").mkdir(parents=True, exist_ok=True)
-        Path("/etc/opt/tracct/config.toml").write_text(
-            "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
-        )
         # the build compiles the BPF object; libbpf1 comes with libbpf-dev
         sh("apt-get install -y clang libbpf-dev", timeout=600)
         # always rebuild: the tree under test is whatever is checked out
@@ -201,12 +195,14 @@ class Tracct(ToolAdapter):
         )
         if r.returncode != 0:
             raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
-        sh(
-            f"install -m 644 {self.SRC}/src/tracct/files/tracct.service /etc/systemd/system/tracct.service"
-        )
-        # -D: a stock install has no /etc/sysusers.d, and without the viewer group the unit cannot start
-        sh(
-            f"install -D -m 644 {self.SRC}/src/tracct/files/tracct.sysusers /etc/sysusers.d/tracct.conf"
+        # the units, the sysusers file and the base config of the tree under test
+        r = sh(f"{self.PREFIX}/bin/tracct install -f")
+        if r.returncode != 0:
+            raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
+        # unconditionally: local DB, fine time resolution -- a pre-existing install must not
+        # run the benchmark under different settings; last in name order, so it wins
+        Path("/etc/opt/tracct/config.d/99-bench.toml").write_text(
+            "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")

@@ -6,7 +6,7 @@ daemon and viewers use. Installing and running the unit is in [OPERATIONS.md](OP
 ## Commands
 
 ```text
-tracct [-h] [--version] {run,view,query-server}
+tracct [-h] [--version] {run,view,query-server,install}
 ```
 
 | Command | What it does | Needs |
@@ -14,6 +14,7 @@ tracct [-h] [--version] {run,view,query-server}
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
 | `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[viewer]`, access to `events.sock` and the query socket |
 | `query-server` | answer the viewer's history queries; this is what `tracct-query.service` starts | read access to the database |
+| `install` | write the systemd units, the sysusers file and the base configuration | root, else it writes into a temporary directory |
 
 `--version` prints the version. `-h` prints the usage, and on its own also the resolved
 paths; after a command it prints that command's options.
@@ -86,6 +87,34 @@ to the raw rows. The table's bottom border says from when, or where the rollups 
 tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [--query-socket PATH]
 ```
 
+### Install
+
+```text
+tracct install [-f] [--conntrack] [--root DIR]
+```
+
+`install` writes these files and prints each one's path with what happened to it: `wrote`,
+`same` when it already had this content, or `kept` when it differs:
+
+| File | Written to |
+| --- | --- |
+| `tracct.service`, `tracct-query.socket`, `tracct-query.service` | `/etc/systemd/system/` |
+| the sysusers file, which creates the group `tracct-viewer` | `/etc/sysusers.d/tracct.conf` |
+| the base configuration, every option at its default and `[viewer] group = "tracct-viewer"` | `/etc/opt/tracct/config.toml` |
+| an empty directory for your own settings | `/etc/opt/tracct/config.d/` |
+| with `--conntrack`: load `nf_conntrack` at boot, with `acct=1` | `/etc/modules-load.d/tracct.conf`, `/etc/modprobe.d/tracct.conf` |
+
+The units start the tracct that ran `install`, wherever its venv is. A file that differs is
+kept unless `-f` is given; nothing in `config.d/` is ever written, so settings there outlive
+`install -f` after an upgrade. Then it prints the commands that create the group and start
+the units.
+
+Before writing anything, `install` checks that it may write every file. If one is refused,
+nothing goes to the system: every file it would write goes into a new directory such as
+`/tmp/tracct-install-k3x9q2`, under the same paths, and it prints the `install` commands
+that copy each one in place as root. `--root DIR` writes under `DIR` instead of `/`, for
+packaging or to look at the files; there a refused file is an error.
+
 ## Configuration
 
 The daemon reads `config.toml` and then every `config.d/*.toml` beside it, in name order,
@@ -96,7 +125,7 @@ of the wrong type is skipped with a warning; a file that cannot be read is skipp
 others still apply.
 
 Keep your own settings in a drop-in such as `config.d/50-local.toml`, since `config.toml` is
-the base file that `tracct install -f` replaces:
+the base file that `tracct install -f` replaces (see [Install](#install)):
 
 ```toml
 [database]

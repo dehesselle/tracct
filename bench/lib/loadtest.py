@@ -70,14 +70,15 @@ def daemon_pids() -> list[int]:
 
 
 def write_limit() -> int:
-    try:
-        return int(
-            tomllib.loads(CONFIG.read_text())
-            .get("database", {})
-            .get("write_limit_seconds", 10)
-        )
-    except (OSError, ValueError, tomllib.TOMLDecodeError):
-        return 10
+    """The daemon's write window: config.toml, then its drop-ins, the last one winning."""
+    seconds = 10
+    for path in [CONFIG, *sorted(CONFIG.parent.glob("config.d/*.toml"))]:
+        try:
+            database = tomllib.loads(path.read_text()).get("database", {})
+            seconds = int(database.get("write_limit_seconds", seconds))
+        except (OSError, ValueError, tomllib.TOMLDecodeError):
+            continue
+    return seconds
 
 
 def query(sql: str, params: tuple = ()) -> list:

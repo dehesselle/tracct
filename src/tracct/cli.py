@@ -24,6 +24,8 @@ from tracct.constants import (
     TABLES,
     VERSION,
 )
+from tracct.install import add_arguments as add_install_arguments
+from tracct.install import run_install
 from tracct.main_loop import run_main_loop
 from tracct.query_server import run_query_server
 from tracct.utils import (
@@ -286,6 +288,17 @@ def start_tracct() -> int:
     commands.add_parser(
         "query-server", help="answer history queries (used by tracct-query.service)"
     )
+    install = commands.add_parser(
+        "install",
+        help="write the units, the sysusers file and the base config",
+        description=(
+            "Write tracct's systemd units, sysusers file and base config.toml, with the "
+            "units starting this tracct, and print what went where. Files that differ "
+            "are kept unless --force is given. If any target cannot be written, all "
+            "files go into a new temporary directory instead."
+        ),
+    )
+    add_install_arguments(install)
     args = parser.parse_args()
     if args.command == "run":
         if err := check_capabilities():
@@ -300,6 +313,8 @@ def start_tracct() -> int:
                 f"({e})"
             )
             return 1
+    elif args.command == "install":
+        return run_install(args)
     else:
         return run_query_server()
 

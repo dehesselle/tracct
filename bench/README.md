@@ -181,8 +181,9 @@ sudo python3 lib/run.py --tools all     # install, run matrix, score, report
 against other tools: its CPU and PSS, connection rows written per second, how much of the
 generated traffic it recorded, and the warnings it logged. It drives the installed unit,
 which must be running; one `run.py --tools tracct` pass installs it, but stops it when done
-and leaves its own `config.toml` with 1 s write windows, so remove that file to measure the
-defaults, as [docs/performance.md](../docs/performance.md) does, and start the unit. It has
+and leaves its drop-in `config.d/99-bench.toml` with 1 s write windows, so remove that file
+to measure the defaults, as [docs/performance.md](../docs/performance.md) does, and start
+the unit. It has
 three phases:
 
 | Phase | Load |
@@ -192,7 +193,7 @@ three phases:
 | exec | short-lived processes, up to 300 per second, one datagram each |
 
 ```sh
-sudo rm /etc/opt/tracct/config.toml && sudo systemctl start tracct
+sudo rm /etc/opt/tracct/config.d/99-bench.toml && sudo systemctl start tracct
 sudo python3 lib/loadtest.py --out results/loadtest.json   # see --help for the knobs
 ```
 
