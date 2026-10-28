@@ -34,6 +34,8 @@ from tracct.utils import (
 from tracct.viewer import add_arguments as add_viewer_arguments
 from tracct.viewer import run_viewer
 
+logger = logging.getLogger(__name__)
+
 #: What the daemon needs, as root or as an unprivileged user with ambient capabilities.
 REQUIRED_CAPABILITIES: dict[str, int] = {
     # List /proc/<pid>/fd of other users' processes (mode 0500, a plain permission check
@@ -93,7 +95,7 @@ def check_capabilities() -> int:
         name for name, bit in REQUIRED_CAPABILITIES.items() if not capeff & (1 << bit)
     ]
     if missing:
-        logging.error(
+        logger.error(
             f"Missing capabilities: {' '.join(missing)} (run as root or grant them with AmbientCapabilities=)"
         )
         return 1
@@ -102,7 +104,7 @@ def check_capabilities() -> int:
     try:
         check_bpf_requirements()
     except (RuntimeError, FileNotFoundError) as e:
-        logging.error(f"{e}")
+        logger.error(f"{e}")
         return 1
     return 0
 
@@ -110,8 +112,8 @@ def check_capabilities() -> int:
 def check_database() -> int:
     """Check database exists and has correct version, return exit code on failure."""
     if not DB_PATH.exists():
-        logging.error(f"Database not found: {DB_PATH}")
-        logging.error("Start the tracct service to create it (systemctl start tracct)")
+        logger.error(f"Database not found: {DB_PATH}")
+        logger.error("Start the tracct service to create it (systemctl start tracct)")
         return 1
     con = None
     try:
@@ -123,13 +125,13 @@ def check_database() -> int:
         # sqlite3.Error, not just OperationalError, so a corrupt db (DatabaseError)
         # returns 1 instead of crashing the boot path; init_database quarantines it
         # beforehand.
-        logging.error(f"Could not open database {DB_PATH}: {e}")
+        logger.error(f"Could not open database {DB_PATH}: {e}")
         return 1
     finally:
         if con is not None:
             con.close()
     if user_version != DB_VERSION:
-        logging.error(
+        logger.error(
             f"Unsupported database version {user_version}, expected {DB_VERSION}"
         )
         return 1
@@ -190,7 +192,7 @@ def init_database() -> None:
         # Quarantine a corrupt db and recreate it below, so check_database / the
         # writer's first maintenance pass don't crash-loop the daemon (data is kept in
         # tracct.db.bad).
-        logging.error(
+        logger.error(
             f"tracct.db is unusable, quarantining to {db_path.name}.bad and recreating"
         )
         quarantine_database(db_path)
@@ -211,12 +213,12 @@ def init_database() -> None:
     try:
         mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if mode != "wal":
-            logging.warning(
+            logger.warning(
                 f"tracct.db stays in journal mode {mode}; readers will block writes"
             )
     except sqlite3.OperationalError as e:
         # Another connection holds the database; the next start tries again.
-        logging.warning(
+        logger.warning(
             f"could not switch tracct.db to WAL mode ({e}); readers will block writes"
         )
     finally:
@@ -237,7 +239,7 @@ def main() -> int:
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        logging.error(
+        logger.error(
             f"tracct is already running (lock held on {RUN_DIR / 'tracct.lock'})"
         )
         return 1
@@ -246,21 +248,21 @@ def main() -> int:
         return err
     # Read once: a change takes a restart.
     config = load_config()
-    logging.info(
+    logger.info(
         f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}"
     )
-    logging.info(f"state: {STATE_DIR}")
-    logging.info(f"run: {RUN_DIR}")
+    logger.info(f"state: {STATE_DIR}")
+    logger.info(f"run: {RUN_DIR}")
     return run_main_loop(config)
 
 
 def start_tracct() -> int:
     """Command line interface, pre-startup checks, and run."""
     if sys.version_info < (3, 12):
-        logging.error("Python version >= 3.12 is required")
+        logger.error("Python version >= 3.12 is required")
         return 1
     if not sys.platform.startswith("linux"):
-        logging.error("Did not detect a supported operating system")
+        logger.error("Did not detect a supported operating system")
         return 1
     configure_logging()
     parser = argparse.ArgumentParser(
@@ -295,7 +297,7 @@ def start_tracct() -> int:
         try:
             return run_viewer(args)
         except ImportError as e:
-            logging.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
+            logger.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
             return 1
     else:
         return run_query_server()

@@ -17,6 +17,8 @@ from tracct.types import BpfEvent
 from tracct.utils import DropOldestQueue, log_error, sd_notify
 from tracct.writer import run_writer
 
+logger = logging.getLogger(__name__)
+
 #: Hand-off bounds, in events; the writer sums what it takes off its queue right away,
 #: so its queue only fills while it writes or purges.
 WRITER_QUEUE_EVENTS = 262144
@@ -120,7 +122,7 @@ def run_main_loop(config: Config) -> int:
     while not shutdown_event.is_set():
         if not all(thread.is_alive() for thread in threads):
             dead = " ".join(thread.name for thread in threads if not thread.is_alive())
-            logging.error(
+            logger.error(
                 f"tracct thread died, exiting for the service manager to restart ({dead})"
             )
             break
@@ -138,7 +140,7 @@ def run_main_loop(config: Config) -> int:
         suspended_for = (boot_now - boot_last) - (mono_now - mono_last)
         if resume_event.is_set() or suspended_for > 5:
             resume_event.clear()
-            logging.info("re-attaching the BPF program after resuming from suspend")
+            logger.info("re-attaching the BPF program after resuming from suspend")
             reattach.set()
         mono_last, boot_last = mono_now, boot_now
     # Stop in pipeline order: the reader hands over what the kernel still holds, the

@@ -29,6 +29,8 @@ from tracct.utils import (
     sqlite_error_means_corrupt,
 )
 
+logger = logging.getLogger(__name__)
+
 #: Distinct connections one write window may hold; past it the window is written early.
 WINDOW_CONNECTIONS_MAX = 65536
 #: Rows the retention purge deletes per transaction; a write that is due goes between
@@ -479,7 +481,7 @@ def purge_database(
     raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
     if newest is not None and shortest > 0 and now - shortest > newest:
-        logging.error(
+        logger.error(
             "tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted"
         )
         return periods, 0
@@ -813,7 +815,7 @@ def run_writer(
             cleanup = (
                 "" if orphans is None else f" and {orphans} unreferenced lookup entries"
             )
-            logging.info(
+            logger.info(
                 f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s"
             )
 
@@ -842,7 +844,7 @@ def run_writer(
                 ):
                     # The thread ends and the daemon exits, for the service manager to
                     # start it on a new db.
-                    logging.error(
+                    logger.error(
                         f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart"
                     )
                     quarantine_database(file_path)

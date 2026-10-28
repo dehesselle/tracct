@@ -13,6 +13,8 @@ from pathlib import Path
 
 from tracct.constants import CONFIG_PATH
 
+logger = logging.getLogger(__name__)
+
 
 @dataclasses.dataclass
 class DatabaseConfig:
@@ -76,14 +78,14 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                 raw = tomllib.load(f)
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
             # Never crash-loop the daemon on a malformed config; fall back to defaults.
-            logging.error(f"failed to read {config_path}, using defaults: {e}")
+            logger.error(f"failed to read {config_path}, using defaults: {e}")
             raw = {}
         section_names = {
             section_field.name for section_field in dataclasses.fields(config)
         }
         for section_name in raw:
             if section_name not in section_names:
-                logging.warning(f"config.{section_name}: unknown section, ignoring")
+                logger.warning(f"config.{section_name}: unknown section, ignoring")
         for section_field in dataclasses.fields(config):
             section_name = section_field.name
             if section_name not in raw:
@@ -93,7 +95,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                 # Valid TOML but wrong shape (e.g. `monitoring = 5` instead of
                 # `[monitoring]`); skip so `field.name in section_data` can't raise and
                 # crash-loop the daemon.
-                logging.warning(
+                logger.warning(
                     f"config.{section_name}: expected a table, got {type(section_data).__name__}, ignoring"
                 )
                 continue
@@ -101,7 +103,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             field_names = {field.name for field in dataclasses.fields(section_obj)}
             for key in section_data:
                 if key not in field_names:
-                    logging.warning(
+                    logger.warning(
                         f"config.{section_name}.{key}: unknown option, ignoring"
                     )
             for field in dataclasses.fields(section_obj):
@@ -115,7 +117,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                         if expected_type.__origin__ is list and not isinstance(
                             value, list
                         ):
-                            logging.warning(
+                            logger.warning(
                                 f"config.{section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping"
                             )
                             continue
@@ -136,7 +138,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                         type_name = getattr(
                             expected_type, "__name__", str(expected_type)
                         )
-                        logging.warning(
+                        logger.warning(
                             f"config.{section_name}.{field.name}: expected {type_name}, got {type(value).__name__}, skipping"
                         )
                         continue
@@ -144,13 +146,13 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
     # Clamp values that would otherwise fail the BPF load and restart-loop the daemon.
     pages = config.monitoring.exec_ring_buffer_pages
     if pages < 1 or pages > 16384 or (pages & (pages - 1)) != 0:
-        logging.warning(
+        logger.warning(
             f"monitoring.exec_ring_buffer_pages must be a power of two in [1, 16384], got {pages}, using 256"
         )
         config.monitoring.exec_ring_buffer_pages = 256
     entries = config.monitoring.conn_map_max_entries
     if entries < 1 or entries > 1048576:
-        logging.warning(
+        logger.warning(
             f"monitoring.conn_map_max_entries must be in [1, 1048576], got {entries}, using 65536"
         )
         config.monitoring.conn_map_max_entries = 65536
@@ -160,7 +162,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         or not isinstance(dev_mask, int)
         or not 0 <= dev_mask <= 0xFFFFFFFF
     ):
-        logging.warning(
+        logger.warning(
             f"monitoring.st_dev_mask must be in [0, 4294967295], got {dev_mask!r}, ignoring"
         )
         config.monitoring.st_dev_mask = None
@@ -172,25 +174,25 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
     ):
         retention = getattr(config.database, key)
         if not math.isfinite(retention) or retention < 0:
-            logging.warning(
+            logger.warning(
                 f"database.{key} must not be negative, got {retention}, using {default}"
             )
             setattr(config.database, key, default)
     period = config.database.rollup_period_minutes
     if not 1 <= period <= 1440:
-        logging.warning(
+        logger.warning(
             f"database.rollup_period_minutes must be in [1, 1440], got {period}, using 60"
         )
         config.database.rollup_period_minutes = 60
     write_limit = config.database.write_limit_seconds
     if write_limit < 0:
-        logging.warning(
+        logger.warning(
             f"database.write_limit_seconds must not be negative, got {write_limit}, using 10"
         )
         config.database.write_limit_seconds = 10
     interval = config.database.maintenance_interval_minutes
     if interval < 1:
-        logging.warning(
+        logger.warning(
             f"database.maintenance_interval_minutes must be at least 1, got {interval}, using 60"
         )
         config.database.maintenance_interval_minutes = 60
@@ -199,7 +201,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         try:
             grp.getgrnam(config.viewer.group)
         except KeyError:
-            logging.warning(
+            logger.warning(
                 f"config.viewer.group: {config.viewer.group!r} does not exist, ignoring"
             )
             config.viewer.group = ""
@@ -211,7 +213,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         try:
             ipaddress.ip_network(ip_subnet, strict=False)
         except (ValueError, TypeError):
-            logging.warning(
+            logger.warning(
                 f"config.log.ignore_ips: {ip_subnet!r} is not a valid network, ignoring"
             )
             continue
@@ -223,7 +225,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
     valid_ignore_domains = []
     for domain_prefix in config.log.ignore_domains:
         if not isinstance(domain_prefix, str) or not domain_prefix:
-            logging.warning(
+            logger.warning(
                 f"config.log.ignore_domains: {domain_prefix!r} is not a non-empty string, ignoring"
             )
             continue

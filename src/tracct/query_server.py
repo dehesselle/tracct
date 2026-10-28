@@ -42,6 +42,8 @@ from tracct.query import (
 )
 from tracct.utils import ephemeral_port_start
 
+logger = logging.getLogger(__name__)
+
 #: Viewers connected at once; one more is told so and closed.
 MAX_CLIENTS = 8
 MAX_REQUEST_BYTES = 64 * 1024
@@ -688,14 +690,14 @@ class QueryServer:
             return {"ok": False, "error": str(e)}
         except sqlite3.Error as e:
             if time.monotonic() > deadline:
-                logging.warning(
+                logger.warning(
                     f"query server: interrupted a {request.get('op')} of {request.get('source')} after {QUERY_TIMEOUT_SECONDS} s"
                 )
                 return {
                     "ok": False,
                     "error": f"the query took longer than {QUERY_TIMEOUT_SECONDS} s; narrow the time range or filter",
                 }
-            logging.warning(f"query server: {type(e).__name__}: {e}")
+            logger.warning(f"query server: {type(e).__name__}: {e}")
             return {"ok": False, "error": f"database: {e}"}
         finally:
             con.close()
@@ -798,7 +800,7 @@ def listening_socket(path: Path) -> tuple[socket.socket, bool]:
 def run_query_server(path: Path = QUERY_SOCKET_PATH) -> int:
     """`tracct query-server`: until idle when socket-activated, else until stopped."""
     listener, activated = listening_socket(path)
-    logging.info(
+    logger.info(
         f"query server: reading {DB_PATH}, {'socket from systemd' if activated else f'listening on {path}'}"
     )
     try:

@@ -21,6 +21,8 @@ from pathlib import Path
 
 from tracct.constants import RUN_DIR
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "EVENTS_SOCKET_PATH",
     "MAX_PENDING_BYTES",
@@ -94,7 +96,7 @@ class LiveFeedPublisher:
                     gid = grp.getgrnam(self._group).gr_gid
                     os.chown(EVENTS_SOCKET_PATH, -1, gid)
                 except (KeyError, PermissionError) as e:
-                    logging.warning(
+                    logger.warning(
                         f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}"
                     )
             self._sock.listen(8)

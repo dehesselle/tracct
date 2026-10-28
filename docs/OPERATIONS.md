@@ -113,8 +113,9 @@ exactly these.
 ## Logs
 
 Everything goes to stderr, which is the journal under the unit; lines carry their syslog
-priority. Startup logs the resolved config, state and runtime paths. Problems of capturing
-and writing are logged under `tracct.error`, among them:
+priority, and the name of what logged them: the module, such as `tracct.cli` or
+`tracct.writer`. Startup logs the resolved config, state and runtime paths. Problems of
+capturing and writing are logged under `tracct.error`, among them:
 
 - a skipped or failed BPF hook and which traffic it leaves uncounted
 - `exec ring buffer full: dropped N exec event(s)`: raise
