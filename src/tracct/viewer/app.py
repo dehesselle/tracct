@@ -56,7 +56,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         ),
         # Chords start with a comma; the ChordViewer lists them when the next key is
         # slow to come.
-        Binding("comma s", "settings", "settings", show=False),
+        Binding("comma s", "settings", "Settings", show=False),
     ]
 
     #: The range every history tab shows. It is changed in place, then announced with

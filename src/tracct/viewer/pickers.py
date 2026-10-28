@@ -127,7 +127,7 @@ class SpanPicker(ListPicker[int | Unzoom]):
     SpanPicker > #dialog { width: 64; }
     """
     KEY = "s"
-    BINDINGS: ClassVar[list[Binding]] = [Binding("s", "again", "back to span")]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("s", "again", "Back to span")]
 
     def __init__(self, current: int, covered: int | None, zoomed: bool) -> None:
         """
@@ -169,7 +169,7 @@ class ByteUnitPicker(ListPicker[str]):
     ByteUnitPicker > #dialog { width: 52; }
     """
     KEY = "u"
-    BINDINGS: ClassVar[list[Binding]] = [Binding("u", "again", "last unit")]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("u", "again", "Last unit")]
 
     def __init__(self, current: str, last: str | None) -> None:
         entries = [

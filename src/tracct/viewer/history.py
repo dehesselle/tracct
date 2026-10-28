@@ -65,35 +65,35 @@ class HistoryPane(FindablePane):
     BINDINGS: ClassVar[list[Binding]] = [
         # The time range and the byte unit are the app's, shared by the history tabs.
         # In the span picker, s pressed again returns from a zoom to the span.
-        Binding("s", "app.span", "span"),
+        Binding("s", "app.span", "Span"),
         # By a whole span of local time, next to s that picks its length; the range is
         # the tab's, not only the plot's, whose arrows pan by a few columns.
         Binding(
             "shift+left",
             "app.step_span(-1)",
-            "previous span",
+            "Previous span",
             key_display="⇧←",
-            group=Binding.Group("step span"),
+            group=Binding.Group("Step span"),
         ),
         Binding(
             "shift+right",
             "app.step_span(1)",
-            "next span",
+            "Next span",
             key_display="⇧→",
-            group=Binding.Group("step span"),
+            group=Binding.Group("Step span"),
         ),
-        Binding("u", "app.byte_unit", "unit"),
-        Binding("r", "app.refresh", "refresh"),
+        Binding("u", "app.byte_unit", "Unit"),
+        Binding("r", "app.refresh", "Refresh"),
         # The drill-down: a filter on the highlighted row's value stays when the
         # dimension on the left changes, which breaks that value down.
-        Binding("comma f i", "filter(False)", "include row", show=False),
-        Binding("comma f e", "filter(True)", "exclude row", show=False),
-        Binding("comma f p", "pop_filter", "pop last", show=False),
-        Binding("comma f c", "clear_filters", "clear", show=False),
+        Binding("comma f i", "filter(False)", "Include row", show=False),
+        Binding("comma f e", "filter(True)", "Exclude row", show=False),
+        Binding("comma f p", "pop_filter", "Pop last", show=False),
+        Binding("comma f c", "clear_filters", "Clear", show=False),
         # Shared by the history tabs, as the range is.
-        Binding("comma p", "app.plot_only", "plot only", show=False),
+        Binding("comma p", "app.plot_only", "Plot only", show=False),
     ]
-    CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma f": "filter"}
+    CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma f": "Filter"}
 
     #: Whether the rows are being fetched, and whether the plot is.
     rows_loading: reactive[bool] = reactive(False, init=False)

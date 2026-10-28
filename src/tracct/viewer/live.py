@@ -155,8 +155,8 @@ class LiveTotal:
 
 class LivePane(FindablePane):
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("space", "pause", "pause", key_display="␣"),
-        Binding("r", "reset", "reset"),
+        Binding("space", "pause", "Pause", key_display="␣"),
+        Binding("r", "reset", "Reset"),
     ]
 
     def __init__(self, events_socket: Path, *, id: str | None = None) -> None:

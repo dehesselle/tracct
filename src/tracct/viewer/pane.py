@@ -36,9 +36,9 @@ class FindablePane(Vertical):
     FindablePane > .find.shown { display: block; }
     """
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("slash", "find", "find"),
+        Binding("slash", "find", "Find"),
         # The banner says so while a find is kept.
-        Binding("c", "clear_find", "clear find", show=False),
+        Binding("c", "clear_find", "Clear find", show=False),
         Binding("escape", "close_find", show=False),
     ]
 
