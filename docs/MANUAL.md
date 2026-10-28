@@ -25,7 +25,8 @@ of `tracct-query.socket`). Its footer shows the keys of the tab in view; `Ctrl+Q
 
 `tracct view` needs the `viewer` extra (`uv pip install 'tracct[viewer]'`). It has four
 tabs, Live first and then the history tabs in alphabetical order, switched with the letter
-highlighted in their title (`l`, `f`, `i`, `p`):
+highlighted in their title (`l`, `f`, `i`, `p`). It opens on Live unless `--tab` names
+another:
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started. It keeps the newest 500 events and 100 executables; past that, the executables

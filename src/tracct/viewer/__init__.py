@@ -32,8 +32,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tab",
         choices=list(TABS),
-        default="processes",
-        help="the tab to start on (default: processes)",
+        default="live",
+        help="the tab to start on (default: live)",
     )
     parser.add_argument(
         "--events-socket",
