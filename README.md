@@ -57,6 +57,10 @@ As root or as a member of `tracct-viewer`:
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building, checks, licensing, tests, benchmark
 - [docs/performance.md](docs/performance.md): measured CPU, memory and losses under load
 
+## AI disclosure
+
+Substantial parts of this code were generated with Opus 5.x. Generated code was tested, but not every line was reviewed in detail.
+
 ## License
 
 tracct is based on [picosnitch](https://github.com/elesiuta/picosnitch) by Eric Lesiuta and
