@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Tests for the ctnetlink parser and the forwarded flow deltas; the last test routes real
-traffic between two network namespaces through the host and needs root."""
+"""Tests for the ctnetlink parser and the forwarded flow deltas.
+
+The last test routes real traffic between two network namespaces through the host and
+needs root.
+"""
 
 import ipaddress
 import os
@@ -56,8 +59,11 @@ def _message(
     reply: tuple,
     counters: tuple[int, int, int, int] | None = (100, 2000, 2, 3),
 ) -> bytes:
-    """a ctnetlink payload: nfgenmsg, the two tuples, counters (orig bytes, reply bytes, orig
-    packets, reply packets) and the id, in the kernel's order"""
+    """A ctnetlink payload.
+
+    Nfgenmsg, the two tuples, counters (orig bytes, reply bytes, orig packets, reply
+    packets) and the id, in the kernel's order.
+    """
     payload = (
         struct.pack("=BBH", socket.AF_INET, 0, 0) + _tuple(1, *orig) + _tuple(2, *reply)
     )
@@ -68,7 +74,7 @@ def _message(
     return payload + _attr(12, struct.pack(">I", ct_id))
 
 
-# a peer of an exit node opening a connection that the host masquerades
+#: A peer of an exit node opening a connection that the host masquerades.
 ORIG = ("100.64.0.2", "198.51.100.7", 6, 40000, 443)
 REPLY = ("198.51.100.7", "203.0.113.1", 6, 443, 61000)
 
@@ -79,7 +85,7 @@ def test_parse_entry_reads_tuples_and_counters():
     assert entry == conntrack.Entry(
         6, "100.64.0.2", 40000, "198.51.100.7", 443, (100, 2000, 2, 3)
     )
-    # a flow started while nf_conntrack_acct was off has no counters
+    # A flow started while nf_conntrack_acct was off has no counters.
     assert conntrack.parse_entry(_message(7, ORIG, REPLY, None)) == (
         7,
         conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, None),
@@ -93,9 +99,10 @@ def test_quick_sources_find_both_ends():
         ipaddress.ip_address("198.51.100.7").packed,
     )
     host = conntrack.pack_addresses({"203.0.113.1"})
-    # masqueraded: the host's address is only the reply's destination, so it is forwarded
+    # Masqueraded: the host's address is only the reply's destination, so it is
+    # forwarded.
     assert not conntrack.is_local(payload, host)
-    # opened by the host, or answered by it
+    # Opened by the host, or answered by it.
     assert conntrack.is_local(
         _message(
             8,
@@ -112,7 +119,7 @@ def test_quick_sources_find_both_ends():
         ),
         host,
     )
-    # sent to a broadcast or multicast address: delivered here, never forwarded
+    # Sent to a broadcast or multicast address: delivered here, never forwarded.
     assert conntrack.is_local(
         _message(
             11,
@@ -146,8 +153,11 @@ def _entry(orig_bytes: int, reply_bytes: int) -> conntrack.Entry:
 
 
 def test_collect_reports_deltas():
-    """the first dump is the baseline; then each flow reports what it moved since the dump that
-    saw it last, and an ended flow its last bytes from the destroy event"""
+    """The first dump is the baseline.
+
+    Then each flow reports what it moved since the dump that saw it last, and an ended
+    flow its last bytes from the destroy event.
+    """
     dumps = [
         {1: _entry(100, 1000)},
         {1: _entry(150, 1500), 2: _entry(30, 300)},
@@ -161,7 +171,7 @@ def test_collect_reports_deltas():
         (50, 500),
         (30, 300),
     ]
-    # flow 1 ended at 170/1700 between the dumps; flow 2 goes on
+    # Flow 1 ended at 170/1700 between the dumps; flow 2 goes on.
     tracker.destroyed.append((1, _entry(170, 1700)))
     flows = tracker.collect(set())
     assert sorted((flow.orig_bytes, flow.reply_bytes) for flow in flows) == [
@@ -192,9 +202,12 @@ def test_collect_reports_flows_without_counters_once():
 
 
 def test_trackers_follow_the_namespaces():
-    """a namespace's first dump is its baseline; one that cannot be read is reported once and
-    the others go on; one that has gone is closed"""
-    # each namespace's table, told apart by its local address
+    """A namespace's first dump is its baseline.
+
+    One that cannot be read is reported once and the others go on; one that has gone is
+    closed.
+    """
+    # Each namespace's table, told apart by its local address.
     tables: dict[bytes, list] = {
         socket.inet_aton("10.0.0.1"): [
             {1: _entry(100, 1000)},
@@ -229,7 +242,8 @@ def test_trackers_follow_the_namespaces():
         (1, 10)
     ]
     assert len(reports) == 1 and "vpn1" in reports[0] and "busy" in reports[0]
-    # vpn1 can be read again, counting from its baseline; then it goes away and is closed
+    # Vpn1 can be read again, counting from its baseline; then it goes away and is
+    # closed.
     assert sorted(
         (flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)
     ) == [(1, 10), (2, 5)]
@@ -245,8 +259,12 @@ def test_trackers_follow_the_namespaces():
     reason="needs root, iproute2 and nf_conntrack",
 )
 def test_collect_sees_routed_traffic():
-    """two namespaces talk through the host: the host forwards, no local socket is involved"""
-    # docker sets the FORWARD policy to DROP, and a dropped packet's flow is never committed
+    """Two namespaces talk through the host.
+
+    The host forwards, no local socket is involved.
+    """
+    # Docker sets the FORWARD policy to DROP, and a dropped packet's flow is never
+    # committed.
     iptables = shutil.which("iptables")
     rules = ["FORWARD -s 10.97.0.0/16 -j ACCEPT", "FORWARD -d 10.97.0.0/16 -j ACCEPT"]
 
@@ -301,7 +319,7 @@ def test_collect_sees_routed_traffic():
         assert [(flow.src, flow.dst, flow.protocol) for flow in flows] == [
             ("10.97.1.2", "10.97.2.2", 6)
         ]
-        # wire bytes: the payload and its headers
+        # Wire bytes: the payload and its headers.
         assert flows[0].orig_bytes >= 20000 and flows[0].orig_packets >= 3
     finally:
         for i in (1, 2):
@@ -318,7 +336,7 @@ def test_collect_sees_routed_traffic():
 
 
 def _flush_conntrack() -> None:
-    """delete every entry of the calling thread's conntrack table, as conntrack -F does"""
+    """Delete every entry of this thread's conntrack table, as conntrack -F does."""
     with conntrack._socket() as sock:
         body = conntrack._NFGENMSG.pack(socket.AF_INET, 0, 0)
         msg_type = (
@@ -345,8 +363,11 @@ def _flush_conntrack() -> None:
     reason="needs root, iproute2, nft and nf_conntrack",
 )
 def test_trackers_see_forwarding_inside_a_namespace():
-    """a namespace routes between two others, as a VPN namespace that forwards would: its own
-    conntrack table is dumped from inside it, and its listener catches flows that end"""
+    """A namespace routes between two others, as a VPN namespace that forwards would.
+
+    Its own conntrack table is dumped from inside it, and its listener catches flows
+    that end.
+    """
 
     def sh(command: str) -> None:
         subprocess.run(command, shell=True, check=True, capture_output=True)
@@ -364,7 +385,8 @@ def test_trackers_see_forwarding_inside_a_namespace():
             sh(
                 f"ip -n psfr addr add 10.98.{i}.1/24 dev psfr{i} && ip -n psfr link set psfr{i} up"
             )
-        # forwarding with counters in the router only; the ct rule turns conntrack on there
+        # Forwarding with counters in the router only; the ct rule turns conntrack on
+        # there.
         sh(
             "ip netns exec psfr sysctl -qw net.ipv4.ip_forward=1 net.netfilter.nf_conntrack_acct=1"
         )
@@ -401,7 +423,7 @@ def test_trackers_see_forwarding_inside_a_namespace():
             (router, "10.98.1.2", "10.98.2.2", 6)
         ]
         assert flows[0].orig_bytes >= 20000
-        # a flow that ends between two collects is known from the destroy event alone
+        # A flow that ends between two collects is known from the destroy event alone.
         transfer(30000)
         netinfo.run_in_netns("/run/netns/psfr", _flush_conntrack)
         time.sleep(1)

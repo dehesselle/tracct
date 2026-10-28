@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Tests for the Textual viewer, driven headless against a query server on a temporary socket
-and a live feed publisher. No root needed; skipped without textual (tracct[tui])."""
+"""Tests for the Textual viewer, driven headless against a query server on a temporary
+socket and a live feed publisher. No root needed; skipped without textual (tracct[tui]).
+"""
 
 import grp
 import os
@@ -51,7 +52,7 @@ from tracct.viewer.timerange import (  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def settings_file(tmp_path):
-    """the viewer's settings in a file of the test's own, never the user's"""
+    """The viewer's settings in a file of the test's own, never the user's."""
     configure(path=tmp_path / "settings.json")
 
 
@@ -88,20 +89,20 @@ async def test_tab_keys(tmp_path):
             "processes",
         ]
         assert not tabs.query_one(ContentTabs).can_focus
-        # Textual's own ctrl+q quits; no single key does
+        # Textual's own ctrl+q quits; no single key does.
         assert "ctrl+q" in app.screen.active_bindings and not {
             "q",
             "question_mark",
         } & set(app.screen.active_bindings)
-        # no daemon: the live tab's banner shows why, as an error
+        # No daemon: the live tab's banner shows why, as an error.
         banner = app.query_one(LivePane).query_one(".banner")
         await _until(pilot, lambda: banner.display and banner.has_class("-error"))
         assert "live feed unavailable" in str(banner.query_one(".banner-text").render())
         assert not banner.query_one(".banner-hint").display
-        # p means Processes, even with the focus in the live tab
+        # P means Processes, even with the focus in the live tab.
         await pilot.press("p")
         assert tabs.active == "processes"
-        # the time range and units belong to the history tabs only
+        # The time range and units belong to the history tabs only.
         await _until(
             pilot,
             lambda: (
@@ -131,8 +132,8 @@ async def test_span_picker(tmp_path):
         await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
         picker = app.screen
         options = picker.query_one("#picker-results")
-        # shortest first, the whole history last, opened on the current span, which s returns
-        # to while zoomed
+        # Shortest first, the whole history last, opened on the current span, which s
+        # returns to while zoomed.
         labels = [label for _, label, _ in picker._entries]
         assert labels[:2] == ["1 minute", "5 minutes"] and labels[-1] == "all history"
         assert picker._entries[options.highlighted][0] == app.time_range.span
@@ -141,17 +142,18 @@ async def test_span_picker(tmp_path):
             .rstrip()
             .endswith("(current)  (press s to select)")
         )
-        # Escape changes nothing
+        # Escape changes nothing.
         await pilot.press("escape")
         await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
         assert app.time_range.zoom == (5, 10)
-        # Enter takes the highlighted span, which ends the zoom
+        # Enter takes the highlighted span, which ends the zoom.
         span = app.time_range.span
         await pilot.press("s", "down", "enter")
         await _until(
             pilot, lambda: app.time_range.span != span and app.time_range.zoom is None
         )
-        # without a zoom, s in the picker has nothing to return to: no hint, and it stays open
+        # Without a zoom, s in the picker has nothing to return to: no hint, and it
+        # stays open.
         await pilot.press("s")
         await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
         options = app.screen.query_one("#picker-results")
@@ -166,7 +168,8 @@ async def test_span_picker(tmp_path):
 async def test_unit_picker(tmp_path):
     app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     async with app.run_test(size=(120, 40)) as pilot:
-        # before any change there is no unit to go back to: no hint, and u leaves it open
+        # Before any change there is no unit to go back to: no hint, and u leaves it
+        # open.
         await pilot.press("u")
         await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
@@ -178,7 +181,7 @@ async def test_unit_picker(tmp_path):
         await pilot.press("u")
         await pilot.pause(0.2)
         assert isinstance(app.screen, ByteUnitPicker)
-        # Enter takes the highlighted unit
+        # Enter takes the highlighted unit.
         await pilot.press("down", "down", "down", "enter")
         await _until(
             pilot,
@@ -186,7 +189,7 @@ async def test_unit_picker(tmp_path):
                 app.byte_unit == "MB" and not isinstance(app.screen, ByteUnitPicker)
             ),
         )
-        # the unit before has the hint, and u u goes back and forth
+        # The unit before has the hint, and u u goes back and forth.
         await pilot.press("u")
         await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
@@ -241,19 +244,19 @@ def test_time_range():
     assert time_range.heading(*time_range.bounds(now, None)) == "last 1 hour"
     time_range.step(-1)
     start, end = time_range.bounds(now, None)
-    # the last whole hour of local time before now
+    # The last whole hour of local time before now.
     assert end - start == 3600 and end <= now < end + 3600 and not time_range.ends_now()
     assert time_range.heading(start, end) == "1 hour, 1 back"
-    # a zoom keeps the step back for s s to return to
+    # A zoom keeps the step back for s s to return to.
     time_range.zoom_to(5, 10)
     assert time_range.bounds(now, None) == (5, 10)
     time_range.unzoom()
     assert time_range.bounds(now, None) == (start, end)
-    # forward stops at the span that ends now
+    # Forward stops at the span that ends now.
     time_range.step(1)
     time_range.step(1)
     assert time_range.ends_now()
-    # picking the span shown, ending now, changes nothing; after a step back it does
+    # Picking the span shown, ending now, changes nothing; after a step back it does.
     assert not time_range.pick(hour)
     time_range.step(-1)
     assert time_range.pick(hour) and time_range.ends_now()
@@ -263,13 +266,14 @@ def test_time_range():
 
 
 def test_bucket_step():
-    # round lengths, never below the write window
+    # Round lengths, never below the write window.
     assert bucket_step(60, 100) == 10
     assert bucket_step(900, 100) == 10
     assert bucket_step(3600, 100) == 60
     assert bucket_step(86400, 120) == 900
     assert bucket_step(10**12, 100) == 365 * 86400
-    # buckets up to a day long start on whole steps of local time, longer ones at the start
+    # Buckets up to a day long start on whole steps of local time, longer ones at the
+    # start.
     start = 1_000_000_007
     origin, step = bucket_grid(start, start + 3600, 100)
     assert step == 60 and origin <= start < origin + step
@@ -278,7 +282,7 @@ def test_bucket_step():
 
 
 def test_plot_axes():
-    # the time axis is tcoda's; the rate axis labels round values in bytes per second
+    # The time axis is tcoda's; the rate axis labels round values in bytes per second.
     rates = RateAxis()
     ticks = rates.get_ticks(0, 7000, 5)
     assert ticks == [0.0, 2000.0, 4000.0, 6000.0]
@@ -286,7 +290,9 @@ def test_plot_axes():
 
 
 async def test_plot_limits():
-    """zooming out stops at ten years, zooming in at a minute, and nothing reaches back before 1970"""
+    """Zooming out stops at ten years, zooming in at a minute, and nothing reaches back
+    before 1970.
+    """
     settled = []
 
     class PlotApp(App):
@@ -302,7 +308,7 @@ async def test_plot_limits():
     app = PlotApp()
     async with app.run_test(size=(100, 30)) as pilot:
         plot = app.query_one(TrafficPlot)
-        # the first hour after the epoch, so zooming out runs into 1970
+        # The first hour after the epoch, so zooming out runs into 1970.
         plot.show(Timeline(0, 3600, 0, 60, PEAK_SECONDS, 0, ()))
         plot.focus()
         await pilot.press(*["minus"] * 100)
@@ -345,11 +351,12 @@ async def test_history_drill_down(tmp_path):
         async with app.run_test(size=(140, 45)) as pilot:
             processes = app.query_one("#processes HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(processes.result))
-            # the tab asked for keeps the focus, rather than the first tab taking it
+            # The tab asked for keeps the focus, rather than the first tab taking it.
             await pilot.pause(0.3)
             assert app.query_one(TabbedContent).active == "processes"
             assert _values(processes) == ["/usr/bin/curl", "/usr/sbin/nginx"]
-            # above them the sums over all rows, one per layer, which are never added up
+            # Above them the sums over all rows, one per layer, which are never added
+            # up.
             table = processes.query_one(DataTable)
             assert [str(table.get_row_at(i)[0]) for i in range(table.row_count)] == [
                 "(all · outer)",
@@ -361,11 +368,12 @@ async def test_history_drill_down(tmp_path):
                 processes.table_rows[0].out_bytes,
                 processes.table_rows[0].in_bytes,
             ) == (6111, 11522)
-            # the plot follows the highlighted row, which starts on the largest value, not a sum
+            # The plot follows the highlighted row, which starts on the largest value,
+            # not a sum.
             plot = processes.query_one(TrafficPlot)
             await _until(pilot, lambda: "curl" in plot.row_label)
             assert sum(a for a, _ in plot.values.values()) == 1111
-            # a sum is a row like any other: its layer's plot
+            # A sum is a row like any other: its layer's plot.
             table.focus()
             await pilot.press("up")
             await _until(
@@ -375,17 +383,18 @@ async def test_history_drill_down(tmp_path):
                     and sum(a for a, _ in plot.values.values()) == 300
                 ),
             )
-            # it has no value to filter on
+            # It has no value to filter on.
             await pilot.press("comma", "f", "i")
             await pilot.pause(0.3)
             assert not processes.filters
             await pilot.press("down")
-            # , f i keeps the highlighted row, , f e excludes it, , f p pops the last filter
+            # ,f i keeps the highlighted row, ,f e excludes it, ,f p pops the last
+            # filter.
             processes.query_one(DataTable).focus()
-            # no filter, no find, no problem: no banner
+            # No filter, no find, no problem: no banner.
             banner = processes.query_one(Banner)
             assert not banner.display
-            # Enter on a row no longer filters
+            # Enter on a row no longer filters.
             await pilot.press("down", "enter")
             await pilot.pause(0.3)
             assert not processes.filters
@@ -397,7 +406,7 @@ async def test_history_drill_down(tmp_path):
                     and _values(processes) == ["/usr/sbin/nginx"]
                 ),
             )
-            # the filters are in the banner, with the chord that clears them
+            # The filters are in the banner, with the chord that clears them.
             assert banner.display and _banner(processes) == (
                 "filter: executable=/usr/sbin/nginx",
                 "press ,f c to clear filters",
@@ -406,7 +415,7 @@ async def test_history_drill_down(tmp_path):
             await _until(
                 pilot, lambda: not processes.filters and len(_values(processes)) == 2
             )
-            # the highlight stayed on nginx through the refresh
+            # The highlight stayed on nginx through the refresh.
             await pilot.press("comma", "f", "e")
             await _until(
                 pilot,
@@ -415,11 +424,11 @@ async def test_history_drill_down(tmp_path):
                     and _values(processes) == ["/usr/bin/curl"]
                 ),
             )
-            # a drill-down: keep curl, break it down by namespace, keep that; , f c clears both and
-            # returns to the dimension it started from
+            # A drill-down: keep curl, break it down by namespace, keep that; , f c
+            # clears both and returns to the dimension it started from.
             await pilot.press("comma", "f", "p")
             await _until(pilot, lambda: len(_values(processes)) == 2)
-            # excluding nginx moved the highlight to curl, and it stayed there
+            # Excluding nginx moved the highlight to curl, and it stayed there.
             await pilot.press("comma", "f", "i")
             await _until(
                 pilot,
@@ -439,18 +448,19 @@ async def test_history_drill_down(tmp_path):
                     and len(_values(processes)) == 2
                 ),
             )
-            # another dimension
+            # Another dimension.
             processes.select_dimension("netns")
             processes.reload()
             await _until(pilot, lambda: set(_values(processes)) == {"host", str(VPN)})
             assert not banner.display
-            # the table's title counts the rows only while some are hidden
+            # The table's title counts the rows only while some are hidden.
             assert not table.border_title
-            # find narrows the rows shown; kept with Enter, the banner says it, and c clears it
+            # Find narrows the rows shown; kept with Enter, the banner says it, and c
+            # clears it.
             await pilot.press("slash", "h", "o", "s", "t")
             await _until(pilot, lambda: _values(processes) == ["host"])
             assert table.border_title == "1 of 2 rows"
-            # the input opens on the tab's own top line
+            # The input opens on the tab's own top line.
             assert (
                 processes.children[0].has_class("find", "shown") and not banner.display
             )
@@ -463,23 +473,25 @@ async def test_history_drill_down(tmp_path):
                 pilot, lambda: len(_values(processes)) == 2 and not banner.display
             )
             assert not table.border_title
-            # Escape clears an open one
+            # Escape clears an open one.
             await pilot.press("slash", "h")
             await _until(pilot, lambda: _values(processes) == ["host"])
             await pilot.press("escape")
             await _until(pilot, lambda: len(_values(processes)) == 2)
             assert not processes.children[0].has_class("shown") and not banner.display
-            # the interfaces tab shares the range
+            # The interfaces tab shares the range.
             await pilot.press("i")
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(interfaces.result))
             assert _values(interfaces) == ["host/eth0", f"{VPN}/tun0"]
-            # zooming the plot narrows every tab to what it shows; z returns to the span
+            # Zooming the plot narrows every tab to what it shows; z returns to the
+            # span.
             plot = interfaces.query_one(TrafficPlot)
             await _until(pilot, lambda: bool(plot.values))
             start, end = interfaces.bounds()
             plot.focus()
-            # the plot keeps only its time keys; up and down do not move it, r refreshes as anywhere
+            # The plot keeps only its time keys; up and down do not move it, r refreshes
+            # as anywhere.
             await _until(
                 pilot,
                 lambda: (
@@ -505,7 +517,7 @@ async def test_history_drill_down(tmp_path):
             await pilot.press("r")
             await pilot.pause(0.3)
             assert app.time_range.zoom == (zoomed_start, zoomed_end)
-            # s twice: the picker, then back from the zoom to the span
+            # S twice: the picker, then back from the zoom to the span.
             await pilot.press("s", "s")
             await _until(
                 pilot,
@@ -513,7 +525,7 @@ async def test_history_drill_down(tmp_path):
             )
             await pilot.press("u", "down", "enter")
             await _until(pilot, lambda: app.byte_unit == "B")
-            # every history tab shows it, the hidden ones too, without asking again
+            # Every history tab shows it, the hidden ones too, without asking again.
             for pane in (interfaces, processes):
                 cell = str(pane.query_one(DataTable).get_cell_at((0, 1)))
                 assert pane.query_one(TrafficPlot).byte_unit == "B"
@@ -544,12 +556,12 @@ async def test_plot_title_and_busy(tmp_path):
             set_busy = plot.set_busy
             plot.set_busy = lambda busy: (shown.append(busy), set_busy(busy))
             await _until(pilot, lambda: bool(plot.values) and not pane.loading())
-            # answers within milliseconds never show the glyph
+            # Answers within milliseconds never show the glyph.
             assert True not in shown and BUSY not in _title(plot)
-            # the range, then the key; the highlighted row is in the table, and the peaks' stretch
-            # is the usual one
+            # The range, then the key; the highlighted row is in the table, and the
+            # peaks' stretch is the usual one.
             assert _title(plot) == "all history · ━━ sent ━━ received"
-            # a slow answer shows it until the rows and the plot are both in
+            # A slow answer shows it until the rows and the plot are both in.
             slow.set()
             app.action_refresh()
             await _until(
@@ -557,7 +569,7 @@ async def test_plot_title_and_busy(tmp_path):
             )
             slow.clear()
             await _until(pilot, lambda: not plot.busy and BUSY not in _title(plot))
-            # a zoom is named by its ends
+            # A zoom is named by its ends.
             plot.focus()
             await pilot.press("plus")
             await _until(
@@ -573,7 +585,7 @@ async def test_history_without_query_server(tmp_path):
         pane = app.query_one("#processes HistoryPane", HistoryPane)
         await _until(pilot, lambda: bool(pane.error))
         assert "query server unavailable" in pane.error
-        # in the banner, as on the live tab, and with nothing to undo no hint
+        # In the banner, as on the live tab, and with nothing to undo no hint.
         banner = pane.query_one(Banner)
         assert (
             banner.display
@@ -619,7 +631,7 @@ async def test_live_tab(tmp_path, monkeypatch):
             await _until(pilot, lambda: pane.event_count == 3)
             curl = pane.summary["curl\0/usr/bin/curl"]
             assert (curl.sent, curl.received, curl.events) == (101, 4000, 2)
-            # nothing to say: no banner; the events title carries the counts
+            # Nothing to say: no banner; the events title carries the counts.
             banner = pane.query_one(".banner")
             assert not banner.display
             await _until(
@@ -629,13 +641,14 @@ async def test_live_tab(tmp_path, monkeypatch):
                     == "last 500 events · 3 total"
                 ),
             )
-            # the seconds since the tab started go with the totals they were summed over
+            # The seconds since the tab started go with the totals they were summed
+            # over.
             assert re.fullmatch(
                 r"summary · \d+ s",
                 str(pane.query_one("#summary", DataTable).border_title),
             )
-            # typing a find (c types, it does not clear): the input says it; kept with Enter, the
-            # banner on the same line does, with a hint that c clears it
+            # Typing a find (c types, it does not clear): the input says it; kept with
+            # Enter, the banner on the same line does, with a hint that c clears it.
             await pilot.press("slash", "c", "u", "r", "l")
             await _until(pilot, lambda: pane.find == "curl")
             assert not banner.display
@@ -658,17 +671,19 @@ async def test_live_tab(tmp_path, monkeypatch):
                     and pane.query_one("#events", DataTable).row_count == 3
                 ),
             )
-            # by executable, newest event first
+            # By executable, newest event first.
             summary, events = (
                 pane.query_one("#summary", DataTable),
                 pane.query_one("#events", DataTable),
             )
             assert _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
             assert _keys(events) == ["3", "2", "1"]
-            # by the number behind the text: 5 B before 4.0 kB, where the text would rank the other way
+            # By the number behind the text: 5 B before 4.0 kB, where the text would
+            # rank the other way.
             summary.sort_by("received")
             assert _keys(summary) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
-            # a refill keeps the sort, and the cursor stays on its executable as it moves up
+            # A refill keeps the sort, and the cursor stays on its executable as it
+            # moves up.
             summary.move_cursor(row=1)
             pane.summary["curl\0/usr/bin/curl"].received = 0
             pane.render_tables()
@@ -678,7 +693,7 @@ async def test_live_tab(tmp_path, monkeypatch):
             )
             events.sort_by("sent")
             assert _keys(events)[0] == "2"
-            # paused, the events table stops; reset clears
+            # Paused, the events table stops; reset clears.
             pane.query_one("#summary", DataTable).focus()
             await pilot.press("space")
             publisher.publish(event)
@@ -687,7 +702,7 @@ async def test_live_tab(tmp_path, monkeypatch):
             await _until(pilot, lambda: events.border_subtitle == "table is frozen")
             await pilot.press("r")
             await _until(pilot, lambda: pane.event_count == 0 and not pane.summary)
-            # reset empties the frozen table too, so nothing in it outlives its event
+            # Reset empties the frozen table too, so nothing in it outlives its event.
             assert events.row_count == 0 and summary.row_count == 0
             events.sort_by("received")
     finally:
@@ -699,7 +714,7 @@ def _keys(table: DataTable) -> list[str]:
 
 
 def _banner(pane) -> tuple[str, str]:
-    """the banner's text and its hint, or "" for a hidden hint"""
+    """The banner's text and its hint, or "" for a hidden hint."""
     banner = pane.query_one(Banner)
     hint = banner.query_one(".banner-hint")
     return str(banner.query_one(".banner-text").render()), str(
@@ -708,7 +723,7 @@ def _banner(pane) -> tuple[str, str]:
 
 
 def _title(plot: TrafficPlot) -> str:
-    """the plot's title as shown: Textual keeps it as markup"""
+    """The plot's title as shown: Textual keeps it as markup."""
     return Content.from_markup(plot.border_title).plain
 
 
@@ -730,7 +745,8 @@ async def test_live_limits(tmp_path, monkeypatch):
                     pane.state is FeedState.CONNECTED and publisher.has_subscribers()
                 ),
             )
-            # two executables go idle, ten more arrive after them: the idle two make room
+            # Two executables go idle, ten more arrive after them: the idle two make
+            # room.
             publisher.publish_many(
                 [
                     {"name": f"old{i}", "exe": f"/bin/old{i}", "send": 1}
@@ -759,7 +775,7 @@ async def test_live_limits(tmp_path, monkeypatch):
             assert not any(t.name.startswith("old") for t in pane.summary.values())
             assert pane.query_one("#summary", DataTable).row_count == 10
             assert len(pane.events) == 12
-            # a lowered limit applies on the next redraw and keeps the newest events
+            # A lowered limit applies on the next redraw and keeps the newest events.
             config.set(settings.LIVE_EVENTS, 10)
             await _until(pilot, lambda: len(pane.events) == 10)
             await _until(

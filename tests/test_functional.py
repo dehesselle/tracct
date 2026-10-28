@@ -30,13 +30,13 @@ from tracct.constants import DB_VERSION
 TRACCT_DIR = Path(__file__).parent.parent
 PYTHON_EXE = sys.executable
 
-# Use a test prefix so tests don't touch the real tracct directories
+#: Use a test prefix so tests don't touch the real tracct directories.
 TEST_ROOT = "/tmp/tracct"
-# point the daemon at the test root through the variables systemd would set
+#: Point the daemon at the test root through the variables systemd would set.
 CONFIG_PATH = Path(f"{TEST_ROOT}/etc/config.toml")
 STATE_DIR = Path(f"{TEST_ROOT}/state")
 RUN_DIR = Path(f"{TEST_ROOT}/run")
-# the daemon logs to stderr; a file, not an unread pipe that would block it once full
+#: The daemon logs to stderr; a file, not an unread pipe that would block it once full.
 DAEMON_LOG = Path(f"{TEST_ROOT}/daemon.log")
 os.environ["TRACCT_CONFIG"] = str(CONFIG_PATH)
 os.environ["STATE_DIRECTORY"] = str(STATE_DIR)
@@ -67,11 +67,11 @@ def clean_test_dirs():
 def start_tracct(extra_config_toml: str = "") -> subprocess.Popen:
     """Start the tracct daemon in the foreground (`run`) and return the process.
 
-    Waits for the daemon to be fully ready (events socket present) and then
-    issues a warmup HTTP request that is polled-for in the database so we
-    know the BPF monitor is actually producing events before the test
-    starts exercising it. Without this, the first test in a run frequently
-    races the BPF attachment and sees no events."""
+    Waits for the daemon to be fully ready (events socket present) and then issues a
+    warmup HTTP request that is polled-for in the database so we know the BPF monitor is
+    actually producing events before the test starts exercising it. Without this, the
+    first test in a run frequently races the BPF attachment and sees no events.
+    """
     config_toml = f"""\
 [database]
 enabled = true
@@ -102,7 +102,7 @@ exec_ring_buffer_pages = 256
             stderr=subprocess.STDOUT,
         )
 
-    # wait for the events socket to appear -- means the daemon is listening
+    # Wait for the events socket to appear -- means the daemon is listening.
     events_sock = RUN_DIR / "events.sock"
     deadline = time.time() + STARTUP_WAIT + 10
     while time.time() < deadline:
@@ -113,20 +113,19 @@ exec_ring_buffer_pages = 256
             break
         time.sleep(0.2)
 
-    # additional settle time for BPF program load
+    # Additional settle time for BPF program load.
     time.sleep(STARTUP_WAIT)
 
-    # warmup: hit a known endpoint and poll for it to appear in the DB so we
-    # know the BPF monitor is producing events end-to-end. Retry the warmup
-    # up to a few times because the first event after BPF attach can be
-    # missed on slower systems.
+    # Warmup: hit a known endpoint and poll for it to appear in the DB so we know the
+    # BPF monitor is producing events end-to-end. Retry the warmup up to a few times
+    # because the first event after BPF attach can be missed on slower systems.
     warmup_deadline = time.time() + 60
     warmup_seen = False
     while time.time() < warmup_deadline and not warmup_seen:
         subprocess.run(
             ["curl", "-s", "-o", "/dev/null", "https://example.com"], timeout=15
         )
-        # give the writer time to flush
+        # Give the writer time to flush.
         for _ in range(int((DB_WRITE_LIMIT + 4) * 2)):
             time.sleep(0.5)
             if proc.poll() is not None:
@@ -199,7 +198,7 @@ def tracct_session():
     yield proc
 
     stop_tracct(proc)
-    # Clean up test root
+    # Clean up test root.
     test_root = Path(TEST_ROOT)
     if test_root.exists():
         shutil.rmtree(test_root)
@@ -238,10 +237,10 @@ class TestShortLivedProcesses:
         if not wget_exe:
             pytest.skip("wget not available")
 
-        # Retry to absorb transient network failures (DNS/connect to example.com)
-        # and rare BPF event drops on a busy CI runner. The test is asserting
-        # that *when* wget makes a connection, tracct resolves its exe -- so
-        # any single attempt that produces captured connections is sufficient.
+        # Retry to absorb transient network failures (DNS/connect to example.com) and
+        # rare BPF event drops on a busy CI runner. The test is asserting that *when*
+        # wget makes a connection, tracct resolves its exe -- so any single attempt
+        # that produces captured connections is sufficient.
         last_wget_err = ""
         connections: list = []
         for attempt in range(5):
@@ -290,7 +289,7 @@ class TestShortLivedProcesses:
             "Should have captured at least one curl connection"
         )
 
-        # All curl connections should have exe resolved
+        # All curl connections should have exe resolved.
         for conn in connections:
             name, exe, raddr, rport, send, recv, domain = conn
             assert exe != "", "All curl connections should have exe resolved"
@@ -329,7 +328,7 @@ class TestDatabaseIntegrity:
         )
         tables = cur.fetchall()
         assert len(tables) == 1, "executables table should exist"
-        # identity is by path: no hash column, and process ancestry stops at the parent
+        # Identity is by path: no hash column, and process ancestry stops at the parent.
         cur.execute("PRAGMA table_info(executables)")
         assert [row[1] for row in cur.fetchall()] == ["id", "exe", "name", "cmdline"]
         cur.execute("PRAGMA table_info(connections)")
@@ -354,9 +353,11 @@ class TestDatabaseIntegrity:
 
 
 class TestSpliceRecvAccounting:
-    """recv via splice() bypasses recvmsg, so only the tcp_splice_read hook sees it; the
-    recorded bytes must match what was spliced exactly once (0 means the hook is missing,
-    ~2x means another hook double counted the same bytes)."""
+    """Recv via splice() bypasses recvmsg, so only the tcp_splice_read hook sees it.
+
+    The recorded bytes must match what was spliced exactly once (0 means the hook is
+    missing, ~2x means another hook double counted the same bytes).
+    """
 
     def test_splice_recv_bytes_exact(self, tracct_session):
         total = 4 * 1024 * 1024
@@ -408,8 +409,8 @@ assert got == total, got
         assert rows, (
             "spliced recv connection was not recorded at all (tcp_splice_read hook missing?)"
         )
-        # wait out one more write cycle so a straddled flush (or double-counted rows still in
-        # flight) can't hide bytes from the final tally
+        # Wait out one more write cycle so a straddled flush (or double-counted rows
+        # still in flight) can't hide bytes from the final tally.
         time.sleep(DB_WRITE_LIMIT + 2)
         rows = spliced_recv_rows()
         recv_total = sum(recv for _, recv in rows)
@@ -419,8 +420,10 @@ assert got == total, got
 
 
 class TestDualStackServer:
-    """a server listening on [::] sees IPv4 clients as ::ffff:a.b.c.d; their rows are IPv4, with
-    plain addresses and the interface of the local address"""
+    """A server listening on [::] sees IPv4 clients as ::ffff:a.b.c.d.
+
+    Their rows are IPv4, with plain addresses and the interface of the local address.
+    """
 
     def test_ipv4_client_of_dual_stack_server(self, tracct_session):
         port = 42814
@@ -471,10 +474,10 @@ class TestParentTracking:
         if not bash_exe:
             pytest.skip("bash not available")
 
-        # Spin up a private localhost HTTP server on an ephemeral port so we
-        # can later filter `connections` by that exact rport, isolating this
-        # test's curl from prior tests' curls, the startup warmup, and any
-        # sudo-launched daemon health checks that might also hit example.com.
+        # Spin up a private localhost HTTP server on an ephemeral port so we can later
+        # filter `connections` by that exact rport, isolating this test's curl from
+        # prior tests' curls, the startup warmup, and any sudo-launched daemon health
+        # checks that might also hit example.com.
         import http.server
         import socketserver
         import threading
@@ -493,11 +496,11 @@ class TestParentTracking:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            # Bash exec's the last command in place to avoid an extra process;
-            # the trailing no-op (`:`) makes it fork curl, so curl's parent is bash.
+            # Bash exec's the last command in place to avoid an extra process; the
+            # trailing no-op (`:`) makes it fork curl, so curl's parent is bash.
             #
-            # Retry the whole invocation a few times to absorb rare event drops
-            # on slow/emulated CI runners.
+            # Retry the whole invocation a few times to absorb rare event drops on
+            # slow/emulated CI runners.
             results: list = []
             for _ in range(5):
                 start_time = int(time.time())
@@ -513,8 +516,8 @@ class TestParentTracking:
                 time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
                 # Filter strictly to this test's curl: same rport (unique to this
-                # server) and contime within the invocation window. This isolates
-                # us from any other curl traffic happening on the box.
+                # server) and contime within the invocation window. This isolates us
+                # from any other curl traffic happening on the box.
                 results = query_db(
                     "SELECT p.exe, p.name FROM connections c "
                     "JOIN executables e ON c.exe_id = e.id "

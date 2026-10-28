@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Tests for the interface and namespace information the writer records; the last test creates
-real namespaces, a veth pair and a TUN device and needs root."""
+"""Tests for the interface and namespace information the writer records.
+
+The last test creates real namespaces, a veth pair and a TUN device and needs root.
+"""
 
 import fcntl
 import os
@@ -38,14 +40,14 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
     reports: list[str] = []
     info = netinfo.NetInfo(reports.append, query=lambda path: snapshots.pop(0))
     host = info.host
-    # the first look is the baseline
+    # The first look is the baseline.
     assert info.refresh() == []
     assert info.names == {host: "host"}
     assert info.interface_of(host, "10.0.0.2") == ("eth0", "")
     assert info.interface_of(host, "100.64.0.1") == ("tailscale0", "tun")
     assert info.interface_of(host, "127.0.0.53") == ("lo", "")
     assert info.interface_of(host, "192.0.2.1") == ("", "")
-    # with the broadcast addresses of the IPv4 networks
+    # With the broadcast addresses of the IPv4 networks.
     assert info.local_addresses() == {
         "127.0.0.1",
         "::1",
@@ -55,14 +57,15 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
         "10.0.0.255",
     }
     assert info.refresh() == [(host, "eth0", "", 500, 0)]
-    # eth0 was recreated: its counters start over
+    # eth0 was recreated: its counters start over.
     assert info.refresh() == [(host, "eth0", "", 10, 20)]
     assert reports == []
 
 
 def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
-    """a namespace that cannot be queried once is reported once and keeps its owners and
-    baseline, so the next look counts from where the last one left off"""
+    """A namespace that cannot be queried once is reported once and keeps its owners and
+    baseline, so the next look counts from where the last one left off.
+    """
     monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
     answers = [
         _snapshot(1000, 500),
@@ -103,7 +106,7 @@ def test_real_namespaces_and_tun():
             "ip -n psni addr add 10.96.0.2/24 dev psni1 && ip -n psni link set psni1 up && ip -n psni link set lo up"
         )
         tun = os.open("/dev/net/tun", os.O_RDWR)
-        # TUNSETIFF with IFF_TUN | IFF_NO_PI
+        # TUNSETIFF with IFF_TUN | IFF_NO_PI.
         fcntl.ioctl(tun, 0x400454CA, struct.pack("16sH", b"psnitun0", 0x0001 | 0x1000))
         info = netinfo.NetInfo(lambda message: None)
         info.refresh()
@@ -117,7 +120,8 @@ def test_real_namespaces_and_tun():
         moved = {
             (netns, name): (rx, tx) for netns, name, kind, rx, tx in info.refresh()
         }
-        # 5 echo requests and replies of 1028 bytes of ICMP plus their IP and Ethernet headers
+        # 5 echo requests and replies of 1028 bytes of ICMP, plus their IP and
+        # Ethernet headers.
         assert (
             moved[(inode, "psni1")][0] >= 5 * 1028
             and moved[(info.host, "psni0")][1] >= 5 * 1028

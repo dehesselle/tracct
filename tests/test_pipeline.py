@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Tests for the hand-off between the reader, writer and live feed threads. No root/BPF."""
+"""Tests for the hand-off between the reader, writer and live feed threads.
+
+No root or BPF needed.
+"""
 
 import copy
 import sqlite3
@@ -54,10 +57,10 @@ def test_drop_oldest_queue_bounds_events():
     hand_off: DropOldestQueue[int] = DropOldestQueue(3)
     for batch in ([1], [2, 3], [4, 5]):
         hand_off.put(batch)
-    # five events over a bound of three: the oldest batches made room and were counted
+    # Five events over a bound of three: the oldest batches made room and were counted.
     assert hand_off.dropped == 3
     assert hand_off.get_all(0) == [[4, 5]]
-    # a batch larger than the bound is still kept whole
+    # A batch larger than the bound is still kept whole.
     hand_off.put([6, 7, 8, 9])
     assert hand_off.get_all(0) == [[6, 7, 8, 9]]
     started = time.monotonic()
@@ -66,13 +69,13 @@ def test_drop_oldest_queue_bounds_events():
 
 
 def test_window_leaves_events_alone():
-    """the live feed may still be sending the events the writer aggregates"""
+    """The live feed may still be sending the events the writer aggregates."""
     events = [_event(), _event(send=1, recv=1, pkts=1)]
     before = copy.deepcopy(events)
     window = writer.WriteWindow(Config())
     window.add(events)
     assert events == before
-    # both events are the same connection: one row with their sums
+    # Both events are the same connection: one row with their sums.
     assert len(window) == 1
     rows, flows = window.take_rows()
     assert len(rows) == 1 and not flows and len(window) == 0
@@ -93,9 +96,10 @@ class _FakeDns:
 
 
 def test_window_fills_domains_at_write():
-    """reverse DNS is asked once per new connection and its answer used when the window is
-    written; a connection with and without the program's own lookup becomes one row, and
-    ignore_domains matches the name from reverse DNS"""
+    """Reverse DNS is asked once per new connection and its answer used when the window
+    is written; a connection with and without the program's own lookup becomes one row,
+    and ignore_domains matches the name from reverse DNS.
+    """
     config = Config()
     config.log.ignore_domains = ["org.ignored."]
     dns = _FakeDns()
@@ -126,8 +130,10 @@ class _FakeNetInfo:
 
 
 def test_window_interfaces_and_flows():
-    """a row carries the interface of its local address, a TUN row the device of its process;
-    forwarded flows are summed per flow and named by reverse DNS of the answering side"""
+    """A row carries the interface of its local address, a TUN row the device of its
+    process; forwarded flows are summed per flow and named by reverse DNS of the
+    answering side.
+    """
     from tracct.conntrack import Flow
     from tracct.netinfo import NetInfo
 
@@ -196,7 +202,8 @@ def test_writer_writes_what_is_left_on_stop(tmp_path, monkeypatch):
     batches.put([_event()])
     batches.put([_event(rport=80, domain="org.example")])
     stop = threading.Event()
-    # stopped before it starts: the window has not closed, everything goes in the final write
+    # Stopped before it starts: the window has not closed, everything goes in the final
+    # write.
     stop.set()
     thread = threading.Thread(target=writer.run_writer, args=(Config(), batches, stop))
     thread.start()
@@ -236,7 +243,7 @@ def test_writer_writes_full_window_early(tmp_path, monkeypatch):
         while count() < 2 and time.monotonic() < deadline:
             time.sleep(0.1)
         assert count() == 2
-        # one connection is below the bound: it waits for its window
+        # One connection is below the bound: it waits for its window.
         batches.put([_event(lport=3)])
         time.sleep(1.5)
         assert count() == 2
@@ -247,8 +254,9 @@ def test_writer_writes_full_window_early(tmp_path, monkeypatch):
 
 
 def test_writer_quarantines_unusable_db(tmp_path, monkeypatch):
-    """a database that turns out unusable while running is moved aside and the writer thread
-    ends, so the daemon exits and its next start creates a new one"""
+    """A database that turns out unusable while running is moved aside and the writer
+    thread ends, so the daemon exits and its next start creates a new one.
+    """
     db = _init_database(tmp_path, monkeypatch)
     db.write_bytes(b"this is not a sqlite database" * 64)
     failures: list[type] = []

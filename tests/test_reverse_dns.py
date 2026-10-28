@@ -28,7 +28,7 @@ def test_lookup_never_waits_for_the_resolver():
 
     dns = reverse_dns.ReverseDns(slow_resolver, workers=1)
     started = time.monotonic()
-    # unknown, then pending: neither waits, and the address is asked for once
+    # Unknown, then pending: neither waits, and the address is asked for once.
     assert dns.lookup("192.0.2.1") == ""
     assert dns.lookup("192.0.2.1") == ""
     assert time.monotonic() - started < 1
@@ -59,13 +59,13 @@ def test_full_queue_skips_and_cache_is_bounded(monkeypatch):
 
     dns = reverse_dns.ReverseDns(held_resolver, workers=1)
     dns.lookup("192.0.2.1")
-    # wait for the worker to take the first address, so the queue holds the next two
+    # Wait for the worker to take the first address, so the queue holds the next two.
     deadline = time.monotonic() + 5
     while dns._queue.qsize() and time.monotonic() < deadline:
         time.sleep(0.01)
     for ip in ("192.0.2.2", "192.0.2.3", "192.0.2.4"):
         dns.lookup(ip)
-    # the fourth did not fit and is not pending, so a later lookup can queue it again
+    # The fourth did not fit and is not pending, so a later lookup can queue it again.
     assert dns._pending == {"192.0.2.1", "192.0.2.2", "192.0.2.3"}
     release.set()
     assert _wait_for(dns.lookup, "192.0.2.3") == "name.192.0.2.3"
@@ -81,7 +81,7 @@ def test_resolve_reverses_names(monkeypatch):
         reverse_dns.socket, "getnameinfo", lambda addr, flags: ("www.example.com", "0")
     )
     assert reverse_dns.resolve("192.0.2.1") == "com.example.www"
-    # getnameinfo answers with the address itself when there is no PTR record
+    # getnameinfo answers with the address itself when there is no PTR record.
     monkeypatch.setattr(
         reverse_dns.socket, "getnameinfo", lambda addr, flags: (addr[0], "0")
     )
