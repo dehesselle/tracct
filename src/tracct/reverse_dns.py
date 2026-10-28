@@ -31,7 +31,7 @@ def resolve(ip: str) -> str:
     """
     try:
         host = socket.getnameinfo((ip, 0), 0)[0]
-    except Exception:
+    except (OSError, UnicodeError):
         return ip
     try:
         ipaddress.ip_address(host)
@@ -95,7 +95,8 @@ class ReverseDns:
                 continue
             try:
                 name = self._resolver(ip)
-            except Exception:
+            except Exception:  # noqa: BLE001
+                # Whatever the resolver raises, the worker goes on, the address unnamed.
                 name = ip
             with self._lock:
                 self._pending.discard(ip)

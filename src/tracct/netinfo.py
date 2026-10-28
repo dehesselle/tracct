@@ -60,7 +60,8 @@ def run_in_netns[T](
             # Changes this thread's namespace only, and the thread ends right after.
             os.setns(fd, os.CLONE_NEWNET)
             result.append(function())
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001
+            # Handed to the calling thread, which raises it there.
             errors.append(e)
 
     try:
@@ -248,7 +249,8 @@ class NetInfo:
         for inode, path in targets.items():
             try:
                 snapshot = self.query(path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # A namespace that cannot be read is reported and skipped.
                 if inode not in self.failed:
                     self.failed.add(inode)
                     self.report(

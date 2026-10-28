@@ -109,7 +109,8 @@ class LiveFeedPublisher:
                 target=self._writer_loop, daemon=True
             )
             self._writer_thread.start()
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # Without its socket there is no live feed, and the daemon runs on.
             self._sock = None
 
     def _accept_loop(self) -> None:

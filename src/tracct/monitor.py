@@ -169,7 +169,7 @@ def _find_exe_by_inode(comm: str, st_dev: int, st_ino: int) -> str:
             stat = os.stat(candidate)
             if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
                 return os.path.realpath(candidate)
-        except Exception:
+        except OSError:
             pass
     # Try common system directories.
     for prefix in (
@@ -186,7 +186,7 @@ def _find_exe_by_inode(comm: str, st_dev: int, st_ino: int) -> str:
             stat = os.stat(candidate)
             if (stat.st_dev & ST_DEV_MASK) == st_dev and stat.st_ino == st_ino:
                 return os.path.realpath(candidate)
-        except Exception:
+        except OSError:
             continue
     return ""
 
@@ -508,7 +508,8 @@ def initial_poll() -> list:
                         "lport": -1,
                     }
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Best effort: a process that is gone or unreadable is left out of the seed.
             pass
     return initial_processes
 
@@ -558,7 +559,7 @@ def run_monitor(
             # Errors replaced: a non-utf-8 argv must not blank the whole cmdline.
             cmdline = _read_proc_file(f"/proc/{pid}/cmdline")
             unit = _read_proc_unit(pid)
-        except Exception:
+        except OSError:
             cmdline = unit = ""
         if not cmdline:
             # Kernel threads have no cmdline either, and are never in last_read with
@@ -625,7 +626,8 @@ def run_monitor(
                         "netns": _read_netns_inode(proc["pid"]),
                     }
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
+            # Best effort: a process that is gone or unreadable is left out of the seed.
             pass
     if initial_batch:
         publish(initial_batch)
@@ -646,11 +648,12 @@ def run_monitor(
                 "inet6_recvmsg_ret": "inet6_recvmsg",
                 "tcp_splice_read_ret": "tcp_splice_read",
                 "mptcp_splice_read_ret": "mptcp_splice_read",
-                # tcp_read_sock covers io_uring zero-copy recv (IORING_OP_RECV_ZC), but it is also
-                # every proto_ops->read_sock: kTLS copy-mode, strparser (kcm/espintcp), nvme-tcp etc.
-                # reach it too, double counting or misattributing bytes. So the BPF program counts
-                # only calls whose recv_actor is io_zcrx_recv_skb (the actor io_uring passes) and
-                # needs its address; without the symbol the program stays disabled
+                # tcp_read_sock covers io_uring zero-copy recv (IORING_OP_RECV_ZC), but
+                # every proto_ops->read_sock reaches it too: kTLS copy-mode, strparser
+                # (kcm/espintcp), nvme-tcp etc., double counting or misattributing
+                # bytes. So the BPF program counts only calls whose recv_actor is
+                # io_zcrx_recv_skb (the actor io_uring passes) and needs its address;
+                # without the symbol the program stays disabled.
                 "tcp_read_sock_ret": "io_zcrx_recv_skb",
                 # af_packet raw send/recv (L2 injection / capture). Optional: absent if
                 # CONFIG_PACKET=n.
@@ -671,9 +674,10 @@ def run_monitor(
                 "xsk_rcv_ret": "__xsk_rcv",
             }
             syms = kernel_symbol_addrs(set(optional_trace_targets.values()))
-            # Gate on symbol PRESENCE (kptr_restrict=2 zeroes addresses but still lists names).
-            # None (kallsyms unreadable) -> assume present and let the load try; a fexit prog
-            # whose target symbol is absent would otherwise fail the whole bpf object load
+            # Gate on symbol PRESENCE (kptr_restrict=2 zeroes addresses but still lists
+            # names). With kallsyms unreadable (None), assume present and let the load
+            # try; a fexit prog whose target symbol is absent would otherwise fail the
+            # whole bpf object load.
             disabled_traces = (
                 set()
                 if syms is None
@@ -730,7 +734,8 @@ def run_monitor(
             b.attach_uprobe(name="c", sym="getaddrinfo", fn_name="dns_entry")
             b.attach_uretprobe(name="c", sym="getaddrinfo", fn_name="dns_return")
             use_getaddrinfo_uprobe = True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            # Best effort: whatever libbpf raises, the log says what goes uncounted.
             log_error(
                 f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup"
             )
@@ -774,7 +779,8 @@ def run_monitor(
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # Best effort: whatever libbpf raises, the log says what goes uncounted.
                 log_error(
                     f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded"
                 )
@@ -792,7 +798,8 @@ def run_monitor(
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # Best effort: whatever libbpf raises, the log says what goes uncounted.
                 log_error(
                     f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded"
                 )
@@ -808,7 +815,8 @@ def run_monitor(
             try:
                 b.bpf_obj.set_global(".data.io_zcrx", struct.pack("<Q", io_zcrx_actor))
                 b.bpf_obj.attach_trace("tcp_read_sock_ret")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # Best effort: whatever libbpf raises, the log says what goes uncounted.
                 log_error(
                     f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded"
                 )
@@ -836,7 +844,8 @@ def run_monitor(
         ):
             try:
                 entries = b.drain_map(map_name, key_type, ConnVal)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # The reader outlives any one drain; the error is logged.
                 log_error(
                     "BPF drain {} {}{} on line {}".format(
                         map_name,
@@ -949,7 +958,8 @@ def run_monitor(
                     if len(outgoing) >= CONN_DRAIN_CHUNK:
                         publish(outgoing)
                         outgoing = []
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
+                    # The reader outlives any one drain; the error is logged.
                     log_error(
                         "BPF drain entry {}{} on line {}".format(
                             type(e).__name__,
@@ -1038,7 +1048,8 @@ def run_monitor(
             dns_drops = struct.unpack("<Q", b.bpf_obj.get_global(".data.dnsdrops", 8))[
                 0
             ]
-        except Exception:
+        except Exception:  # noqa: BLE001
+            # Counters that cannot be read leave nothing to report this drain.
             return
         if exec_drops > ring_drop_state[0]:
             log_error(
@@ -1073,7 +1084,8 @@ def run_monitor(
                     drain_conn_maps()
                     report_ring_drops()
                     next_drain = now + drain_interval
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # The reader outlives any one drain; the error is logged.
                 log_error(
                     "BPF {}{} on line {}".format(
                         type(e).__name__,

@@ -560,7 +560,8 @@ class Trackers:
                     tracker.label, tracker.path = label, path
                     flows += tracker.collect(local)
                 self.failed.discard(inode)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
+                # Whatever one namespace fails on, the others are still read.
                 if inode not in self.failed:
                     self.failed.add(inode)
                     self.report(

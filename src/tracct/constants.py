@@ -55,7 +55,8 @@ try:
         and 0 <= set_mask <= 0xFFFFFFFF
     ):
         st_dev_mask = set_mask
-except Exception:
+except Exception:  # noqa: BLE001, S110
+    # A config this cannot read keeps the default; load_config reports it.
     pass
 ST_DEV_MASK: typing.Final[int] = st_dev_mask
 

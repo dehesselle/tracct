@@ -36,7 +36,8 @@ def run_feed(
         for batch in batches.get_all(timeout=0.5):
             try:
                 live_feed.publish_many(batch)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
+                # A viewer's trouble must not stop the feed thread.
                 pass
         if live_feed.dropped > reported:
             log_error(
