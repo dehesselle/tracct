@@ -7,7 +7,6 @@ of filters, over the viewer's time range, with the plot of the highlighted row""
 
 from __future__ import annotations
 
-import dataclasses
 import time
 from typing import TYPE_CHECKING
 
@@ -28,6 +27,7 @@ from tracct.viewer.format import (
     format_value,
     value_cell,
 )
+from tracct.viewer.model import ALL, Aggregate, Filter, Row, SourceInfo, Timeline, Total
 from tracct.viewer.pane import FindablePane
 from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
 from tracct.viewer.timerange import bucket_grid
@@ -42,20 +42,6 @@ TIMELINE_DELAY_SECONDS = 0.25
 # how long a fetch has to take before the plot's title says so; most answer within
 # milliseconds, and the glyph would flicker on every refresh
 BUSY_DELAY_SECONDS = 0.3
-
-
-@dataclasses.dataclass(frozen=True)
-class Total:
-    """The value of a row of sums over all rows.
-
-    There is one per layer where the source has layers, which are never added up, else
-    one, whose layer is None.
-    """
-
-    layer: str | None
-
-    def label(self) -> str:
-        return f"(all · {self.layer})" if self.layer else "(all)"
 
 
 class HistoryPane(FindablePane):
@@ -97,23 +83,21 @@ class HistoryPane(FindablePane):
     def __init__(self, source: str, *, id: str | None = None) -> None:
         super().__init__(id=id)
         self.source = source
-        self.info: dict = {}
+        self.info: SourceInfo | None = None
         self.group_by = ""
-        # (dimension, value, exclude), applied in order
-        self.filters: list[tuple[str, object, bool]] = []
-        self.rows: list[list] = []
-        # the rows of values shown, and the table's rows: the sums over all of them first
-        self.shown: list[list] = []
-        self.table_rows: list[list] = []
-        self.result: dict = {}
+        #: Applied in order: the drill-down so far.
+        self.filters: list[Filter] = []
+        self.result: Aggregate | None = None
+        #: The rows in the table: the sums over all values first, then the values the
+        #: find leaves.
+        self.table_rows: list[Row] = []
         self.error = ""
         self._timeline_timer = None
         # the row the plot was last asked for, so refilling the table does not ask again
-        self._plot_filter: tuple[str, object] | None = None
+        self._plot_filter: Filter | None = None
         # what is being fetched, "rows" and "plot", and the timer that then marks the plot busy
         self._fetching: set[str] = set()
         self._busy_timer = None
-        self._configured = False
 
     @property
     def viewer(self) -> TracctApp:
@@ -126,73 +110,64 @@ class HistoryPane(FindablePane):
                 yield TrafficPlot()
                 yield DataTable(cursor_type="row", zebra_stripes=True)
 
-    def configure(self, info: dict) -> None:
-        """the source's dimensions and covered time, from describe"""
+    def configure(self, info: SourceInfo) -> None:
+        """Take the source's dimensions and covered time from describe."""
+        first = self.info is None
         self.info = info
-        if self._configured:
+        if not first:
             return
-        self._configured = True
-        self.group_by = info["default"]
+        self.group_by = info.default
         options = self.query_one(OptionList)
         options.clear_options()
         options.add_options(
             [
-                Option(label + (" (raw only)" if raw_only else ""), id=name)
-                for name, label, raw_only in info["dimensions"]
+                Option(d.label + (" (raw only)" if d.raw_only else ""), id=d.name)
+                for d in info.dimensions
             ]
         )
-        options.highlighted = next(
-            (
-                i
-                for i, (name, _, _) in enumerate(info["dimensions"])
-                if name == self.group_by
-            ),
-            0,
-        )
+        options.highlighted = info.dimension_index(self.group_by) or 0
 
-    def labels(self) -> dict[str, str]:
-        return {name: label for name, label, _ in self.info.get("dimensions", [])}
+    def shown(self) -> list[Row]:
+        """The rows of values in the table, without the sums."""
+        return [row for row in self.table_rows if not isinstance(row.value, Total)]
 
     # ── requests ─────────────────────────────────────────────────────
 
     def bounds(self) -> tuple[int, int]:
-        return self.viewer.time_range.bounds(int(time.time()), self.info.get("oldest"))
+        oldest = self.info.oldest if self.info is not None else None
+        return self.viewer.time_range.bounds(int(time.time()), oldest)
 
     def highlighted(self) -> object:
         """the value of the highlighted row, a Total for a row of sums, or None without rows"""
         table = self.query_one(DataTable)
         return (
-            self.table_rows[table.cursor_row][0]
+            self.table_rows[table.cursor_row].value
             if 0 <= table.cursor_row < len(self.table_rows)
             else None
         )
 
-    def plot_filter(self) -> tuple[str, object] | None:
+    def plot_filter(self) -> Filter | None:
         """the filter that narrows the plot to the highlighted row, or None for all rows"""
         value = self.highlighted()
         if isinstance(value, Total):
-            return (self.result["totals_by"], value.layer) if value.layer else None
-        return None if value is None else (self.group_by, value)
+            if value.layer is None or self.result is None:
+                return None
+            return Filter(self.result.layers_by, value.layer)
+        return None if value is None else Filter(self.group_by, value)
 
     def reload(self) -> None:
-        if not self.info:
+        if self.info is None:
             return
         start, end = self.bounds()
         self.fetching("rows", True)
         self._load(start, end, list(self.filters), self.group_by)
 
     @work(thread=True, exclusive=True, group="history-table")
-    def _load(self, start: int, end: int, filters: list, group_by: str) -> None:
+    def _load(self, start: int, end: int, filters: list[Filter], group_by: str) -> None:
         worker = get_current_worker()
         try:
-            result = self.viewer.client.ask(
-                "aggregate",
-                source=self.source,
-                group_by=group_by,
-                filters=[list(f) for f in filters],
-                start=start,
-                end=end,
-                limit=ROWS,
+            result = self.viewer.client.aggregate(
+                self.source, group_by, filters, start, end, ROWS
             )
         except QueryError as e:
             if not worker.is_cancelled:
@@ -202,26 +177,23 @@ class HistoryPane(FindablePane):
             self.app.call_from_thread(self.show_rows, result)
 
     def load_timeline(self) -> None:
-        if not self.info:
+        if self.info is None:
             self.fetching("plot", False)
             return
         self.fetching("plot", True)
         start, end = self.bounds()
         origin, step = bucket_grid(start, end, self.query_one(TrafficPlot).points())
         plot_filter = self._plot_filter = self.plot_filter()
-        filters = [list(f) for f in self.filters] + (
-            [[plot_filter[0], plot_filter[1], False]] if plot_filter else []
-        )
+        filters = self.filters + ([plot_filter] if plot_filter else [])
         value = self.highlighted()
-        if isinstance(value, Total) or plot_filter is None:
-            row_label = (
-                value.label() if isinstance(value, Total) else Total(None).label()
-            )
+        if isinstance(value, Total):
+            row_label = value.label()
+        elif plot_filter is None:
+            row_label = ALL
         else:
-            dimension, filtered = plot_filter
             row_label = (
-                f"{self.labels().get(dimension, dimension)}"
-                f" = {format_value(dimension, filtered)}"
+                f"{self.info.dimension_label(plot_filter.dimension)}"
+                f" = {format_value(plot_filter.dimension, plot_filter.value)}"
             )
         self._load_timeline(
             start,
@@ -240,38 +212,21 @@ class HistoryPane(FindablePane):
         end: int,
         origin: int,
         step: int,
-        filters: list,
+        filters: list[Filter],
         row_label: str,
         heading: str,
     ) -> None:
         worker = get_current_worker()
         try:
-            result = self.viewer.client.ask(
-                "timeline",
-                source=self.source,
-                filters=filters,
-                start=origin,
-                end=end,
-                step=step,
-                peak=PEAK_SECONDS,
+            timeline = self.viewer.client.timeline(
+                self.source, filters, start, end, origin, step, PEAK_SECONDS
             )
         except QueryError as e:
             if not worker.is_cancelled:
                 self.app.call_from_thread(self.show_error, str(e))
             return
         if not worker.is_cancelled:
-            value_labels = tuple(self.info.get("values", ["sent", "received"]))
-            self.app.call_from_thread(
-                self.show_timeline,
-                start,
-                end,
-                origin,
-                step,
-                result,
-                heading,
-                row_label,
-                value_labels,
-            )
+            self.app.call_from_thread(self.show_timeline, timeline, heading, row_label)
 
     def schedule_timeline(self) -> None:
         if self._timeline_timer is not None:
@@ -302,29 +257,15 @@ class HistoryPane(FindablePane):
 
     # ── showing results ─────────────────────────────────────────────
 
-    def show_timeline(
-        self,
-        start: int,
-        end: int,
-        origin: int,
-        step: int,
-        result: dict,
-        heading: str,
-        row_label: str,
-        value_labels: tuple[str, str],
-    ) -> None:
+    def show_timeline(self, timeline: Timeline, heading: str, row_label: str) -> None:
         self.fetching("plot", False)
+        if self.info is None:
+            return
         self.query_one(TrafficPlot).show(
-            start,
-            end,
-            origin,
-            step,
-            result["peak"],
-            result["split"],
-            result["buckets"],
-            heading,
-            row_label,
-            value_labels,
+            timeline,
+            heading=heading,
+            row_label=row_label,
+            value_labels=self.info.value_labels,
         )
 
     def show_error(self, message: str) -> None:
@@ -333,10 +274,9 @@ class HistoryPane(FindablePane):
         self.error = message
         self.update_banner()
 
-    def show_rows(self, result: dict) -> None:
+    def show_rows(self, result: Aggregate) -> None:
         self.error = ""
         self.result = result
-        self.rows = result["rows"]
         self.render_rows()
         # at once: the rows that came in are the plot's too, and the highlight has not moved
         self.load_timeline()
@@ -344,48 +284,45 @@ class HistoryPane(FindablePane):
         self.fetching("rows", False)
 
     def render_rows(self) -> None:
+        if self.result is None or self.info is None:
+            return
         table = self.query_one(DataTable)
         previous = self.highlighted()
         needle = self.find.lower()
-        self.shown = (
-            [
-                row
-                for row in self.rows
-                if needle in format_value(self.group_by, row[0]).lower()
-            ]
-            if needle
-            else self.rows
-        )
+        shown = [
+            row
+            for row in self.result.rows
+            if needle in format_value(self.group_by, row.value).lower()
+        ]
         # the sums come from all rows, so a find, which hides some, hides them too; grouped by
         # the layer, the rows are the sums already
-        totals = []
-        if not needle and self.result and self.group_by != self.result["totals_by"]:
-            totals = [
-                [Total(layer), out_bytes, in_bytes]
-                for layer, out_bytes, in_bytes in self.result["parts"]
-            ]
-        self.table_rows = totals + self.shown
+        totals = (
+            list(self.result.totals)
+            if not needle and self.group_by != self.result.layers_by
+            else []
+        )
+        self.table_rows = totals + shown
         byte_unit = self.viewer.byte_unit
-        out_label, in_label = self.info.get("values", ["sent", "received"])
+        out_label, in_label = self.info.value_labels
         table.clear(columns=True)
-        table.add_column(self.labels().get(self.group_by, self.group_by), key="value")
+        table.add_column(self.info.dimension_label(self.group_by), key="value")
         table.add_column(Text(out_label, justify="right"), key="out")
         table.add_column(Text(in_label, justify="right"), key="in")
         table.add_rows(
             [
                 (
-                    _value_cell(self.group_by, value),
-                    bytes_cell(out_bytes, byte_unit),
-                    bytes_cell(in_bytes, byte_unit),
+                    _value_cell(self.group_by, row.value),
+                    bytes_cell(row.out_bytes, byte_unit),
+                    bytes_cell(row.in_bytes, byte_unit),
                 )
-                for value, out_bytes, in_bytes in self.table_rows
+                for row in self.table_rows
             ]
         )
         # keep the highlight on the same value across refreshes; a sum only if it was on one, as
         # sums add up what is otherwise kept apart
         index = next(
-            (i for i, row in enumerate(self.table_rows) if row[0] == previous),
-            len(totals) if self.shown else 0,
+            (i for i, row in enumerate(self.table_rows) if row.value == previous),
+            len(totals) if shown else 0,
         )
         if self.table_rows:
             table.move_cursor(row=index)
@@ -397,13 +334,13 @@ class HistoryPane(FindablePane):
         notes, keys = [], []
         if self.error:
             notes.append(self.error)
-        if self.filters:
-            labels = self.labels()
+        if self.filters and self.info is not None:
             notes.append(
                 "filter: "
                 + " > ".join(
-                    f"{'!' if exclude else ''}{labels.get(dimension, dimension)}={format_value(dimension, value)}"
-                    for dimension, value, exclude in self.filters
+                    f"{'!' if f.exclude else ''}{self.info.dimension_label(f.dimension)}"
+                    f"={format_value(f.dimension, f.value)}"
+                    for f in self.filters
                 )
             )
             keys.append(", f c to clear filters")
@@ -421,13 +358,16 @@ class HistoryPane(FindablePane):
         table = self.query_one(DataTable)
         result = self.result
         title = subtitle = ""
-        if result:
-            if self.find or result["truncated"]:
-                title = f"{len(self.shown)} of {result['groups']} rows"
-            if result["clipped"]:
-                subtitle = f"raw rows only: from {format_time(result['start'])}"
-            elif result["start"] < result["split"]:
-                subtitle = f"rollups before {format_time(result['split'])}: no addresses, ephemeral ports as 0"
+        if result is not None:
+            if self.find or result.truncated:
+                title = f"{len(self.shown())} of {result.groups} rows"
+            if result.clipped:
+                subtitle = f"raw rows only: from {format_time(result.start)}"
+            elif result.start < result.split:
+                subtitle = (
+                    f"rollups before {format_time(result.split)}:"
+                    " no addresses, ephemeral ports as 0"
+                )
         table.border_title = title
         table.border_subtitle = subtitle
 
@@ -455,33 +395,30 @@ class HistoryPane(FindablePane):
         value = self.highlighted()
         if value is None or isinstance(value, Total):
             return
-        self.filters.append((self.group_by, value, exclude))
+        self.filters.append(Filter(self.group_by, value, exclude))
         self.reload()
 
     def action_pop_filter(self) -> None:
         if self.filters:
-            dimension, _, _ = self.filters.pop()
-            self.select_dimension(dimension)
+            self.select_dimension(self.filters.pop().dimension)
             self.reload()
 
     def action_clear_filters(self) -> None:
         # back to where the drill-down started
         if self.filters:
-            dimension, _, _ = self.filters[0]
+            dimension = self.filters[0].dimension
             self.filters.clear()
             self.select_dimension(dimension)
             self.reload()
 
     def select_dimension(self, dimension: str) -> None:
-        options = self.query_one(OptionList)
-        for i, (name, _, _) in enumerate(self.info.get("dimensions", [])):
-            if name == dimension:
-                self.group_by = dimension
-                options.highlighted = i
+        index = self.info.dimension_index(dimension) if self.info else None
+        if index is not None:
+            self.group_by = dimension
+            self.query_one(OptionList).highlighted = index
 
     def apply_find(self) -> None:
-        if self.result:
-            self.render_rows()
+        self.render_rows()
 
 
 def _value_cell(dimension: str, value: object) -> Text:

@@ -12,6 +12,7 @@ from textual.content import Content
 from textual.events import Leave, MouseMove
 
 from tracct.viewer.format import duration, format_bytes, format_time
+from tracct.viewer.model import Timeline
 
 # the shortest and longest range zooming goes to, in seconds; the longest stays within the
 # query server's bucket limit at the longest bucket
@@ -63,12 +64,8 @@ class TrafficPlot(Plot):
         # nothing before 1970
         self.x_bounds = (0, None)
         self.x_span = (MIN_SPAN, MAX_SPAN)
-        self.start = 0
-        self.end = 0
-        self.origin = 0
-        self.step = 1
-        self.peak = 1
-        self.split = 0
+        #: What is drawn, or None before anything is.
+        self.timeline: Timeline | None = None
         #: Bucket start -> its (out, in) bytes.
         self.values: dict[int, tuple[int, int]] = {}
         #: Bucket start -> the highest (out, in) rate of a stretch in it.
@@ -91,30 +88,21 @@ class TrafficPlot(Plot):
 
     def show(
         self,
-        start: int,
-        end: int,
-        origin: int,
-        step: int,
-        peak: int,
-        split: int,
-        buckets: list,
-        heading: str,
-        row_label: str,
-        value_labels: tuple[str, str],
+        timeline: Timeline,
+        *,
+        heading: str = "",
+        row_label: str = "",
+        value_labels: tuple[str, str] = ("sent", "received"),
     ) -> None:
-        """Show the range start to end, named heading, of the row named row_label.
+        """Draw `timeline`.
 
-        The buckets are step seconds long, counted from origin. Each holds its sums and
-        the highest rate of a stretch of peak seconds in it.
+        Args:
+            timeline: The buckets and the range they cover.
+            heading: The range's name, which the title starts with.
+            row_label: The name of the row drawn.
+            value_labels: What the source calls its out and in bytes.
         """
-        self.start, self.end, self.origin, self.step, self.peak, self.split = (
-            start,
-            end,
-            origin,
-            step,
-            peak,
-            split,
-        )
+        self.timeline = timeline
         self.heading, self.row_label, self.value_labels = (
             heading,
             row_label,
@@ -122,31 +110,30 @@ class TrafficPlot(Plot):
         )
         # the lines show the peaks: averaged over a wide bucket, a short spike would flatten into
         # the traffic around it
-        self.values = {
-            t: (out_bytes, in_bytes) for t, out_bytes, in_bytes, _, _ in buckets
-        }
-        self.peaks = {t: (out_rate, in_rate) for t, _, _, out_rate, in_rate in buckets}
+        self.values = {b.start: (b.out_bytes, b.in_bytes) for b in timeline.buckets}
+        self.peaks = {b.start: (b.out_rate, b.in_rate) for b in timeline.buckets}
         self.redraw()
 
     def redraw(self) -> None:
-        if not self.end:
+        timeline = self.timeline
+        if timeline is None:
             return
         self.update_title()
         self.clear()
         # every bucket, the empty ones at zero, so a line drops to nothing rather than bridging a gap
-        times = range(self.origin, self.end, self.step)
-        xs = [t + self.step / 2 for t in times]
+        times = range(timeline.origin, timeline.end, timeline.step)
+        xs = [t + timeline.step / 2 for t in times]
         out_rates = [self.peaks.get(t, (0, 0))[0] for t in times]
         in_rates = [self.peaks.get(t, (0, 0))[1] for t in times]
         if len(xs) > 1:
             # in first: it is usually the larger, and the smaller line stays visible on top
             self.plot(xs, in_rates, style=IN_STYLE, hires_mode="braille")
             self.plot(xs, out_rates, style=OUT_STYLE, hires_mode="braille")
-        if self.start < self.split < self.end:
-            self.vline(self.split, style=SPLIT_STYLE)
+        if timeline.start < timeline.split < timeline.end:
+            self.vline(timeline.split, style=SPLIT_STYLE)
         # a refresh arriving while zooming or panning rests does not move the range: the plot
         # keeps new limits for once it settles
-        self.x_limits = (self.start, self.end)
+        self.x_limits = (timeline.start, timeline.end)
         self.y_limits = (0, None)
 
     def set_byte_unit(self, byte_unit: str) -> None:
@@ -169,11 +156,8 @@ class TrafficPlot(Plot):
         key = Content.assemble(
             ("━━", OUT_STYLE), f" {out_label} ", ("━━", IN_STYLE), f" {in_label}"
         )
-        rate = Content(
-            f" · peak {duration(self.peak)} rate"
-            if self.end and self.peak != PEAK_SECONDS
-            else ""
-        )
+        peak = self.timeline.peak if self.timeline is not None else PEAK_SECONDS
+        rate = Content(f" · peak {duration(peak)} rate" if peak != PEAK_SECONDS else "")
         busy = Content(f" · {BUSY}" if self.busy else "")
         # the corners and a border cell either side
         if (
@@ -187,11 +171,12 @@ class TrafficPlot(Plot):
 
     def on_mouse_move(self, event: MouseMove) -> None:
         point = self.data_at(event.screen_offset)
-        if event.button or point is None or not self.end:
+        timeline = self.timeline
+        if event.button or point is None or timeline is None:
             self.border_subtitle = ""
             return
-        t = int(point[0])
-        bucket = self.origin + (t - self.origin) // self.step * self.step
+        origin, step = timeline.origin, timeline.step
+        bucket = origin + (int(point[0]) - origin) // step * step
         out_bytes, in_bytes = self.values.get(bucket, (0, 0))
         out_peak, in_peak = self.peaks.get(bucket, (0, 0))
         out_label, in_label = self.value_labels
@@ -200,7 +185,7 @@ class TrafficPlot(Plot):
             return format_bytes(n, self.byte_unit)
 
         self.border_subtitle = Content(
-            f"{format_time(bucket)} +{duration(self.step)}"
+            f"{format_time(bucket)} +{duration(step)}"
             f" · {out_label} {amount(out_bytes)} (peak {amount(out_peak)}/s)"
             f" · {in_label} {amount(in_bytes)} (peak {amount(in_peak)}/s)"
         )

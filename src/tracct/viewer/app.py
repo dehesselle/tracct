@@ -25,6 +25,7 @@ from tracct.viewer.client import HistoryClient
 from tracct.viewer.format import BYTE_UNITS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
+from tracct.viewer.model import SourceInfo
 from tracct.viewer.pane import FindablePane
 from tracct.viewer.pickers import UNZOOM, ByteUnitPicker, SpanPicker, Unzoom
 from tracct.viewer.plot import TrafficPlot
@@ -91,13 +92,13 @@ class TracctApp(ChordMixin, App):
     @work(thread=True, exclusive=True, group="describe")
     def describe(self) -> None:
         try:
-            sources = self.client.ask("describe")["sources"]
+            sources = self.client.describe()
         except QueryError as e:
             self.call_from_thread(self._describe_failed, str(e))
             return
         self.call_from_thread(self._described, sources)
 
-    def _described(self, sources: dict) -> None:
+    def _described(self, sources: dict[str, SourceInfo]) -> None:
         for pane in self.query(HistoryPane):
             if pane.source in sources:
                 pane.configure(sources[pane.source])
@@ -120,7 +121,7 @@ class TracctApp(ChordMixin, App):
     def reload_active(self) -> None:
         pane = self.active_history()
         if pane is not None:
-            if not pane.info:
+            if pane.info is None:
                 self.describe()
             pane.reload()
 
@@ -153,7 +154,7 @@ class TracctApp(ChordMixin, App):
     def action_span(self) -> None:
         """pick the span from a list: one reload for the choice, none for the spans between"""
         pane = self.active_history()
-        oldest = pane.info.get("oldest") if pane is not None else None
+        oldest = pane.info.oldest if pane is not None and pane.info else None
         covered = int(time.time()) - oldest if oldest else None
         self.push_screen(
             SpanPicker(self.time_range.span, covered, self.time_range.zoom is not None),

@@ -31,6 +31,7 @@ from tracct.viewer.client import access_hint  # noqa: E402
 from tracct.viewer.format import format_bytes, format_value  # noqa: E402
 from tracct.viewer.history import HistoryPane  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
+from tracct.viewer.model import Filter, Timeline  # noqa: E402
 from tracct.viewer.pickers import ByteUnitPicker, SpanPicker  # noqa: E402
 from tracct.viewer.plot import (
     BUSY,
@@ -302,7 +303,7 @@ async def test_plot_limits():
     async with app.run_test(size=(100, 30)) as pilot:
         plot = app.query_one(TrafficPlot)
         # the first hour after the epoch, so zooming out runs into 1970
-        plot.show(0, 3600, 0, 60, PEAK_SECONDS, 0, [], "", "", ("sent", "received"))
+        plot.show(Timeline(0, 3600, 0, 60, PEAK_SECONDS, 0, ()))
         plot.focus()
         await pilot.press(*["minus"] * 100)
         await _until(pilot, width_is(MAX_SPAN))
@@ -332,7 +333,7 @@ def _server(tmp_path):
 
 
 def _values(pane: HistoryPane) -> list:
-    return [row[0] for row in pane.shown]
+    return [row.value for row in pane.shown()]
 
 
 async def test_history_drill_down(tmp_path):
@@ -356,7 +357,10 @@ async def test_history_drill_down(tmp_path):
                 "/usr/bin/curl",
                 "/usr/sbin/nginx",
             ]
-            assert processes.table_rows[0][1:] == [6111, 11522]
+            assert (
+                processes.table_rows[0].out_bytes,
+                processes.table_rows[0].in_bytes,
+            ) == (6111, 11522)
             # the plot follows the highlighted row, which starts on the largest value, not a sum
             plot = processes.query_one(TrafficPlot)
             await _until(pilot, lambda: "curl" in plot.row_label)
@@ -389,7 +393,7 @@ async def test_history_drill_down(tmp_path):
             await _until(
                 pilot,
                 lambda: (
-                    processes.filters == [("exe", "/usr/sbin/nginx", False)]
+                    processes.filters == [Filter("exe", "/usr/sbin/nginx", False)]
                     and _values(processes) == ["/usr/sbin/nginx"]
                 ),
             )
@@ -407,7 +411,7 @@ async def test_history_drill_down(tmp_path):
             await _until(
                 pilot,
                 lambda: (
-                    processes.filters == [("exe", "/usr/sbin/nginx", True)]
+                    processes.filters == [Filter("exe", "/usr/sbin/nginx", True)]
                     and _values(processes) == ["/usr/bin/curl"]
                 ),
             )
@@ -418,7 +422,8 @@ async def test_history_drill_down(tmp_path):
             # excluding nginx moved the highlight to curl, and it stayed there
             await pilot.press("comma", "f", "i")
             await _until(
-                pilot, lambda: processes.filters == [("exe", "/usr/bin/curl", False)]
+                pilot,
+                lambda: processes.filters == [Filter("exe", "/usr/bin/curl", False)],
             )
             processes.select_dimension("netns")
             processes.reload()
@@ -496,14 +501,15 @@ async def test_history_drill_down(tmp_path):
                 start <= zoomed_start < zoomed_end <= end
                 and zoomed_end - zoomed_start < end - start
             )
-            await _until(pilot, lambda: plot.start == zoomed_start)
+            await _until(pilot, lambda: plot.timeline.start == zoomed_start)
             await pilot.press("r")
             await pilot.pause(0.3)
             assert app.time_range.zoom == (zoomed_start, zoomed_end)
             # s twice: the picker, then back from the zoom to the span
             await pilot.press("s", "s")
             await _until(
-                pilot, lambda: app.time_range.zoom is None and plot.start == start
+                pilot,
+                lambda: app.time_range.zoom is None and plot.timeline.start == start,
             )
             await pilot.press("u", "down", "enter")
             await _until(pilot, lambda: app.byte_unit == "B")

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from tracct.live_feed import feed_closed_reason
 from tracct.query import QueryClient, QueryError
+from tracct.viewer.model import Aggregate, Filter, SourceInfo, Timeline
 
 
 def access_hint(path: Path) -> str:
@@ -76,6 +77,55 @@ class HistoryClient:
                     f"query server unavailable at {self.path} ({e.strerror or e});"
                     " is tracct-query.socket enabled?"
                 ) from e
+
+    def describe(self) -> dict[str, SourceInfo]:
+        """Return the sources by name."""
+        sources = self.ask("describe")["sources"]
+        return {name: SourceInfo.parse(raw) for name, raw in sources.items()}
+
+    def aggregate(
+        self,
+        source: str,
+        group_by: str,
+        filters: list[Filter],
+        start: int,
+        end: int,
+        limit: int,
+    ) -> Aggregate:
+        """Return the byte sums per value of `group_by` from `start` to `end`."""
+        return Aggregate.parse(
+            self.ask(
+                "aggregate",
+                source=source,
+                group_by=group_by,
+                filters=[f.to_request() for f in filters],
+                start=start,
+                end=end,
+                limit=limit,
+            )
+        )
+
+    def timeline(
+        self,
+        source: str,
+        filters: list[Filter],
+        start: int,
+        end: int,
+        origin: int,
+        step: int,
+        peak: int,
+    ) -> Timeline:
+        """Return the byte sums from `start` to `end` in buckets laid out from `origin`."""
+        raw = self.ask(
+            "timeline",
+            source=source,
+            filters=[f.to_request() for f in filters],
+            start=origin,
+            end=end,
+            step=step,
+            peak=peak,
+        )
+        return Timeline.parse(raw, start, end, origin)
 
     def close(self) -> None:
         self._client.close()
