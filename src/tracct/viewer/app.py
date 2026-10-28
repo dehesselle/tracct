@@ -24,8 +24,8 @@ from tracct.viewer import TABS
 from tracct.viewer.format import BYTE_UNITS, SPANS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
+from tracct.viewer.pickers import TO_SPAN, SpanPicker, UnitPicker
 from tracct.viewer.plot import TrafficPlot
-from tracct.viewer.span_picker import TO_SPAN, SpanPicker
 
 # a range that ends now is asked again this often while its tab is shown
 REFRESH_SECONDS = 10.0
@@ -100,6 +100,8 @@ class ViewerApp(ChordMixin, App):
         self.initial_tab = tab
         self.time_range = TimeRange()
         self.unit = BYTE_UNITS[0]
+        # the unit before, which u pressed twice goes back to
+        self.last_unit: str | None = None
         self._client = QueryClient(query_socket)
         self._client_lock = threading.Lock()
         self.sources: dict = {}
@@ -228,14 +230,18 @@ class ViewerApp(ChordMixin, App):
         self.reload_active()
 
     def action_units(self) -> None:
-        self.unit = BYTE_UNITS[(BYTE_UNITS.index(self.unit) + 1) % len(BYTE_UNITS)]
+        self.push_screen(UnitPicker(self.unit, self.last_unit), self._unit_picked)
+
+    def _unit_picked(self, unit: str | None) -> None:
+        if unit is None or unit == self.unit:
+            return
+        self.last_unit, self.unit = self.unit, unit
         for plot in self.query(TrafficPlot):
             plot.unit = self.unit
             plot.redraw()
         for pane in self.query(HistoryPane):
             if pane.result:
                 pane.render_rows()
-        self.notify(f"bytes in {self.unit}", timeout=2)
 
     def action_refresh(self) -> None:
         self.reload_active()

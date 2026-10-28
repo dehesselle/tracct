@@ -68,7 +68,7 @@ class HistoryPane(Vertical):
         # not only the plot's, whose arrows pan by a few columns
         Binding("shift+left", "app.earlier(1)", "previous span", key_display="⇧←", group=Binding.Group("step span")),
         Binding("shift+right", "app.earlier(-1)", "next span", key_display="⇧→", group=Binding.Group("step span")),
-        Binding("u", "app.units", "units"),
+        Binding("u", "app.units", "unit"),
         Binding("r", "app.refresh", "refresh"),
         # the drill-down: a filter on the highlighted row's value stays when the dimension on the
         # left changes, which breaks that value down

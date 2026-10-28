@@ -67,7 +67,8 @@ dragging or `←` and `→` pan, and a moment after the plot comes to rest the t
 `s` picks the span (last hour, last day, ...) from a list, where spans past the oldest data
 say so; after a zoom, `s` pressed again in the list returns to the span; `Shift+←` and
 `Shift+→` step back and forward by a whole span of local time (with "1 day", yesterday from
-midnight to midnight), `u` cycles the byte units, `/` finds text in the rows shown (on every
+midnight to midnight), `u` picks the byte unit from a list, where `u` pressed again goes
+back to the unit before, `/` finds text in the rows shown (on every
 tab; `c` clears it), `r` refreshes. A range that ends now refreshes every 10 seconds. While a
 tab waits more than a moment for the query server, `↻` ends the plot's title.
 

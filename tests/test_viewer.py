@@ -27,8 +27,8 @@ from tracct.viewer.banner import Banner  # noqa: E402
 from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
+from tracct.viewer.pickers import SpanPicker, UnitPicker  # noqa: E402
 from tracct.viewer.plot import BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
-from tracct.viewer.span_picker import SpanPicker, span_label  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -99,8 +99,9 @@ def test_span_picker(tmp_path):
             options = picker.query_one("#picker-results")
             # shortest first, the whole history last, opened on the current span, which s returns
             # to while zoomed
-            assert [span_label(i) for i in picker._shown][:2] == ["1 minute", "5 minutes"] and span_label(picker._shown[-1]) == "all history"
-            assert picker._shown[options.highlighted] == app.time_range.span
+            labels = [label for _, label, _ in picker._entries]
+            assert labels[:2] == ["1 minute", "5 minutes"] and labels[-1] == "all history"
+            assert picker._entries[options.highlighted][0] == app.time_range.span
             assert str(options.get_option_at_index(options.highlighted).prompt).rstrip().endswith("(current)  (press s to select)")
             # Escape changes nothing
             await pilot.press("escape")
@@ -118,6 +119,35 @@ def test_span_picker(tmp_path):
             await pilot.press("s")
             await pilot.pause(0.2)
             assert isinstance(app.screen, SpanPicker)
+
+    asyncio.run(drive())
+
+
+def test_unit_picker(tmp_path):
+    async def drive():
+        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+        async with app.run_test(size=(120, 40)) as pilot:
+            # before any change there is no unit to go back to: no hint, and u leaves it open
+            await pilot.press("u")
+            await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+            options = app.screen.query_one("#picker-results")
+            assert app.screen._entries[options.highlighted][0] == "auto"
+            assert not any("press u" in str(options.get_option_at_index(i).prompt) for i in range(options.option_count))
+            await pilot.press("u")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, UnitPicker)
+            # Enter takes the highlighted unit
+            await pilot.press("down", "down", "down", "enter")
+            await _until(pilot, lambda: app.unit == "MB" and not isinstance(app.screen, UnitPicker))
+            # the unit before has the hint, and u u goes back and forth
+            await pilot.press("u")
+            await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+            options = app.screen.query_one("#picker-results")
+            assert str(options.get_option_at_index(0).prompt).rstrip().endswith("(press u to select)")
+            await pilot.press("u")
+            await _until(pilot, lambda: app.unit == "auto" and app.last_unit == "MB")
+            await pilot.press("u", "u")
+            await _until(pilot, lambda: app.unit == "MB" and app.last_unit == "auto")
 
     asyncio.run(drive())
 
@@ -300,8 +330,8 @@ def test_history_drill_down(tmp_path):
             # s twice: the picker, then back from the zoom to the span
             await pilot.press("s", "s")
             await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
-            await pilot.press("u")
-            assert app.unit == "B"
+            await pilot.press("u", "down", "enter")
+            await _until(pilot, lambda: app.unit == "B")
 
     try:
         asyncio.run(drive())

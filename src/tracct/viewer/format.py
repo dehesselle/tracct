@@ -15,7 +15,7 @@ from rich.text import Text
 from tracct.utils import sanitize_log_line
 
 FIND_PLACEHOLDER = "find in the rows shown (Enter keeps it, Escape clears)"
-# what `u` cycles through; auto picks a unit per value
+# what `u` picks from; auto picks a unit per value
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")
 _FACTORS = {"kB": 10**3, "MB": 10**6, "GB": 10**9}
 PROTOCOLS = {0: "", 1: "icmp", 2: "igmp", 6: "tcp", 17: "udp", 33: "dccp", 47: "gre", 50: "esp", 58: "icmpv6", 132: "sctp", 136: "udplite"}
