@@ -16,24 +16,24 @@ import pytest
 
 pytest.importorskip("textual")
 
-from tcoda.dialogs import SettingsDialog  # noqa: E402
-from tcoda.settings import config, configure  # noqa: E402
-from test_query_server import VPN, _db  # noqa: E402
-from textual.app import App, ComposeResult  # noqa: E402
-from textual.content import Content  # noqa: E402
-from textual.widgets import DataTable, TabbedContent, TabPane  # noqa: E402
-from textual.widgets.tabbed_content import ContentTabs  # noqa: E402
+from tcoda.dialogs import SettingsDialog
+from tcoda.settings import config, configure
+from test_query_server import VPN, _db
+from textual.app import App, ComposeResult
+from textual.content import Content
+from textual.widgets import DataTable, TabbedContent, TabPane
+from textual.widgets.tabbed_content import ContentTabs
 
-from tracct import live_feed, query_server  # noqa: E402
-from tracct.viewer import settings  # noqa: E402
-from tracct.viewer.app import TracctApp  # noqa: E402
-from tracct.viewer.banner import Banner  # noqa: E402
-from tracct.viewer.client import access_hint  # noqa: E402
-from tracct.viewer.format import format_bytes, format_value  # noqa: E402
-from tracct.viewer.history import HistoryPane  # noqa: E402
-from tracct.viewer.live import FeedState, LivePane, remote  # noqa: E402
-from tracct.viewer.model import Filter, Timeline  # noqa: E402
-from tracct.viewer.pickers import ByteUnitPicker, SpanPicker  # noqa: E402
+from tracct import live_feed, query_server
+from tracct.viewer import settings
+from tracct.viewer.app import TracctApp
+from tracct.viewer.banner import Banner
+from tracct.viewer.client import access_hint
+from tracct.viewer.format import format_bytes, format_value
+from tracct.viewer.history import HistoryPane
+from tracct.viewer.live import FeedState, LivePane, remote
+from tracct.viewer.model import Filter, Timeline
+from tracct.viewer.pickers import ByteUnitPicker, SpanPicker
 from tracct.viewer.plot import (
     BUSY,
     MAX_SPAN,
@@ -41,8 +41,8 @@ from tracct.viewer.plot import (
     PEAK_SECONDS,
     RateAxis,
     TrafficPlot,
-)  # noqa: E402
-from tracct.viewer.timerange import (  # noqa: E402
+)
+from tracct.viewer.timerange import (
     SPANS,
     TimeRange,
     bucket_grid,

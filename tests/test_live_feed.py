@@ -17,7 +17,7 @@ import pytest
 _TMP_RUN = tempfile.mkdtemp(prefix="tracct-test-")
 os.environ["RUNTIME_DIRECTORY"] = _TMP_RUN
 
-from tracct import live_feed  # noqa: E402
+from tracct import live_feed
 
 # Patch the socket path to live under our temp dir.
 live_feed.EVENTS_SOCKET_PATH = type(live_feed.EVENTS_SOCKET_PATH)(

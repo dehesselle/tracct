@@ -13,8 +13,7 @@ import threading
 import time
 import typing
 
-import tracct.cli as cli
-import tracct.writer as writer
+from tracct import cli, writer
 from tracct.config import Config
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
@@ -79,7 +78,7 @@ def test_window_leaves_events_alone():
     assert len(window) == 1
     rows, flows = window.take_rows()
     assert len(rows) == 1 and not flows and len(window) == 0
-    contime, send, recv, n_events, exe_key, pexe_key, unit, *_ = rows[0]
+    _contime, send, recv, n_events, exe_key, _pexe_key, unit, *_ = rows[0]
     assert (send, recv, n_events) == (101, 2001, 5)
     assert exe_key == ("/usr/bin/curl", "curl", "curl https://example.com")
     assert unit == "session-1.scope"

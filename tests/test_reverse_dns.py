@@ -7,7 +7,7 @@
 import threading
 import time
 
-import tracct.reverse_dns as reverse_dns
+from tracct import reverse_dns
 
 
 def _wait_for(lookup, ip: str) -> str:

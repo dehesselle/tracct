@@ -94,7 +94,6 @@ extend-select = ["I"]
 # kept close to picosnitch's, so its fixes can be carried over (see docs/DESIGN.md)
 "src/tracct/bpf_wrapper.py" = ["BLE001", "S110"]
 # ruff 0.16's wider defaults, not yet taken on in these parts
-"tests/*.py" = ["PLR0402", "PLW1510", "RUF059", "RUF100"]
 "bench/**/*.py" = [
     "BLE001",
     "FURB192",

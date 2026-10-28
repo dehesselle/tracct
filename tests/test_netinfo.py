@@ -130,5 +130,8 @@ def test_real_namespaces_and_tun():
         if tun is not None:
             os.close(tun)
         subprocess.run(
-            "ip netns del psni; ip link del psni0", shell=True, capture_output=True
+            "ip netns del psni; ip link del psni0",
+            shell=True,
+            capture_output=True,
+            check=False,
         )

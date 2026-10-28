@@ -50,7 +50,9 @@ TRAFFIC_WAIT = 3  # seconds to wait after network activity
 
 def find_executable(name: str) -> str | None:
     """Find the full path to an executable."""
-    result = subprocess.run(["which", name], capture_output=True, text=True)
+    result = subprocess.run(
+        ["which", name], capture_output=True, text=True, check=False
+    )
     if result.returncode == 0:
         return result.stdout.strip()
     return None
@@ -123,7 +125,9 @@ exec_ring_buffer_pages = 256
     warmup_seen = False
     while time.time() < warmup_deadline and not warmup_seen:
         subprocess.run(
-            ["curl", "-s", "-o", "/dev/null", "https://example.com"], timeout=15
+            ["curl", "-s", "-o", "/dev/null", "https://example.com"],
+            timeout=15,
+            check=False,
         )
         # Give the writer time to flush.
         for _ in range(int((DB_WRITE_LIMIT + 4) * 2)):
@@ -217,6 +221,7 @@ class TestShortLivedProcesses:
             ["curl", "-s", "http://example.com", "-o", "/dev/null"],
             capture_output=True,
             timeout=30,
+            check=False,
         )
 
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
@@ -225,7 +230,7 @@ class TestShortLivedProcesses:
         assert len(connections) > 0, "Should have captured curl connections"
 
         for conn in connections:
-            name, exe, raddr, rport, send, recv, domain = conn
+            _name, exe, raddr, rport, _send, _recv, _domain = conn
             assert exe != "", (
                 f"curl exe should be resolved, got empty for raddr={raddr} rport={rport}"
             )
@@ -248,6 +253,7 @@ class TestShortLivedProcesses:
                 ["wget", "-q", "http://example.com", "-O", "/dev/null"],
                 capture_output=True,
                 timeout=30,
+                check=False,
             )
             if result.returncode != 0:
                 last_wget_err = result.stderr.decode(errors="replace").strip()
@@ -264,7 +270,7 @@ class TestShortLivedProcesses:
         )
 
         for conn in connections:
-            name, exe, raddr, rport, send, recv, domain = conn
+            _name, exe, _raddr, _rport, _send, _recv, _domain = conn
             assert exe != "", "wget exe should be resolved, got empty"
             assert "wget" in exe, f"wget exe should contain 'wget', got: {exe}"
 
@@ -279,6 +285,7 @@ class TestShortLivedProcesses:
                 ["curl", "-s", "http://example.com", "-o", "/dev/null"],
                 capture_output=True,
                 timeout=30,
+                check=False,
             )
             time.sleep(0.5)
 
@@ -291,7 +298,7 @@ class TestShortLivedProcesses:
 
         # All curl connections should have exe resolved.
         for conn in connections:
-            name, exe, raddr, rport, send, recv, domain = conn
+            _name, exe, _raddr, _rport, _send, _recv, _domain = conn
             assert exe != "", "All curl connections should have exe resolved"
 
 
@@ -304,6 +311,7 @@ class TestDatabaseIntegrity:
             ["curl", "-s", "http://example.com", "-o", "/dev/null"],
             capture_output=True,
             timeout=30,
+            check=False,
         )
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
@@ -341,6 +349,7 @@ class TestDatabaseIntegrity:
             ["curl", "-s", "http://example.com", "-o", "/dev/null"],
             capture_output=True,
             timeout=30,
+            check=False,
         )
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
@@ -512,6 +521,7 @@ class TestParentTracking:
                     ],
                     capture_output=True,
                     timeout=30,
+                    check=False,
                 )
                 time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 

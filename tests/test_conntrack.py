@@ -327,10 +327,16 @@ def test_collect_sees_routed_traffic():
                 f"ip netns del psct{i}; ip link del psct{i}h",
                 shell=True,
                 capture_output=True,
+                check=False,
             )
         if iptables:
             for rule in rules:
-                subprocess.run(f"{iptables} -D {rule}", shell=True, capture_output=True)
+                subprocess.run(
+                    f"{iptables} -D {rule}",
+                    shell=True,
+                    capture_output=True,
+                    check=False,
+                )
         sysctl(conntrack.ACCT_SYSCTL, acct)
         sysctl("/proc/sys/net/ipv4/ip_forward", forward)
 
@@ -439,4 +445,5 @@ def test_trackers_see_forwarding_inside_a_namespace():
             "ip netns del psfa; ip netns del psfb; ip netns del psfr",
             shell=True,
             capture_output=True,
+            check=False,
         )

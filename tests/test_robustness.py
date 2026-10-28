@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-import tracct.utils as utils
+from tracct import utils
 from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
 from tracct.config import Config, load_config
 
@@ -301,7 +301,7 @@ def test_roll_up_sums_closed_periods(tmp_path):
     The open period and the newest row's period wait, and a second pass finds nothing
     new.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     con = _purge_db(tmp_path)
     hour = 3600
@@ -336,7 +336,7 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     with a hook between chunks; then the lookup entries nothing refers to any more, a
     table per hook call. Recent rows, their entries and the sentinels stay.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
     con = _purge_db(tmp_path)
@@ -365,7 +365,7 @@ def test_delete_orphans_stops_between_tables(tmp_path):
     """A hook returning True ends the cleanup after the table it follows, which is
     committed.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     con = _purge_db(tmp_path)
     _insert_connections(con, (int(time.time()), 1))
@@ -388,7 +388,7 @@ def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
     """Raw rows past their window stay until their period is rolled up, and the rollup
     keeps their entries referenced.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     con = _purge_db(tmp_path)
     now = int(time.time())
@@ -418,7 +418,7 @@ def test_purge_database_guards(tmp_path, monkeypatch):
 
     Retention 0 keeps everything; a clock ahead of the newest row deletes nothing.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     monkeypatch.setattr(writer, "PURGE_CHUNK_ROWS", 2)
     con = _purge_db(tmp_path)
@@ -439,7 +439,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     current period; rollups from then on go, and the rows written since are rolled up
     once closed.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     con = _purge_db(tmp_path)
     hour = 3600
@@ -500,7 +500,7 @@ def test_purge_database_fraction_of_a_day(tmp_path):
     """A retention of minutes, given as a fraction of a day, purges at that many
     seconds.
     """
-    import tracct.writer as writer
+    from tracct import writer
 
     con = _purge_db(tmp_path)
     now = int(time.time())
@@ -518,7 +518,7 @@ def test_init_database_uses_wal(tmp_path, monkeypatch):
     """
     import sqlite3
 
-    import tracct.cli as cli
+    from tracct import cli
 
     db = tmp_path / "tracct.db"
     monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
@@ -659,7 +659,7 @@ def test_check_database_handles_corrupt(tmp_path, monkeypatch):
     an OperationalError) on a corrupt db, so the boot path doesn't crash-loop before
     init quarantines it.
     """
-    import tracct.cli as cli
+    from tracct import cli
 
     monkeypatch.setattr(cli, "DB_PATH", tmp_path / "tracct.db")
     (tmp_path / "tracct.db").write_bytes(b"not a sqlite database" * 8)
