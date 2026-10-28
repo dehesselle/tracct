@@ -10,19 +10,21 @@ from pathlib import Path
 
 from tracct.version import __version__
 
-# tracct version, from the git tag at build time (hatch-vcs writes version.py)
+#: tracct version, from the git tag at build time (hatch-vcs writes version.py).
 VERSION: typing.Final[str] = __version__
 
 
 def _systemd_directory(variable: str, default: str) -> Path:
-    """the directory systemd passes for a *Directory= setting (first entry when the unit lists
-    several, colon-separated), else the default for running outside a unit"""
+    """The directory systemd passes for a *Directory= setting (first entry when the unit
+    lists several, colon-separated), else the default for running outside a unit.
+    """
     value = os.getenv(variable, "").split(":")[0]
     return Path(value) if value else Path(default)
 
 
-# paths come from the environment so a unit (or a test) can place them; the variables are the
-# ones systemd sets for ConfigurationDirectory=, StateDirectory= and RuntimeDirectory=
+# Paths come from the environment, so a unit (or a test) can place them; the variables
+# are the ones systemd sets for ConfigurationDirectory=, StateDirectory= and
+# RuntimeDirectory=.
 CONFIG_PATH: typing.Final[Path] = Path(
     os.getenv("TRACCT_CONFIG")
     or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/tracct") / "config.toml"
@@ -31,13 +33,14 @@ STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/
 RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/tracct")
 DB_PATH: typing.Final[Path] = STATE_DIR / "tracct.db"
 
-# bounds the writer's retry buffer near 200 MB (~2 KB/entry) on a persistent outage
+#: Bounds the writer's retry buffer near 200 MB (~2 KB/entry) on a persistent outage.
 RETRY_BUFFER_MAX: typing.Final[int] = 100000
-# btrfs device numbers differ per subvolume and its inodes aren't unique across subvolumes,
-# so (dev, ino) checks are disabled there unless [monitoring].st_dev_mask overrides it
+#: Btrfs device numbers differ per subvolume and its inodes aren't unique across
+#: subvolumes, so (dev, ino) checks are disabled there unless [monitoring].st_dev_mask
+#: overrides it.
 st_dev_mask = 0xFFFFFFFF
 try:
-    # parse /proc/mounts to detect btrfs filesystems (replaces psutil.disk_partitions)
+    # Parse /proc/mounts to detect btrfs filesystems (replaces psutil.disk_partitions).
     with open("/proc/mounts", "r") as _mounts_file:
         for _line in _mounts_file:
             _parts = _line.split()
@@ -56,11 +59,11 @@ except Exception:
     pass
 ST_DEV_MASK: typing.Final[int] = st_dev_mask
 
-# database schema version and table definitions, see "Storage" in docs/DESIGN.md
-# id 0 in each lookup table is the "empty/unknown" sentinel.
-# `family` is AF_INET (2), AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown.
-# `protocol` is an IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown.
-# `netns` is the inode of a network namespace.
+#: Database schema version and table definitions, see "Storage" in docs/DESIGN.md. Id 0
+#: in each lookup table is the "empty/unknown" sentinel. `family` is AF_INET (2),
+#: AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown. `protocol` is an
+#: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. `netns` is the inode of a
+#: network namespace.
 DB_VERSION: typing.Final[int] = 6
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
@@ -159,7 +162,8 @@ SCHEMA_FORWARDED_ROLLUP: typing.Final[str] = """
 SCHEMA_META: typing.Final[str] = """
     key TEXT PRIMARY KEY,
     value INTEGER NOT NULL"""
-# every table with its schema, in creation order, and the sentinel row of each lookup table
+#: Every table with its schema, in creation order, and the sentinel row of each lookup
+#: table.
 TABLES: typing.Final[tuple[tuple[str, str], ...]] = (
     ("executables", SCHEMA_EXECUTABLES),
     ("domains", SCHEMA_DOMAINS),

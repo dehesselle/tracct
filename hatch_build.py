@@ -29,9 +29,9 @@ class BPFBuildHook(BuildHookInterface):
         if sys.platform != "linux":
             self.app.abort(f"tracct builds on Linux only, not on {sys.platform}")
 
-        # The wheel has no C extension linked against glibc -- it ships a
-        # precompiled BPF object (kernel bytecode, no userspace linkage) plus
-        # pure-Python code that dlopen's libbpf.so via ctypes at runtime.
+        # The wheel has no C extension linked against glibc -- it ships a precompiled
+        # BPF object (kernel bytecode, no userspace linkage) plus pure-Python code that
+        # dlopen's libbpf.so via ctypes at runtime.
         arch = os.environ.get("TRACCT_BPF_TARGET_ARCH", platform.machine())
         plat_tags = {
             "x86_64": "manylinux_2_34_x86_64",
@@ -53,7 +53,7 @@ class BPFBuildHook(BuildHookInterface):
 
         if not os.path.exists(bpf_src):
             if os.path.exists(bpf_obj):
-                # No source, but a pre-built object exists (e.g. CI provided it)
+                # No source, but a pre-built object exists (e.g. CI provided it).
                 register(bpf_obj)
                 return
             raise RuntimeError(f"BPF source not found: {bpf_src}")
@@ -65,8 +65,8 @@ class BPFBuildHook(BuildHookInterface):
             register(bpf_obj)
             return
 
-        # Kernel-style target arch name (matches arch/* in the kernel tree and
-        # libbpf's __TARGET_ARCH_* macro from bpf_tracing.h).
+        # Kernel-style target arch name (matches arch/* in the kernel tree and libbpf's
+        # __TARGET_ARCH_* macro from bpf_tracing.h).
         bpf_target_arch = {"x86_64": "x86", "aarch64": "arm64"}[arch]
 
         # Select vmlinux.h with this precedence:
@@ -106,7 +106,7 @@ class BPFBuildHook(BuildHookInterface):
             with open(vmlinux_h, "w") as f:
                 f.write(result.stdout)
 
-        # Compile
+        # Compile.
         subprocess.run(
             [
                 "clang",
@@ -130,7 +130,7 @@ class BPFBuildHook(BuildHookInterface):
             check=True,
         )
 
-        # Strip debug info (optional, non-fatal)
+        # Strip debug info (optional, non-fatal).
         try:
             subprocess.run(
                 ["llvm-strip", "-g", bpf_obj], capture_output=True, check=True

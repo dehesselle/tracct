@@ -34,16 +34,18 @@ from tracct.utils import (
 from tracct.viewer import add_arguments as add_viewer_arguments
 from tracct.viewer import run_viewer
 
-# what the daemon needs, as root or as an unprivileged user with ambient capabilities
+#: What the daemon needs, as root or as an unprivileged user with ambient capabilities.
 REQUIRED_CAPABILITIES: dict[str, int] = {
-    # list /proc/<pid>/fd of other users' processes (mode 0500, a plain permission check that
-    # CAP_SYS_PTRACE does not override): the startup seed and the TUN devices of a process
+    # List /proc/<pid>/fd of other users' processes (mode 0500, a plain permission check
+    # that CAP_SYS_PTRACE does not override): the startup seed and the TUN devices of a
+    # process.
     "CAP_DAC_READ_SEARCH": 2,
     "CAP_NET_ADMIN": 12,  # read the conntrack table and its events for forwarded traffic
     "CAP_SYS_PTRACE": 19,  # resolve /proc/<pid>/exe and open /proc/<pid>/ns/net of other users' processes
-    # attach the getaddrinfo uprobe: its perf event is refused without, at any perf_event_paranoid
-    # (checked on Ubuntu's kernel 7.0); without the uprobe, domains come from reverse DNS only.
-    # also joins other network namespaces (setns) to read their interfaces
+    # Attach the getaddrinfo uprobe: its perf event is refused without, at any
+    # perf_event_paranoid (checked on Ubuntu's kernel 7.0); without the uprobe, domains
+    # come from reverse DNS only. Also joins other network namespaces (setns) to read
+    # their interfaces.
     "CAP_SYS_ADMIN": 21,
     "CAP_PERFMON": 38,  # attach kprobes, uprobes and fexit programs
     "CAP_BPF": 39,  # load BPF programs and maps
@@ -51,7 +53,7 @@ REQUIRED_CAPABILITIES: dict[str, int] = {
 
 
 class _JournalFormatter(logging.Formatter):
-    """prefix each record with its sd-daemon(3) priority so journald keeps the level"""
+    """Prefix each record with its sd-daemon(3) priority so journald keeps the level."""
 
     def format(self, record: logging.LogRecord) -> str:
         if record.levelno >= logging.ERROR:
@@ -66,7 +68,7 @@ class _JournalFormatter(logging.Formatter):
 
 
 def configure_logging() -> None:
-    """journald adds its own timestamps; anywhere else they come with the message"""
+    """Journald adds its own timestamps; anywhere else they come with the message."""
     if os.getenv("JOURNAL_STREAM"):
         formatter: logging.Formatter = _JournalFormatter("%(name)s: %(message)s")
     else:
@@ -79,7 +81,9 @@ def configure_logging() -> None:
 
 
 def check_capabilities() -> int:
-    """check the effective capabilities and BPF requirements, return exit code on failure"""
+    """Check the effective capabilities and BPF requirements, return exit code on
+    failure.
+    """
     with open("/proc/self/status", "r") as f:
         proc_status = f.read()
     capeff = int(
@@ -104,7 +108,7 @@ def check_capabilities() -> int:
 
 
 def check_database() -> int:
-    """check database exists and has correct version, return exit code on failure"""
+    """Check database exists and has correct version, return exit code on failure."""
     if not DB_PATH.exists():
         logging.error(f"Database not found: {DB_PATH}")
         logging.error("Start the tracct service to create it (systemctl start tracct)")
@@ -116,8 +120,9 @@ def check_database() -> int:
         cur.execute("PRAGMA user_version")
         user_version = cur.fetchone()[0]
     except sqlite3.Error as e:
-        # sqlite3.Error (not just OperationalError) so a corrupt db -> DatabaseError returns 1
-        # instead of crashing the boot path (init_database quarantines it beforehand)
+        # sqlite3.Error, not just OperationalError, so a corrupt db (DatabaseError)
+        # returns 1 instead of crashing the boot path; init_database quarantines it
+        # beforehand.
         logging.error(f"Could not open database {DB_PATH}: {e}")
         return 1
     finally:
@@ -132,11 +137,13 @@ def check_database() -> int:
 
 
 def _db_is_corrupt(db_path: Path) -> bool:
-    """True if the db can't be opened, its version read, or its expected tables are present -- such
-    a db must be quarantined+recreated, else check_database or the writer's first maintenance pass
-    crash-loops the daemon. A populated db with the wrong version is NOT corrupt (returns False) so
-    check_database can reject it without destroying its data; an empty or schema-less file with a
-    wrong version holds nothing and IS treated as recreatable."""
+    """True if the db can't be opened, its version read, or its expected tables are
+    present -- such a db must be quarantined+recreated, else check_database or the
+    writer's first maintenance pass crash-loops the daemon. A populated db with the
+    wrong version is NOT corrupt (returns False) so check_database can reject it without
+    destroying its data; an empty or schema-less file with a wrong version holds nothing
+    and IS treated as recreatable.
+    """
     try:
         db_stat = db_path.lstat()
         if not stat.S_ISREG(db_stat.st_mode) or db_stat.st_nlink != 1:
@@ -145,15 +152,17 @@ def _db_is_corrupt(db_path: Path) -> bool:
         try:
             cur = con.cursor()
             if cur.execute("PRAGMA user_version").fetchone()[0] != DB_VERSION:
-                # recreate a 0-byte db a killed writer left behind instead of preserving it
+                # Recreate a 0-byte db a killed writer left behind instead of preserving
+                # it.
                 has_schema = cur.execute(
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'connections'"
                 ).fetchone()
                 return has_schema is None
-            # validate the tables AND the columns the boot purge / inserts need: a db with the
-            # right table names but wrong columns (a foreign db sharing the version) passes a
-            # name-only check yet crashes the writer. LIMIT 0 validates the
-            # columns without reading any rows; a missing table or column raises here.
+            # Validate the tables AND the columns the boot purge / inserts need: a db
+            # with the right table names but wrong columns (a foreign db sharing the
+            # version) passes a name-only check yet crashes the writer. LIMIT 0
+            # validates the columns without reading any rows; a missing table or column
+            # raises here.
             cur.execute(
                 "SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0"
             )
@@ -164,19 +173,23 @@ def _db_is_corrupt(db_path: Path) -> bool:
         finally:
             con.close()
     except sqlite3.DatabaseError as e:
-        # not a database / malformed header / missing table or column -> corrupt; a transient
-        # error (locked by the live daemon or a user's sqlite session, busy, disk I/O) must
-        # NOT quarantine a healthy db (e.g. one the query server or a sqlite session has open)
+        # Not a database, a malformed header, a missing table or column: corrupt. A
+        # transient error (locked by the live daemon or a user's sqlite session, busy,
+        # disk I/O) must NOT quarantine a healthy db, e.g. one the query server or a
+        # sqlite session has open.
         return sqlite_error_means_corrupt(e)
 
 
 def init_database() -> None:
-    """create the state directory and database if missing (systemd creates the directory for a unit)"""
+    """Create the state directory and database if missing (systemd creates the directory
+    for a unit).
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     db_path = DB_PATH
     if (db_path.exists() or db_path.is_symlink()) and _db_is_corrupt(db_path):
-        # quarantine a corrupt db and recreate it below, so check_database / the writer's first
-        # maintenance pass don't crash-loop the daemon (data is kept in tracct.db.bad)
+        # Quarantine a corrupt db and recreate it below, so check_database / the
+        # writer's first maintenance pass don't crash-loop the daemon (data is kept in
+        # tracct.db.bad).
         logging.error(
             f"tracct.db is unusable, quarantining to {db_path.name}.bad and recreating"
         )
@@ -191,8 +204,9 @@ def init_database() -> None:
         cur.execute(f"PRAGMA user_version = {DB_VERSION}")
         con.commit()
         con.close()
-    # readers must not block the writer; sqlite ignores this inside a transaction, so it runs on
-    # its own, and as the mode is kept in the file this also converts a database made without it
+    # Readers must not block the writer; sqlite ignores this inside a transaction, so it
+    # runs on its own, and as the mode is kept in the file this also converts a database
+    # made without it.
     con = sqlite3.connect(db_path)
     try:
         mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
@@ -201,7 +215,7 @@ def init_database() -> None:
                 f"tracct.db stays in journal mode {mode}; readers will block writes"
             )
     except sqlite3.OperationalError as e:
-        # another connection holds the database; the next start tries again
+        # Another connection holds the database; the next start tries again.
         logging.warning(
             f"could not switch tracct.db to WAL mode ({e}); readers will block writes"
         )
@@ -210,10 +224,10 @@ def init_database() -> None:
 
 
 def main() -> int:
-    """run the tracct daemon in the foreground (under a service manager)"""
-    # hold an exclusive lock for the daemon's lifetime: a second instance would unlink and
-    # rebind the live feed socket and write the same database. the kernel drops the lock
-    # when the process exits, so a crash never leaves a stale lock behind
+    """Run the tracct daemon in the foreground (under a service manager)."""
+    # Hold an exclusive lock for the daemon's lifetime: a second instance would unlink
+    # and rebind the live feed socket and write the same database. The kernel drops the
+    # lock when the process exits, so a crash never leaves a stale lock behind.
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(
         RUN_DIR / "tracct.lock",
@@ -230,7 +244,7 @@ def main() -> int:
     init_database()
     if err := check_database():
         return err
-    # read once: a change takes a restart
+    # Read once: a change takes a restart.
     config = load_config()
     logging.info(
         f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}"
@@ -241,7 +255,7 @@ def main() -> int:
 
 
 def start_tracct() -> int:
-    """command line interface, pre-startup checks, and run"""
+    """Command line interface, pre-startup checks, and run."""
     if sys.version_info < (3, 12):
         logging.error("Python version >= 3.12 is required")
         return 1

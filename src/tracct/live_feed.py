@@ -21,17 +21,29 @@ from pathlib import Path
 
 from tracct.constants import RUN_DIR
 
+__all__ = [
+    "EVENTS_SOCKET_PATH",
+    "MAX_PENDING_BYTES",
+    "MAX_SUBSCRIBERS",
+    "LiveFeedPublisher",
+    "LiveFeedSubscriber",
+    "feed_closed_reason",
+]
+
 EVENTS_SOCKET_PATH = RUN_DIR / "events.sock"
 MAX_SUBSCRIBERS = 32
-# per-subscriber backlog held in userspace once the kernel send buffer is full; a
-# drain burst (one event per active connection, each carrying three cmdlines) can
-# exceed the default ~208 KB socket buffer by far before a reader gets scheduled
+#: Per-subscriber backlog held in userspace once the kernel send buffer is full; a drain
+#: burst (one event per active connection, each carrying three cmdlines) can exceed the
+#: default ~208 KB socket buffer by far before a reader gets scheduled.
 MAX_PENDING_BYTES = 8 * 1024 * 1024
 
 
 def feed_closed_reason(path: Path | None = None) -> str:
-    """Why a subscriber saw EOF: the daemon removes the socket on shutdown, so a
-    socket that is still there means this subscriber was dropped (or the daemon restarted)."""
+    """Why a subscriber saw EOF.
+
+    The daemon removes the socket on shutdown, so a socket that is still there means
+    this subscriber was dropped (or the daemon restarted).
+    """
     if (path or EVENTS_SOCKET_PATH).exists():
         return f"the daemon dropped this viewer after it fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind (or the daemon restarted)"
     return "the tracct daemon stopped"
@@ -49,9 +61,9 @@ class LiveFeedPublisher:
     """Single-publisher, many-subscribers UNIX socket broadcaster.
 
     Runs an accept thread and a writer thread. Publishing only queues output per
-    subscriber; the writer thread sends it whenever a socket has room, so delivery
-    is not limited to one kernel buffer per publish call. A subscriber is dropped
-    only once its queue exceeds MAX_PENDING_BYTES.
+    subscriber; the writer thread sends it whenever a socket has room, so delivery is
+    not limited to one kernel buffer per publish call. A subscriber is dropped only once
+    its queue exceeds MAX_PENDING_BYTES.
     """
 
     def __init__(self, group: str | None = None) -> None:
@@ -76,8 +88,8 @@ class LiveFeedPublisher:
             self._sock.bind(str(EVENTS_SOCKET_PATH))
             os.chmod(EVENTS_SOCKET_PATH, 0o660)
             if self._group:
-                # unprivileged, this only works for a group the daemon is a member of
-                # (SupplementaryGroups= in the unit)
+                # Unprivileged, this only works for a group the daemon is a member of
+                # (SupplementaryGroups= in the unit).
                 try:
                     gid = grp.getgrnam(self._group).gr_gid
                     os.chown(EVENTS_SOCKET_PATH, -1, gid)
@@ -114,8 +126,9 @@ class LiveFeedPublisher:
                     self._subscribers.append(_Subscriber(conn))
 
     def has_subscribers(self) -> bool:
-        """True if anyone is listening, so callers can skip serializing an event no
-        one will read -- the common case (no live tab of tracct view open)."""
+        """True if anyone is listening, so callers can skip serializing an event no one
+        will read -- the common case (no live tab of tracct view open).
+        """
         return self._sock is not None and bool(self._subscribers)
 
     def publish(self, event: dict) -> None:
@@ -124,7 +137,10 @@ class LiveFeedPublisher:
     def publish_many(
         self, events: collections.abc.Sequence[collections.abc.Mapping[str, object]]
     ) -> None:
-        """Serialize events once and queue them for every subscriber; the writer thread sends them."""
+        """Serialize events once and queue them for every subscriber.
+
+        The writer thread sends them.
+        """
         if not events or self._sock is None or not self._subscribers:
             return
         payload = "".join(
@@ -176,7 +192,8 @@ class LiveFeedPublisher:
         """Send as much of the backlog as the socket takes; False if the peer is gone.
 
         Uses send rather than sendall, which can write part of the data and then raise,
-        losing track of how much went out and breaking the line framing."""
+        losing track of how much went out and breaking the line framing.
+        """
         while sub.out:
             try:
                 sent = sub.conn.send(sub.out)
@@ -216,7 +233,8 @@ class LiveFeedSubscriber:
 
     def __init__(self, timeout: float | None = None, path: Path | None = None) -> None:
         self._timeout = timeout
-        # resolved at connect time, so a test that moves EVENTS_SOCKET_PATH is followed
+        #: Resolved at connect time, so a test that moves EVENTS_SOCKET_PATH is
+        #: followed.
         self._path = path
         self._sock: socket.socket | None = None
         self._buf = b""

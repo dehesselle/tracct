@@ -2,17 +2,21 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""the query server: answers the viewer's history requests from the database, opened read-only.
-it runs as tracct-query.service, which systemd starts on the first connection to
-tracct-query.socket, without capabilities, and exits once no viewer has been connected for a
-while. a request names a source, a dimension to group by, filters and a time range; dimensions
-map to SQL here and values are bound, so no SQL comes from a client.
+"""The query server.
 
-each source has a raw table and a rollup. a range is read from the raw rows wherever they still
-exist and from the rollups before that (the split), so the detail of the raw rows (addresses,
-ephemeral ports) is there for all of the raw retention. a dimension the rollups do not keep clips
-the range to the split; ports are coarsened in the raw rows the way the rollups keep them
-whenever a range reaches into the rollups, so a port groups the same on both sides"""
+Answers the viewer's history requests from the database, opened read-only. It runs as
+tracct-query.service, which systemd starts on the first connection to
+tracct-query.socket, without capabilities, and exits once no viewer has been connected
+for a while. A request names a source, a dimension to group by, filters and a time
+range; dimensions map to SQL here and values are bound, so no SQL comes from a client.
+
+Each source has a raw table and a rollup. A range is read from the raw rows wherever
+they still exist and from the rollups before that (the split), so the detail of the raw
+rows (addresses, ephemeral ports) is there for all of the raw retention. A dimension the
+rollups do not keep clips the range to the split; ports are coarsened in the raw rows
+the way the rollups keep them whenever a range reaches into the rollups, so a port
+groups the same on both sides.
+"""
 
 from __future__ import annotations
 
@@ -38,42 +42,48 @@ from tracct.query import (
 )
 from tracct.utils import ephemeral_port_start
 
-# viewers connected at once; one more is told so and closed
+#: Viewers connected at once; one more is told so and closed.
 MAX_CLIENTS = 8
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_FILTERS = 16
 MAX_ROWS = 10000
 DEFAULT_ROWS = 1000
 MAX_BUCKETS = 4000
-# a query running longer is interrupted
+#: A query running longer is interrupted.
 QUERY_TIMEOUT_SECONDS = 30
-# a viewer that does not take its answer within this is dropped
+#: A viewer that does not take its answer within this is dropped.
 SEND_TIMEOUT_SECONDS = 60
-# under socket activation the server exits once no viewer has been connected this long
+#: Under socket activation the server exits once no viewer has been connected this long.
 IDLE_EXIT_SECONDS = 600
-# the first file descriptor systemd passes (sd_listen_fds(3))
+#: The first file descriptor systemd passes (sd_listen_fds(3)).
 SD_LISTEN_FDS_START = 3
 
-# the join a key may need; the raw table and its rollup are both t and share their columns
+#: The join a key may need; the raw table and its rollup are both t and share their
+#: columns.
 JOIN_INTERFACE = "JOIN interfaces ti ON ti.id = t.iface_id"
 
 
 @dataclasses.dataclass(frozen=True)
 class Dimension:
-    """each part of a request groups its rows by the key; the outer query turns each key k into
-    the value shown, so text from the lookup tables is read once per group, not per row"""
+    """Each part of a request groups its rows by the key.
+
+    The outer query turns each key k into the value shown, so text from the lookup
+    tables is read once per group, not per row.
+    """
 
     label: str
-    # over the raw table t
+    #: Over the raw table t.
     key: str
-    # the value of key {k}
+    #: The value of key {k}.
     value: str = "{k}"
-    # true for a row whose value is the one bound to each ?; by default the value of its key is
+    #: True for a row whose value is the one bound to each ?; by default the value of
+    #: its key is.
     match: str = ""
     join: bool = False
-    # the key over the rollup; None when the rollup does not keep it
+    #: The key over the rollup; None when the rollup does not keep it.
     rollup: str | None = ""
-    # the key over the raw table kept the way the rollup keeps it, for a range that reads both
+    #: The key over the raw table kept the way the rollup keeps it, for a range that
+    #: reads both.
     coarse: str = ""
 
     def key_sql(self, rollup: bool, coarse: bool, ephemeral: int) -> str:
@@ -96,7 +106,7 @@ class Dimension:
 def _lookup(
     label: str, column: str, table: str, field: str, raw_only: bool = False
 ) -> Dimension:
-    # the id filters use the (exe_id, contime) indexes of the traffic tables
+    # The id filters use the (exe_id, contime) indexes of the traffic tables.
     return Dimension(
         label,
         f"t.{column}",
@@ -107,7 +117,8 @@ def _lookup(
 
 
 def _port(label: str, column: str, icmp: bool) -> Dimension:
-    # the rollups keep a port below the ephemeral range, and none for ICMP, whose rows carry the echo id
+    # The rollups keep a port below the ephemeral range, and none for ICMP, whose rows
+    # carry the echo id.
     icmp_case = " AND t.protocol NOT IN (1, 58)" if icmp else ""
     return Dimension(
         label,
@@ -116,8 +127,8 @@ def _port(label: str, column: str, icmp: bool) -> Dimension:
     )
 
 
-# a namespace by name, unnamed ones by inode; an interface qualified by its namespace, as each
-# namespace has its own lo and the VPN namespaces may each have a tun0
+#: A namespace by name, unnamed ones by inode; an interface qualified by its namespace,
+#: as each namespace has its own lo and the VPN namespaces may each have a tun0.
 NETNS = Dimension(
     "namespace",
     "t.netns",
@@ -133,19 +144,21 @@ IFACE = Dimension(
     f"(SELECT {_IFACE_NAME} FROM {_IFACE_FROM} WHERE i.id = {{k}})",
     f"t.iface_id IN (SELECT i.id FROM {_IFACE_FROM} WHERE {_IFACE_NAME} IS ?)",
 )
-# see "Layers" in docs/DESIGN.md: a socket on a tun is inside the tunnel, a raw row on a tun is the VPN client's
+#: See "Layers" in docs/DESIGN.md: a socket on a tun is inside the tunnel, a raw row on
+#: a tun is the VPN client's.
 LAYER = Dimension(
     "layer",
     "CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END",
     join=True,
 )
-# the same on an interface's counters: a tun device carries what goes through the tunnel
+#: The same on an interface's counters: a tun device carries what goes through the
+#: tunnel.
 IFACE_LAYER = Dimension(
     "layer", "CASE WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END", join=True
 )
-# the layers as conditions on a row, for the sums per layer every request adds up alongside its
-# rows; {tun} is the ids of the tun devices, read once per request rather than joined per row.
-# outer is what the others leave, so it needs no sum of its own
+#: The layers as conditions on a row, for the sums per layer every request adds up
+#: alongside its rows; {tun} is the ids of the tun devices, read once per request rather
+#: than joined per row. Outer is what the others leave, so it needs no sum of its own.
 LAYER_SUMS = (
     ("inner", "t.iface_id IN ({tun}) AND t.family IS NOT 17"),
     ("tunnel", "t.iface_id IN ({tun}) AND t.family = 17"),
@@ -158,18 +171,18 @@ PROTOCOL = Dimension("protocol", "t.protocol")
 @dataclasses.dataclass(frozen=True)
 class Source:
     label: str
-    # what its bytes are; the three kinds are never added together
+    #: What its bytes are; the three kinds are never added together.
     kind: str
     raw: str
     rollup: str
-    # the two byte columns, as (out, in) where a direction applies
+    #: The two byte columns, as (out, in) where a direction applies.
     values: tuple[str, str]
     value_labels: tuple[str, str]
     dimensions: dict[str, Dimension]
     default: str
-    # the dimension the sums over all values are given per, so that layers are never added up:
-    # its values with the condition a row meets for each, and the value of the rows left over;
-    # None for one sum
+    #: The dimension the sums over all values are given per, so that layers are never
+    #: added up: its values with the condition a row meets for each, and the value of
+    #: the rows left over; None for one sum.
     totals_by: str | None = None
     totals: tuple[tuple[str, str], ...] = ()
     totals_rest: str | None = None
@@ -256,16 +269,17 @@ SOURCES = {
 
 
 class RequestError(Exception):
-    """a request the server refuses; the message goes back to the viewer"""
+    """A request the server refuses; the message goes back to the viewer."""
 
 
 @dataclasses.dataclass(frozen=True)
 class Settings:
-    """what the answers depend on besides the database"""
+    """What the answers depend on besides the database."""
 
-    # the first ephemeral port, below which the rollups keep ports
+    #: The first ephemeral port, below which the rollups keep ports.
     ephemeral: int
-    # the daemon's write window and rollup period, in seconds, for the peaks of a timeline
+    #: The daemon's write window and rollup period, in seconds, for the peaks of a
+    #: timeline.
     write_window: int
     rollup_period: int
 
@@ -291,7 +305,7 @@ def _int(request: dict, key: str, default: int | None, low: int, high: int) -> i
 
 
 def _range(request: dict) -> tuple[int, int]:
-    """[start, end) in unix seconds; an open end is the whole history"""
+    """[start, end) in unix seconds; an open end is the whole history."""
     start = _int(request, "start", 0, 0, 2**53)
     end = _int(request, "end", int(time.time()) + 1, 0, 2**53)
     if end <= start:
@@ -300,7 +314,7 @@ def _range(request: dict) -> tuple[int, int]:
 
 
 def _filters(request: dict, source: Source) -> list[tuple[Dimension, object, bool]]:
-    """[dimension, value, exclude] each; a row matches when every filter does"""
+    """[dimension, value, exclude] each; a row matches when every filter does."""
     filters = request.get("filters") or []
     if not isinstance(filters, list) or len(filters) > MAX_FILTERS:
         raise RequestError(f"filters must be a list of at most {MAX_FILTERS}")
@@ -323,9 +337,11 @@ def _filters(request: dict, source: Source) -> list[tuple[Dimension, object, boo
 
 
 def split_point(con: sqlite3.Connection, source: Source) -> int:
-    """where a source's raw rows take over from its rollups: the first rolled-up period from the
-    oldest raw row on (that row's own period, partly purged, comes from the rollup), else the
-    watermark; 0 when nothing is rolled up"""
+    """Where a source's raw rows take over from its rollups.
+
+    The first rolled-up period from the oldest raw row on (that row's own period, partly
+    purged, comes from the rollup), else the watermark; 0 when nothing is rolled up.
+    """
     row = con.execute(
         f"SELECT COALESCE((SELECT MIN(period) FROM {source.rollup} WHERE period >= (SELECT MIN(contime) FROM {source.raw})), (SELECT value FROM meta WHERE key = 'rollup_watermark'), 0)"
     ).fetchone()
@@ -333,7 +349,9 @@ def split_point(con: sqlite3.Connection, source: Source) -> int:
 
 
 class _Plan:
-    """the tables a request reads, as (rollup, start, end) parts, and how its expressions are built"""
+    """The tables a request reads, as (rollup, start, end) parts, and how its
+    expressions are built.
+    """
 
     def __init__(
         self,
@@ -349,7 +367,7 @@ class _Plan:
         self.filters = filters
         self.ephemeral = ephemeral
         self.split = split_point(con, source)
-        # what the rollups do not keep is only there in the raw rows
+        #: What the rollups do not keep is only there in the raw rows.
         self.clipped = start < self.split and any(
             dimension.rollup is None
             for dimension in [*dimensions, *(f[0] for f in filters)]
@@ -391,9 +409,10 @@ class _Plan:
         leading: Callable[[], list] = list,
         sums: tuple[str, ...] = (),
     ) -> tuple[str, list]:
-        """the parts as one UNION ALL of (k, a, b), each summed per key(rollup), and a0, b0, ...
-        summed over the rows that meet each of sums; grouping by the key alone keeps the order
-        of its index"""
+        """The parts as one UNION ALL of (k, a, b), each summed per key(rollup), and a0,
+        b0, ... summed over the rows that meet each of sums; grouping by the key alone
+        keeps the order of its index.
+        """
         a, b = self.source.values
         extra = "".join(
             f", SUM(CASE WHEN {condition} THEN t.{a} END) AS a{i}, SUM(CASE WHEN {condition} THEN t.{b} END) AS b{i}"
@@ -418,9 +437,10 @@ class _Plan:
 
 
 def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """the byte sums per value of one dimension, largest first, and the sums over all values per
-    value of the source's totals_by (one sum without), whose sum is only right where it does not
-    add up layers"""
+    """The byte sums per value of one dimension, largest first, and the sums over all
+    values per value of the source's totals_by (one sum without), whose sum is only
+    right where it does not add up layers.
+    """
     source = _source(request)
     group = source.dimensions.get(request.get("group_by") or source.default)
     if group is None:
@@ -442,7 +462,7 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     }
     if not plan.parts:
         return result
-    # without a tun device every row is left over, and no sum is needed
+    # Without a tun device every row is left over, and no sum is needed.
     tun = ", ".join(
         str(row[0])
         for row in con.execute("SELECT id FROM interfaces WHERE kind = 'tun'")
@@ -458,7 +478,7 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
         f", SUM(SUM(u.a{i})) OVER (), SUM(SUM(u.b{i})) OVER ()"
         for i in range(len(conditions))
     )
-    # keys with the same value (one name, several executables) become one row
+    # Keys with the same value (one name, several executables) become one row.
     sql = (
         f"SELECT {group.value_sql('u.k')} AS g, SUM(u.a), SUM(u.b), SUM(SUM(u.a)) OVER (), SUM(SUM(u.b)) OVER (), COUNT(*) OVER (){sums}"
         f" FROM ({union}) u GROUP BY g ORDER BY SUM(u.a) + SUM(u.b) DESC, g LIMIT ?"
@@ -468,7 +488,8 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
         sql, [*params, limit]
     ):
         if not result["groups"]:
-            # the window sums are the same on every row; a value with no bytes is not there
+            # The window sums are the same on every row; a value with no bytes is not
+            # there.
             result["totals"], result["groups"] = [total_a, total_b], groups
             parts = [
                 [name, per_value[2 * i] or 0, per_value[2 * i + 1] or 0]
@@ -495,9 +516,12 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
 
 
 def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """the byte sums per bucket of step seconds from start; buckets without bytes are left out.
-    with peak, each bucket also carries the highest rate of a stretch of peak seconds in it, so a
-    spike shorter than the bucket keeps its height"""
+    """The byte sums per bucket of step seconds from start.
+
+    Buckets without bytes are left out. With peak, each bucket also carries the highest
+    rate of a stretch of peak seconds in it, so a spike shorter than the bucket keeps
+    its height.
+    """
     source = _source(request)
     filters = _filters(request, source)
     start, end = _range(request)
@@ -516,12 +540,13 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     plan = _Plan(con, source, [], filters, start, end, settings.ephemeral)
     result: dict = {**plan.info(), "step": step, "buckets": []}
     if peak is not None:
-        # a write window's rows share one contime, so a stretch shorter than the window would
-        # count the window's bytes as if they came in that stretch
+        # A write window's rows share one contime, so a stretch shorter than the window
+        # would count the window's bytes as if they came in that stretch.
         result["peak"] = max(peak, settings.write_window)
     if not plan.parts:
         return result
-    # buckets count from the requested start, so they stay put when a dimension clips the range
+    # Buckets count from the requested start, so they stay put when a dimension clips
+    # the range.
     if peak is None:
         union, params = plan.union(
             lambda rollup: f"(t.{'period' if rollup else 'contime'} - ?) / ?",
@@ -535,7 +560,7 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     a_column, b_column = source.values
     selects, params = [], []
     for rollup, part_start, part_end in plan.parts:
-        # a rollup holds nothing finer than its period
+        # A rollup holds nothing finer than its period.
         column, length = (
             ("period", max(peak, settings.rollup_period))
             if rollup
@@ -557,7 +582,7 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
 
 
 def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """the sources, their dimensions and the time each covers"""
+    """The sources, their dimensions and the time each covers."""
     sources = {}
     for name, source in SOURCES.items():
         oldest, newest = con.execute(
@@ -589,7 +614,10 @@ OPS: dict[str, Callable[[sqlite3.Connection, dict, Settings], dict]] = {
 
 
 def open_database(db_path: Path) -> sqlite3.Connection:
-    """the database, read-only; the server runs as the daemon's user, so the WAL index is shared"""
+    """The database, read-only.
+
+    The server runs as the daemon's user, so the WAL index is shared.
+    """
     if not db_path.exists():
         raise RequestError(
             f"no database at {db_path} yet; is the tracct service running?"
@@ -621,8 +649,9 @@ class QueryServer:
         rollup_period: int | None = None,
     ) -> None:
         self.db_path = db_path
-        # the daemon's config, which the database was written with; a change of it applies to the
-        # history from then on, and the peaks of older history take the current values
+        # The daemon's config, which the database was written with; a change of it
+        # applies to the history from then on, and the peaks of older history take the
+        # current values.
         database = (
             load_config().database
             if write_window is None or rollup_period is None
@@ -694,8 +723,10 @@ class QueryServer:
                 self._clients -= 1
 
     def serve(self, listener: socket.socket, idle_exit: float | None) -> None:
-        """answer viewers, each in its own thread; returns once none has been connected for
-        idle_exit seconds (never when None)"""
+        """Answer viewers, each in its own thread.
+
+        Returns once none has been connected for idle_exit seconds (never when None).
+        """
         listener.settimeout(1.0)
         last_active = time.monotonic()
         while True:
@@ -712,7 +743,7 @@ class QueryServer:
                     return
                 continue
             except OSError:
-                # the listener was closed
+                # The listener was closed.
                 return
             last_active = time.monotonic()
             with self._lock:
@@ -739,7 +770,10 @@ class QueryServer:
 
 
 def listening_socket(path: Path) -> tuple[socket.socket, bool]:
-    """the socket systemd passes (sd_listen_fds(3)), else one bound at path; and whether it was passed"""
+    """The socket systemd passes (sd_listen_fds(3)), else one bound at path.
+
+    And whether it was passed.
+    """
     if (
         os.getenv("LISTEN_PID") == str(os.getpid())
         and int(os.getenv("LISTEN_FDS", "0") or 0) >= 1
@@ -762,7 +796,7 @@ def listening_socket(path: Path) -> tuple[socket.socket, bool]:
 
 
 def run_query_server(path: Path = QUERY_SOCKET_PATH) -> int:
-    """`tracct query-server`: under tracct-query.socket until idle, else until stopped"""
+    """`tracct query-server`: until idle when socket-activated, else until stopped."""
     listener, activated = listening_socket(path)
     logging.info(
         f"query server: reading {DB_PATH}, {'socket from systemd' if activated else f'listening on {path}'}"

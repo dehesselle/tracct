@@ -17,8 +17,8 @@ from tracct.constants import CONFIG_PATH
 @dataclasses.dataclass
 class DatabaseConfig:
     enabled: bool = True
-    # rows per write window; rollups per period, which outlive them. fractions of a day are
-    # allowed, so a test can run through retention in minutes
+    #: Rows per write window; rollups per period, which outlive them. Fractions of a day
+    #: are allowed, so a test can run through retention in minutes.
     raw_retention_days: float = 30.0
     rollup_retention_days: float = 365.0
     rollup_period_minutes: int = 60
@@ -29,7 +29,7 @@ class DatabaseConfig:
 @dataclasses.dataclass
 class LogConfig:
     addresses: bool = True
-    # PTR queries for remote addresses the program looked up no name for
+    #: PTR queries for remote addresses the program looked up no name for.
     reverse_dns: bool = True
     commands: bool = True
     ports: bool = True
@@ -41,18 +41,21 @@ class LogConfig:
 @dataclasses.dataclass
 class MonitoringConfig:
     every_exe: bool = False
-    # attribute receives that never issue a recvmsg; off by default, adds a per-frame softirq hook
+    #: Attribute receives that never issue a recvmsg; off by default, adds a per-frame
+    #: softirq hook.
     mmap_ring_rx: bool = False
     exec_ring_buffer_pages: int = 256
     conn_map_max_entries: int = 65536
     st_dev_mask: int | None = None
-    # forwarded traffic from the kernel's connection tracking (needs CAP_NET_ADMIN, nf_conntrack_acct)
+    #: Forwarded traffic from the kernel's connection tracking (needs CAP_NET_ADMIN,
+    #: nf_conntrack_acct).
     conntrack: bool = True
 
 
 @dataclasses.dataclass
 class ViewerConfig:
-    # group whose members may connect to events.sock (the live tab of view); empty keeps the daemon's own group
+    #: Group whose members may connect to events.sock (the live tab of view); empty
+    #: keeps the daemon's own group.
     group: str = ""
 
 
@@ -72,7 +75,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             with open(config_path, "rb") as f:
                 raw = tomllib.load(f)
         except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
-            # never crash-loop the daemon on a malformed config; fall back to defaults
+            # Never crash-loop the daemon on a malformed config; fall back to defaults.
             logging.error(f"failed to read {config_path}, using defaults: {e}")
             raw = {}
         section_names = {
@@ -87,8 +90,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                 continue
             section_data = raw[section_name]
             if not isinstance(section_data, dict):
-                # valid TOML but wrong shape (e.g. `monitoring = 5` instead of `[monitoring]`);
-                # skip so `field.name in section_data` can't raise and crash-loop the daemon
+                # Valid TOML but wrong shape (e.g. `monitoring = 5` instead of
+                # `[monitoring]`); skip so `field.name in section_data` can't raise and
+                # crash-loop the daemon.
                 logging.warning(
                     f"config.{section_name}: expected a table, got {type(section_data).__name__}, ignoring"
                 )
@@ -105,8 +109,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                     value = section_data[field.name]
                     expected_type = field.type
                     if hasattr(expected_type, "__origin__"):
-                        # parameterized generics (list[int]): enforce the container type, a
-                        # scalar here would break the writer's filters on every batch
+                        # Parameterized generics (list[int]): enforce the container
+                        # type, a scalar here would break the writer's filters on every
+                        # batch.
                         if expected_type.__origin__ is list and not isinstance(
                             value, list
                         ):
@@ -115,14 +120,15 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                             )
                             continue
                     elif not isinstance(expected_type, type):
-                        # field.type may be a forward-ref string under `from __future__ import annotations`
+                        # field.type may be a forward-ref string under `from __future__
+                        # import annotations`.
                         pass
                     elif (
                         expected_type is float
                         and isinstance(value, int)
                         and not isinstance(value, bool)
                     ):
-                        # TOML reads 30 as an integer
+                        # TOML reads 30 as an integer.
                         value = float(value)
                     elif not isinstance(value, expected_type) or (
                         isinstance(value, bool) and expected_type is not bool
@@ -135,7 +141,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                         )
                         continue
                     setattr(section_obj, field.name, value)
-    # clamp values that would otherwise fail the BPF load and restart-loop the daemon
+    # Clamp values that would otherwise fail the BPF load and restart-loop the daemon.
     pages = config.monitoring.exec_ring_buffer_pages
     if pages < 1 or pages > 16384 or (pages & (pages - 1)) != 0:
         logging.warning(
@@ -158,8 +164,8 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             f"monitoring.st_dev_mask must be in [0, 4294967295], got {dev_mask!r}, ignoring"
         )
         config.monitoring.st_dev_mask = None
-    # reject negatives (a negative retention makes the cutoff a future time -> wipes the db) and
-    # TOML's inf and nan, which would make the cutoff meaningless
+    # Reject negatives (a negative retention makes the cutoff a future time, which
+    # wipes the db) and TOML's inf and nan, which would make the cutoff meaningless.
     for key, default in (
         ("raw_retention_days", 30.0),
         ("rollup_retention_days", 365.0),
@@ -188,7 +194,7 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             f"database.maintenance_interval_minutes must be at least 1, got {interval}, using 60"
         )
         config.database.maintenance_interval_minutes = 60
-    # reset a group that doesn't resolve, else the daemon can't hand the sockets to it
+    # Reset a group that doesn't resolve, else the daemon can't hand the sockets to it.
     if config.viewer.group:
         try:
             grp.getgrnam(config.viewer.group)
@@ -197,8 +203,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                 f"config.viewer.group: {config.viewer.group!r} does not exist, ignoring"
             )
             config.viewer.group = ""
-    # drop log.ignore_ips entries that aren't valid networks (strict=False accepts a host-bit CIDR);
-    # otherwise the writer crashes building ignored_networks at start, outside its try/except
+    # Drop log.ignore_ips entries that aren't valid networks (strict=False accepts a
+    # host-bit CIDR); otherwise the writer crashes building ignored_networks at start,
+    # outside its try/except.
     valid_ignore_ips = []
     for ip_subnet in config.log.ignore_ips:
         try:
@@ -210,9 +217,9 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
             continue
         valid_ignore_ips.append(ip_subnet)
     config.log.ignore_ips = valid_ignore_ips
-    # drop ignore_domains entries that aren't non-empty strings: a non-str breaks the writer's
-    # startswith() filter on every write (nothing gets recorded), an empty string prefixes every
-    # domain (silently dropping all connections)
+    # Drop ignore_domains entries that aren't non-empty strings: a non-str breaks the
+    # writer's startswith() filter on every write (nothing gets recorded), an empty
+    # string prefixes every domain (silently dropping all connections).
     valid_ignore_domains = []
     for domain_prefix in config.log.ignore_domains:
         if not isinstance(domain_prefix, str) or not domain_prefix:

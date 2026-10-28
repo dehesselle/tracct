@@ -16,6 +16,17 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
+__all__ = [
+    "DropOldestQueue",
+    "connect_db_readonly",
+    "ephemeral_port_start",
+    "log_error",
+    "quarantine_database",
+    "sanitize_log_line",
+    "sd_notify",
+    "sqlite_error_means_corrupt",
+]
+
 
 def sd_notify(message: str) -> None:
     """Best-effort systemd notification via the raw sd_notify(3) protocol, so the

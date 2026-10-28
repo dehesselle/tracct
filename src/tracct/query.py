@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""the protocol between the query server and its clients: one JSON object per message, preceded
-by its length as a 4-byte big-endian integer. each request gets one response, which has "ok" set
-and either the result or an "error"; requests and their fields are in query_server.py"""
+"""The protocol between the query server and its clients.
+
+One JSON object per message, preceded by its length as a 4-byte big-endian integer.
+Each request gets one response, which has "ok" set and either the result or an "error";
+requests and their fields are in query_server.py.
+"""
 
 from __future__ import annotations
 
@@ -14,16 +17,26 @@ import socket
 import struct
 from pathlib import Path
 
-# created by tracct-query.socket; outside the daemon's runtime directory, which goes with the daemon
+__all__ = [
+    "MAX_RESPONSE_BYTES",
+    "QUERY_SOCKET_PATH",
+    "QueryClient",
+    "QueryError",
+    "recv_message",
+    "send_message",
+]
+
+#: Created by tracct-query.socket; outside the daemon's runtime directory, which goes
+#: with the daemon.
 QUERY_SOCKET_PATH = Path(os.getenv("TRACCT_QUERY_SOCKET") or "/run/tracct-query.sock")
-# a response's bound; the server keeps its answers below it
+#: A response's bound; the server keeps its answers below it.
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 _HEADER = struct.Struct(">I")
 
 
 class QueryError(Exception):
-    """the server answered with an error, or the answer could not be read"""
+    """The server answered with an error, or the answer could not be read."""
 
 
 def send_message(sock: socket.socket, message: dict) -> None:
@@ -32,7 +45,7 @@ def send_message(sock: socket.socket, message: dict) -> None:
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
-    """size bytes, or None when the peer closed before the first of them"""
+    """Size bytes, or None when the peer closed before the first of them."""
     chunks = []
     received = 0
     while received < size:
@@ -47,8 +60,10 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes | None:
 
 
 def recv_message(sock: socket.socket, max_bytes: int) -> dict | None:
-    """the next message, or None when the peer closed between messages; ValueError for one that
-    is too large or not a JSON object"""
+    """The next message, or None when the peer closed between messages.
+
+    ValueError for one that is too large or not a JSON object.
+    """
     header = _recv_exact(sock, _HEADER.size)
     if header is None:
         return None
@@ -65,7 +80,7 @@ def recv_message(sock: socket.socket, max_bytes: int) -> dict | None:
 
 
 class QueryClient:
-    """a connection to the query server; one request at a time"""
+    """A connection to the query server; one request at a time."""
 
     def __init__(self, path: Path = QUERY_SOCKET_PATH, timeout: float = 60.0) -> None:
         self.path = path
@@ -83,8 +98,11 @@ class QueryClient:
         self._sock = sock
 
     def request(self, op: str, **params: object) -> dict:
-        """send a request and return the server's answer; reconnects once if the server went away
-        in between (it exits when idle and systemd starts it again)"""
+        """Send a request and return the server's answer.
+
+        Reconnects once if the server went away in between (it exits when idle and
+        systemd starts it again).
+        """
         for attempt in (0, 1):
             if self._sock is None:
                 self.connect()
