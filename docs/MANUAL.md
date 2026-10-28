@@ -62,7 +62,9 @@ and received. A point is the highest rate of
 any 10 seconds within its bucket (a whole period in the rollups), so a short spike keeps its
 height at any zoom; if the daemon writes less often than every 10 seconds, the stretch is its
 write window and the title says so. A vertical line marks where the rollups end. Hovering
-shows a bucket's bytes and peaks in the bottom border.
+shows a bucket's bytes and peaks in the bottom border. `,` `p` gives the whole tab to the
+plot, for more room to zoom and pan, and brings back the dimensions and the table when
+pressed again; it holds for every history tab.
 
 The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
 dragging or `←` and `→` pan, and a moment after the plot comes to rest the tables follow.

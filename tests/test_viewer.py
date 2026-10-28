@@ -580,6 +580,60 @@ async def test_plot_title_and_busy(tmp_path):
         listener.close()
 
 
+async def test_history_plot_only(tmp_path):
+    listener = _server(tmp_path)
+
+    try:
+        app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
+        app.time_range = TimeRange(0)
+        timeline = app.client.timeline
+        asked = []
+        app.client.timeline = lambda *args, **kwargs: (
+            asked.append(args),
+            timeline(*args, **kwargs),
+        )[1]
+        async with app.run_test(size=(140, 45)) as pilot:
+            processes = app.query_one("#processes HistoryPane", HistoryPane)
+            plot = processes.query_one(TrafficPlot)
+            table = processes.query_one(DataTable)
+            await _until(pilot, lambda: bool(plot.values) and not processes.loading())
+            await pilot.pause(0.3)
+            size, points, requests = plot.size, plot.points(), len(asked)
+            assert app.focused is table
+            # The plot takes the whole tab, with the focus, and asks again for its new
+            # width.
+            await pilot.press("comma", "p")
+            await _until(
+                pilot,
+                lambda: (
+                    not table.display
+                    and not processes.query_one("#dimensions").display
+                    and app.focused is plot
+                ),
+            )
+            assert plot.size.width > size.width and plot.size.height > size.height
+            assert plot.points() > points
+            await _until(pilot, lambda: len(asked) > requests)
+            # Shared by the history tabs, as the range is.
+            await pilot.press("i")
+            interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
+            await _until(
+                pilot,
+                lambda: (
+                    app.focused is interfaces.query_one(TrafficPlot)
+                    and not interfaces.query_one(DataTable).display
+                ),
+            )
+            # Pressed again, the dimensions and the table come back.
+            await pilot.press("p", "comma", "p")
+            await _until(
+                pilot,
+                lambda: table.display and app.focused is table and plot.size == size,
+            )
+    finally:
+        listener.close()
+
+
 async def test_history_without_query_server(tmp_path):
     app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     async with app.run_test(size=(120, 40)) as pilot:

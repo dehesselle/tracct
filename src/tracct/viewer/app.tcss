@@ -20,6 +20,9 @@ LivePane #events { height: 3fr; }
 /* A history tab: the dimensions on the left, the plot above the table. */
 HistoryPane OptionList { width: 30; height: 1fr; }
 HistoryPane DataTable { height: 1fr; }
+/* Plot only (, p): the plot takes the whole tab. */
+HistoryPane.-plot-only OptionList, HistoryPane.-plot-only DataTable { display: none; }
+HistoryPane.-plot-only TrafficPlot { height: 1fr; }
 
 /* No axis labels: the border title says what is drawn. The tick labels get a fixed
    width, so the lines do not shift sideways when the rates refit to a zoom. */

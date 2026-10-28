@@ -90,6 +90,8 @@ class HistoryPane(FindablePane):
         Binding("comma f e", "filter(True)", "exclude row", show=False),
         Binding("comma f p", "pop_filter", "pop last", show=False),
         Binding("comma f c", "clear_filters", "clear", show=False),
+        # Shared by the history tabs, as the range is.
+        Binding("comma p", "app.plot_only", "plot only", show=False),
     ]
     CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma f": "filter"}
 
@@ -118,10 +120,29 @@ class HistoryPane(FindablePane):
 
     def on_mount(self) -> None:
         self.watch(self.viewer, "byte_unit", self._show_byte_unit, init=False)
+        self.watch(self.viewer, "plot_only", self._show_plot_only, init=False)
 
     def _show_byte_unit(self, byte_unit: str) -> None:
         self.query_one(TrafficPlot).set_byte_unit(byte_unit)
         self.render_rows()
+
+    def _show_plot_only(self, plot_only: bool) -> None:
+        """Hide the dimensions and the table, or show them again; app.tcss says how.
+
+        Only the tab shown takes the focus and asks for a plot as wide as it is now; a
+        hidden one asks when it is shown.
+        """
+        self.set_class(plot_only, "-plot-only")
+        if self.viewer.active_pane() is self:
+            self.focus_content()
+            self.schedule_timeline()
+
+    def focus_content(self) -> None:
+        # Showing only the plot, focus it, so its keys pan and zoom.
+        if self.has_class("-plot-only"):
+            self.query_one(TrafficPlot).focus()
+        else:
+            super().focus_content()
 
     @property
     def viewer(self) -> TracctApp:

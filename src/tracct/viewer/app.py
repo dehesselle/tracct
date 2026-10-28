@@ -66,6 +66,8 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
     )
     #: The unit the history tabs show bytes in; every tab redraws, no request needed.
     byte_unit: reactive[str] = reactive(BYTE_UNITS[0], init=False)
+    #: Whether the history tabs give their whole area to the plot.
+    plot_only: reactive[bool] = reactive(False, init=False)
 
     def __init__(
         self, events_socket: Path, query_socket: Path, tab: str = "processes"
@@ -213,6 +215,9 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         if byte_unit is None or byte_unit == self.byte_unit:
             return
         self.last_byte_unit, self.byte_unit = self.byte_unit, byte_unit
+
+    def action_plot_only(self) -> None:
+        self.plot_only = not self.plot_only
 
     def action_refresh(self) -> None:
         self.reload_active()
