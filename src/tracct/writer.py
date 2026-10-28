@@ -29,25 +29,29 @@ from tracct.utils import (
     sqlite_error_means_corrupt,
 )
 
-# distinct connections one write window may hold; past it the window is written early
+#: Distinct connections one write window may hold; past it the window is written early.
 WINDOW_CONNECTIONS_MAX = 65536
-# rows the retention purge deletes per transaction; a write that is due goes between two
+#: Rows the retention purge deletes per transaction; a write that is due goes between
+#: two.
 PURGE_CHUNK_ROWS = 10000
-# how often unreferenced lookup entries are looked for at most (once per retention when that is
-# shorter): finding them scans every row, while waiting only leaves a few unused entries
+#: How often unreferenced lookup entries are looked for at most (once per retention when
+#: that is shorter): finding them scans every row, while waiting only leaves a few
+#: unused entries.
 ORPHAN_INTERVAL_SECONDS = 86400
-# a maintenance pass is skipped when the wall clock moved this far from the boot clock since the last
+#: A maintenance pass is skipped when the wall clock moved this far from the boot clock
+#: since the last.
 CLOCK_JUMP_SECONDS = 60
-# ids the writer keeps per lookup table; past it the cache starts over from the database
+#: Ids the writer keeps per lookup table; past it the cache starts over from the
+#: database.
 ID_CACHE_MAX = 65536
-# the interface of a row whose interface is unknown
+#: The interface of a row whose interface is unknown.
 NO_INTERFACE = (0, "", "")
 
-# rows of a closed rollup period, summed; the parameters are the period, the first port of the
-# ephemeral range (ports from there on are a peer's or our own random port, kept as 0 so a
-# server's rollup does not grow with its clients), and the period's bounds
+#: Rows of a closed rollup period, summed; the parameters are the period, the first port
+#: of the ephemeral range (ports from there on are a peer's or our own random port, kept
+#: as 0 so a server's rollup does not grow with its clients), and the period's bounds.
 ROLLUPS = (
-    # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping
+    # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     "INSERT INTO connections_rollup SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
     " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
     " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
@@ -59,7 +63,7 @@ ROLLUPS = (
     " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*)"
     " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns, protocol, src_id, dp, domain_id",
 )
-# the tables purged past the raw and the rollup retention, with their time column
+#: The tables purged past the raw and the rollup retention, with their time column.
 RAW_TABLES = (
     ("connections", "contime"),
     ("interface_traffic", "contime"),
@@ -70,8 +74,8 @@ ROLLUP_TABLES = (
     ("interface_traffic_rollup", "period"),
     ("forwarded_rollup", "period"),
 )
-# lookup entries nothing refers to, one transaction each; executables uses the exe_id and
-# pexe_id indexes, the others scan the tables referring to them
+#: Lookup entries nothing refers to, one transaction each; executables uses the exe_id
+#: and pexe_id indexes, the others scan the tables referring to them.
 ORPHAN_DELETES = (
     "DELETE FROM executables WHERE id != 0"
     " AND NOT EXISTS (SELECT 1 FROM connections WHERE exe_id = executables.id) AND NOT EXISTS (SELECT 1 FROM connections WHERE pexe_id = executables.id)"
@@ -89,15 +93,18 @@ ORPHAN_DELETES = (
 
 
 class Interned:
-    """the ids of one lookup table, cached. ids a rolled-back transaction inserted are dropped
-    again, as sqlite hands their rowids out anew"""
+    """The ids of one lookup table, cached.
+
+    Ids a rolled-back transaction inserted are dropped again, as sqlite hands their
+    rowids out anew.
+    """
 
     def __init__(self, table: str, columns: tuple[str, ...], sentinel: tuple) -> None:
         self.insert = f"INSERT OR IGNORE INTO {table}({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})"
         self.select = f"SELECT id FROM {table} WHERE {' AND '.join(f'{column} = ?' for column in columns)}"
         self.sentinel = sentinel
         self.ids: dict[tuple, int] = {sentinel: 0}
-        # inserted during the current, uncommitted transaction
+        #: Inserted during the current, uncommitted transaction.
         self.pending: list[tuple] = []
 
     def id(self, con: sqlite3.Connection, key: tuple) -> int:
@@ -123,9 +130,10 @@ class Interned:
 
 
 class WriteWindow:
-    """the connections and forwarded flows of one write window, summed as their events arrive,
-    so memory follows the number of distinct connections rather than events. the events are not
-    modified, the live feed may still be sending the same objects"""
+    """The connections and forwarded flows of one write window, summed as their events
+    arrive, so memory follows the number of distinct connections rather than events. The
+    events are not modified, the live feed may still be sending the same objects.
+    """
 
     def __init__(
         self,
@@ -142,7 +150,8 @@ class WriteWindow:
         ]
         self.connections: dict[tuple, list[int]] = {}
         self.flows: dict[tuple, list[int]] = {}
-        # many connections in one window share a cmdline, and this string work dominated at high cardinality
+        #: Many connections in one window share a cmdline, and this string work
+        #: dominated at high cardinality.
         self.cmdlines: dict[str, str] = {}
 
     def __len__(self) -> int:
@@ -171,8 +180,11 @@ class WriteWindow:
         return False
 
     def interface(self, netns: int, laddr: str, tun: str) -> tuple[int, str, str]:
-        """the interface a row was counted on: the TUN device of a process's TUN reads and
-        writes, else the interface holding the local address"""
+        """The interface a row was counted on.
+
+        The TUN device of a process's TUN reads and writes, else the interface holding
+        the local address.
+        """
         if self.netinfo is None:
             return NO_INTERFACE
         name, kind = (tun, "tun") if tun else self.netinfo.interface_of(netns, laddr)
@@ -181,28 +193,30 @@ class WriteWindow:
     def add(self, events: list[BpfEvent]) -> None:
         log = self.config.log
         for proc in events:
-            # join or omit commands from logs
+            # Join or omit commands from logs.
             if log.commands:
                 cmdline = self.clean_cmdline(proc["cmdline"])
                 pcmdline = self.clean_cmdline(proc["pcmdline"])
             else:
                 cmdline = pcmdline = ""
-            # the domain the program looked up; omitted with the address from logs
+            # The domain the program looked up; omitted with the address from logs.
             domain, raddr = proc["domain"], proc["raddr"]
             if not log.addresses:
                 domain = raddr = ""
             lport, rport = proc["lport"], proc["rport"]
             if not log.ports:
                 lport, rport = min(0, lport), min(0, rport)
-            # omit entry from logs (domains are matched in take_rows, once reverse DNS had its chance)
+            # Omit entry from logs (domains are matched in take_rows, once reverse DNS
+            # had its chance).
             if rport in log.ignore_ports or lport in log.ignore_ports:
                 continue
             if self.ignored_networks and raddr and self.ignored(raddr, proc["laddr"]):
                 continue
             family = int(proc.get("family", 0) or 0)
             netns = int(proc.get("netns", 0) or 0)
-            # the interface follows from netns and laddr in the key, and is looked up once per
-            # row in take_rows; only a TUN row needs its process for it, which is not in the key
+            # The interface follows from netns and laddr in the key, and is looked up
+            # once per row in take_rows; only a TUN row needs its process for it, which
+            # is not in the key.
             tun = (
                 self.netinfo.tun_of(proc["pid"])
                 if family == socket.AF_PACKET and self.netinfo is not None
@@ -232,7 +246,7 @@ class WriteWindow:
                 ]
                 if self.netinfo is not None:
                     self.netinfo.note(netns, proc["pid"])
-                # asked for now, so the answer has the rest of the window to arrive
+                # Asked for now, so the answer has the rest of the window to arrive.
                 if not domain and raddr and self.reverse_dns is not None:
                     self.reverse_dns.lookup(raddr)
             else:
@@ -282,8 +296,9 @@ class WriteWindow:
         )
 
     def take_rows(self) -> tuple[list[tuple], list[tuple]]:
-        """the window as connection and forwarded rows for the database, with domains from
-        reverse DNS where the program looked up none; the next window starts empty"""
+        """The window as connection and forwarded rows for the database, with domains
+        from reverse DNS where the program looked up none; the next window starts empty.
+        """
         contime = int(time.time())
         rows: dict[tuple, list[int]] = {}
         for key, (send, recv, n_events) in self.connections.items():
@@ -300,7 +315,8 @@ class WriteWindow:
             )
             if self.is_ignored_domain(domain):
                 continue
-            # a connection with and without the domain the program looked up are one row now
+            # A connection with and without the domain the program looked up are one row
+            # now.
             counters = rows.get(key)
             if counters is None:
                 rows[key] = [send, recv, n_events]
@@ -341,7 +357,10 @@ def _chunked_delete(
     cutoff: int,
     between_chunks: Callable[[], bool],
 ) -> tuple[int, bool]:
-    """delete the rows of table older than cutoff; returns how many, and whether between_chunks stopped it"""
+    """Delete the rows of table older than cutoff.
+
+    Returns how many, and whether between_chunks stopped it.
+    """
     deleted = 0
     while True:
         with con:
@@ -362,12 +381,15 @@ def roll_up(
     between_periods: Callable[[], bool],
     ephemeral: int | None = None,
 ) -> int:
-    """sum the raw rows of every period that has closed since the last one rolled up, per period;
-    the watermark in meta marks where the next starts. returns the number of periods summed"""
+    """Sum the raw rows of every period that has closed since the last one rolled up,
+    per period; the watermark in meta marks where the next starts. Returns the number of
+    periods summed.
+    """
     period = period_minutes * 60
     ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
-    # periods end on multiples of the period length; the current one is still open, and so is
-    # the newest row's, so a clock running ahead cannot carry the watermark past the data
+    # Periods end on multiples of the period length; the current one is still open, and
+    # so is the newest row's, so a clock running ahead cannot carry the watermark past
+    # the data.
     now = int(time.time())
     current = closed = now // period * period
     newest_sql = "SELECT MAX(t) FROM (SELECT MAX(contime) AS t FROM connections UNION ALL SELECT MAX(contime) FROM interface_traffic UNION ALL SELECT MAX(contime) FROM forwarded)"
@@ -379,8 +401,9 @@ def roll_up(
     ).fetchone()
     watermark = row[0] if row is not None else 0
     if watermark > now:
-        # the clock went back past periods rolled up while it ran ahead: their rollups go, and
-        # the periods are rolled up again once they close, with the rows written since
+        # The clock went back past periods rolled up while it ran ahead: their rollups
+        # go, and the periods are rolled up again once they close, with the rows written
+        # since.
         with con:
             for table, column in ROLLUP_TABLES:
                 con.execute(f"DELETE FROM {table} WHERE {column} >= ?", (current,))
@@ -393,8 +416,8 @@ def roll_up(
         watermark = current
     periods = 0
     while watermark < closed:
-        # the next row at or past the watermark, so spans without any are skipped (a first
-        # start, a long downtime)
+        # The next row at or past the watermark, so spans without any are skipped (a
+        # first start, a long downtime).
         oldest = con.execute(
             "SELECT MIN(t) FROM (SELECT MIN(contime) AS t FROM connections WHERE contime >= :w UNION ALL SELECT MIN(contime) FROM interface_traffic WHERE contime >= :w"
             " UNION ALL SELECT MIN(contime) FROM forwarded WHERE contime >= :w)",
@@ -403,7 +426,7 @@ def roll_up(
         if oldest is None or oldest >= closed:
             start = end = closed
         else:
-            # after a change of the period length the watermark may sit inside a period
+            # After a change of the period length the watermark may sit inside a period.
             start = max(watermark, oldest // period * period)
             end = start // period * period + period
         with con:
@@ -430,8 +453,10 @@ def roll_up(
 
 
 def retention_seconds(config: Config) -> tuple[int, int]:
-    """the raw and the rollup retention in seconds, 0 for keeping forever; retention may be a
-    fraction of a day, rounded up so a tiny one never becomes 0"""
+    """The raw and the rollup retention in seconds, 0 for keeping forever.
+
+    Retention may be a fraction of a day, rounded up so a tiny one never becomes 0.
+    """
     database = config.database
     return math.ceil(database.raw_retention_days * 86400), math.ceil(
         database.rollup_retention_days * 86400
@@ -441,12 +466,15 @@ def retention_seconds(config: Config) -> tuple[int, int]:
 def purge_database(
     con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]
 ) -> tuple[int, int]:
-    """roll up the closed periods, then delete the rows past their retention in chunks (raw rows
-    only once rolled up). between_chunks runs after each committed chunk or period and ends the
-    purge by returning True. returns the numbers of periods rolled up and rows deleted"""
+    """Roll up the closed periods, then delete the rows past their retention in chunks
+    (raw rows only once rolled up). between_chunks runs after each committed chunk or
+    period and ends the purge by returning True. Returns the numbers of periods rolled
+    up and rows deleted.
+    """
     periods = roll_up(con, config.database.rollup_period_minutes, between_chunks)
     now = int(time.time())
-    # a cutoff past the newest row means a future clock (booted before NTP), which would wipe the db
+    # A cutoff past the newest row means a future clock (booted before NTP), which would
+    # wipe the db.
     newest = con.execute("SELECT MAX(contime) FROM connections").fetchone()[0]
     raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
@@ -460,7 +488,7 @@ def purge_database(
     ).fetchone()
     watermark = watermark_row[0] if watermark_row is not None else 0
     purges = []
-    # retention 0 is the usual "keep forever"; raw rows go only once they are rolled up
+    # Retention 0 is the usual "keep forever"; raw rows go only once they are rolled up.
     if raw_seconds > 0:
         purges += [
             (table, column, min(now - raw_seconds, watermark))
@@ -482,9 +510,11 @@ def purge_database(
 def delete_orphans(
     con: sqlite3.Connection, between_statements: Callable[[], bool]
 ) -> int:
-    """delete the lookup entries nothing refers to any more, one table per transaction.
-    between_statements runs after each and ends the cleanup by returning True. returns the
-    number of entries deleted"""
+    """Delete the lookup entries nothing refers to any more, one table per transaction.
+
+    between_statements runs after each and ends the cleanup by returning True. Returns
+    the number of entries deleted.
+    """
     orphans = 0
     for statement in ORPHAN_DELETES:
         with con:
@@ -495,8 +525,11 @@ def delete_orphans(
 
 
 class ClockCheck:
-    """how far the wall clock moved apart from the boot clock between two calls: a clock set by
-    hand or stepped by NTP. the boot clock keeps counting through a suspend"""
+    """How far the wall clock moved apart from the boot clock between two calls.
+
+    A clock set by hand or stepped by NTP. The boot clock keeps counting through a
+    suspend.
+    """
 
     def __init__(
         self,
@@ -508,7 +541,7 @@ class ClockCheck:
         self.last: tuple[float, float] | None = None
 
     def jump(self) -> float:
-        """seconds the wall clock jumped since the last call, 0 on the first"""
+        """Seconds the wall clock jumped since the last call, 0 on the first."""
         now = (self.wall(), self.boot())
         last, self.last = self.last, now
         return 0.0 if last is None else (now[0] - last[0]) - (now[1] - last[1])
@@ -517,9 +550,12 @@ class ClockCheck:
 def run_writer(
     config: Config, batches: DropOldestQueue[BpfEvent], stop: threading.Event
 ) -> None:
-    """the writer thread: sums the reader's batches per write window, writes them to SQLite with
-    the interface counters and forwarded flows of the window, and rolls up and purges past the
-    retention windows; once stop is set it writes what is left and returns"""
+    """The writer thread.
+
+    Sums the reader's batches per write window, writes them to SQLite with the interface
+    counters and forwarded flows of the window, and rolls up and purges past the
+    retention windows; once stop is set it writes what is left and returns.
+    """
     file_path = DB_PATH
     executables = Interned("executables", ("exe", "name", "cmdline"), ("", "", ""))
     domains = Interned("domains", ("domain",), ("",))
@@ -538,8 +574,11 @@ def run_writer(
     )
 
     def collect_forwarded() -> list[Flow]:
-        """the forwarded flows of every namespace the last refresh looked at; a namespace that
-        cannot be read is reported and skipped, so the rest of the window is still written"""
+        """The forwarded flows of every namespace the last refresh looked at.
+
+        A namespace that cannot be read is reported and skipped, so the rest of the
+        window is still written.
+        """
         if forwarded is None or netinfo is None:
             return []
         return forwarded.collect(
@@ -550,7 +589,8 @@ def run_writer(
         )
 
     if netinfo is not None:
-        # the baseline the first window's interface counters and forwarded flows start from
+        # The baseline the first window's interface counters and forwarded flows start
+        # from.
         netinfo.refresh()
         collect_forwarded()
     window = WriteWindow(config, reverse_dns, netinfo)
@@ -559,7 +599,8 @@ def run_writer(
         for table in interned:
             table.clear()
 
-    # rows waiting for a write that succeeds: connections, interface counters, forwarded flows
+    # Rows waiting for a write that succeeds: connections, interface counters, forwarded
+    # flows.
     transaction: list[tuple] = []
     iface_rows: list[tuple] = []
     flow_rows: list[tuple] = []
@@ -567,7 +608,8 @@ def run_writer(
     def write() -> None:
         nonlocal transaction, iface_rows, flow_rows
         if netinfo is not None:
-            # first, so the window's rows find the namespaces and addresses as they are now
+            # First, so the window's rows find the namespaces and addresses as they are
+            # now.
             contime = int(time.time())
             iface_rows += [
                 (contime, (netns, name, kind), rx, tx)
@@ -663,7 +705,7 @@ def run_writer(
                 for table in interned:
                     table.committed()  # cached ids are now durable
         except Exception as e:
-            # rolled back: drop this transaction's cache entries so a retry re-inserts
+            # Rolled back: drop this transaction's cache entries so a retry re-inserts.
             for table in interned:
                 table.rolled_back()
             if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
@@ -680,7 +722,7 @@ def run_writer(
         if transaction_success or not config.database.enabled:
             transaction, iface_rows, flow_rows = [], [], []
             return
-        # a persistent write outage would grow the buffers unbounded; keep the newest
+        # A persistent write outage would grow the buffers unbounded; keep the newest.
         dropped = [
             len(rows) - RETRY_BUFFER_MAX
             for rows in (transaction, iface_rows, flow_rows)
@@ -707,7 +749,8 @@ def run_writer(
 
     def write_if_due() -> None:
         nonlocal last_write
-        # interface counters and forwarded flows are due every window, with or without connections
+        # Interface counters and forwarded flows are due every window, with or without
+        # connections.
         if (
             time.monotonic() - last_write > config.database.write_limit_seconds
             or len(window) >= WINDOW_CONNECTIONS_MAX
@@ -722,7 +765,8 @@ def run_writer(
             *(seconds for seconds in retention_seconds(config) if seconds > 0),
         ]
     )
-    # entries become orphans only when rows are deleted; the first cleanup follows the first purge
+    # Entries become orphans only when rows are deleted; the first cleanup follows the
+    # first purge.
     next_orphans = time.monotonic()
     deleted_since_orphans = 0
 
@@ -735,13 +779,14 @@ def run_writer(
             return stop.is_set()
 
         def between_orphan_deletes() -> bool:
-            # the entries just deleted may be cached, and the write in between must not use them
+            # The entries just deleted may be cached, and the write in between must not
+            # use them.
             clear_id_caches()
             return between_chunks()
 
         jump = clock.jump()
         if abs(jump) > CLOCK_JUMP_SECONDS:
-            # rows past their retention by a clock set wrong would be gone for good
+            # Rows past their retention by a clock set wrong would be gone for good.
             log_error(
                 f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it"
             )
@@ -762,7 +807,7 @@ def run_writer(
                 deleted_since_orphans = 0
         finally:
             con.close()
-            # orphan cleanup deletes ids the caches may hold
+            # Orphan cleanup deletes ids the caches may hold.
             clear_id_caches()
         if periods or deleted or orphans is not None:
             cleanup = (
@@ -772,12 +817,12 @@ def run_writer(
                 f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s"
             )
 
-    # the first pass runs at startup
+    # The first pass runs at startup.
     next_maintenance = time.monotonic()
     try:
         while True:
-            # checked before emptying the queue: the reader has stopped by the time stop is set,
-            # so the queue then holds all that is left
+            # Checked before emptying the queue: the reader has stopped by the time stop
+            # is set, so the queue then holds all that is left.
             stopping = stop.is_set()
             try:
                 collect(0.5)
@@ -795,7 +840,8 @@ def run_writer(
                 if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(
                     e
                 ):
-                    # the thread ends and the daemon exits, for the service manager to start it on a new db
+                    # The thread ends and the daemon exits, for the service manager to
+                    # start it on a new db.
                     logging.error(
                         f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart"
                     )

@@ -18,25 +18,28 @@ from pathlib import Path
 
 
 def sd_notify(message: str) -> None:
-    """best-effort systemd notification via the raw sd_notify(3) protocol, so the
-    privileged daemon needs no python-systemd dependency. no-op unless launched by a
-    Type=notify unit (NOTIFY_SOCKET set); errors are swallowed, a readiness signal
-    must never take the daemon down."""
+    """Best-effort systemd notification via the raw sd_notify(3) protocol, so the
+    privileged daemon needs no python-systemd dependency. No-op unless launched by a
+    Type=notify unit (NOTIFY_SOCKET set); errors are swallowed, a readiness signal must
+    never take the daemon down.
+    """
     addr = os.environ.get("NOTIFY_SOCKET")
     if not addr:
         return
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
-            # a leading '@' selects the abstract namespace, sent as a leading NUL
+            # A leading '@' selects the abstract namespace, sent as a leading NUL.
             sock.sendto(message.encode(), "\0" + addr[1:] if addr[0] == "@" else addr)
     except OSError:
         pass
 
 
 def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
-    """True when a sqlite error means tracct.db itself is unusable (quarantine+recreate);
-    False for transient errors (locked by the live daemon, busy, disk I/O) where quarantining
-    would destroy a healthy database. Shared by the cli boot check and the writer."""
+    """True when a sqlite error means tracct.db itself is unusable
+    (quarantine+recreate); False for transient errors (locked by the live daemon, busy,
+    disk I/O) where quarantining would destroy a healthy database. Shared by the cli
+    boot check and the writer.
+    """
     msg = str(e).lower()
     return any(
         s in msg
@@ -51,8 +54,9 @@ def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
 
 
 def quarantine_database(db_path: Path) -> None:
-    """move an unusable database aside to tracct.db.bad, with its WAL files so that none is
-    replayed into the new database the next start creates"""
+    """Move an unusable database aside to tracct.db.bad, with its WAL files so that none
+    is replayed into the new database the next start creates.
+    """
     for suffix in ("", "-wal", "-shm"):
         try:
             db_path.with_name(db_path.name + suffix).rename(
@@ -65,8 +69,10 @@ def quarantine_database(db_path: Path) -> None:
 def connect_db_readonly(
     db_path: Path | str, timeout: float = 5.0
 ) -> sqlite3.Connection:
-    """a read-only connection to a regular, not hardlinked database file; raises
-    sqlite3.OperationalError when it cannot be opened"""
+    """A read-only connection to a regular, not hardlinked database file.
+
+    Raises sqlite3.OperationalError when it cannot be opened.
+    """
     try:
         db_stat = os.lstat(db_path)
     except OSError as e:
@@ -81,7 +87,8 @@ def connect_db_readonly(
         timeout=timeout,
     )
     try:
-        # touch the file, so an unreadable database fails here and not at the first query
+        # Touch the file, so an unreadable database fails here and not at the first
+        # query.
         con.execute("PRAGMA user_version").fetchone()
     except sqlite3.Error:
         con.close()
@@ -90,7 +97,7 @@ def connect_db_readonly(
 
 
 def ephemeral_port_start() -> int:
-    """the first port of the kernel's range for automatically chosen local ports"""
+    """The first port of the kernel's range for automatically chosen local ports."""
     try:
         with open("/proc/sys/net/ipv4/ip_local_port_range", "r") as f:
             return int(f.read().split()[0])
@@ -99,7 +106,9 @@ def ephemeral_port_start() -> int:
 
 
 def sanitize_log_line(line: str) -> str:
-    """Remove control characters from a log line to prevent terminal-escape / log injection."""
+    """Remove control characters from a log line to prevent terminal-escape / log
+    injection.
+    """
     return "".join(
         c
         for c in line
@@ -108,13 +117,18 @@ def sanitize_log_line(line: str) -> str:
 
 
 def log_error(message: str) -> None:
-    """log a problem of the capture or write side; messages carry comm, cmdline and domain strings"""
+    """Log a problem of the capture or write side.
+
+    Messages carry comm, cmdline and domain strings.
+    """
     logging.getLogger("tracct.error").warning(sanitize_log_line(message))
 
 
 class DropOldestQueue[T]:
-    """a hand-off between threads, bounded by the items in its batches, that never blocks its
-    producer: past the bound the oldest batches are dropped and their items counted in dropped"""
+    """A hand-off between threads, bounded by the items in its batches, that never
+    blocks its producer: past the bound the oldest batches are dropped and their items
+    counted in dropped.
+    """
 
     def __init__(self, max_items: int) -> None:
         self.max_items = max_items
@@ -127,7 +141,7 @@ class DropOldestQueue[T]:
         with self._ready:
             self._batches.append(batch)
             self._items += len(batch)
-            # the newest batch is always kept, even one larger than the bound
+            # The newest batch is always kept, even one larger than the bound.
             while self._items > self.max_items and len(self._batches) > 1:
                 oldest = self._batches.popleft()
                 self._items -= len(oldest)
@@ -135,7 +149,10 @@ class DropOldestQueue[T]:
             self._ready.notify()
 
     def get_all(self, timeout: float) -> list[list[T]]:
-        """all waiting batches, oldest first, after waiting up to timeout for one; [] if none came"""
+        """All waiting batches, oldest first, after waiting up to timeout for one.
+
+        [] if none came.
+        """
         with self._ready:
             if not self._batches:
                 self._ready.wait(timeout)

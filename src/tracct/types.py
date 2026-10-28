@@ -7,7 +7,9 @@ import typing
 
 
 class BpfEvent(typing.TypedDict):
-    """Process and connection data for each event captured by the BPF program, handed from the reader to the writer and the live feed"""
+    """Process and connection data for each event captured by the BPF program, handed
+    from the reader to the writer and the live feed.
+    """
 
     pid: int
     name: str
@@ -21,12 +23,12 @@ class BpfEvent(typing.TypedDict):
     pino: int
     pexe: str
     pcmdline: str
-    # systemd unit the process ran in, '' outside any unit or when unknown
+    #: systemd unit the process ran in, '' outside any unit or when unknown.
     unit: str
     uid: int
     send: int
     recv: int
-    # packets in a drained connection entry; other events count as one
+    #: Packets in a drained connection entry; other events count as one.
     pkts: typing.NotRequired[int]
     family: int
     protocol: int

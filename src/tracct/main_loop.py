@@ -17,8 +17,8 @@ from tracct.types import BpfEvent
 from tracct.utils import DropOldestQueue, log_error, sd_notify
 from tracct.writer import run_writer
 
-# hand-off bounds, in events; the writer sums what it takes off its queue right away, so its
-# queue only fills while it writes or purges
+#: Hand-off bounds, in events; the writer sums what it takes off its queue right away,
+#: so its queue only fills while it writes or purges.
 WRITER_QUEUE_EVENTS = 262144
 FEED_QUEUE_EVENTS = 131072
 
@@ -28,7 +28,7 @@ def run_feed(
     batches: DropOldestQueue[BpfEvent],
     stop: threading.Event,
 ) -> None:
-    """the live feed thread: serializes batches for the viewers, off the reader's path"""
+    """The live feed thread: serializes batches for the viewers, off the reader's path."""
     reported = 0
     while not stop.is_set():
         for batch in batches.get_all(timeout=0.5):
@@ -44,8 +44,11 @@ def run_feed(
 
 
 def run_main_loop(config: Config) -> int:
-    """runs the daemon: a reader thread for the BPF program, a writer thread for the database and
-    a thread for the live feed, supervised from the main thread"""
+    """Runs the daemon.
+
+    A reader thread for the BPF program, a writer thread for the database and a thread
+    for the live feed, supervised from the main thread.
+    """
     live_feed = LiveFeedPublisher(group=config.viewer.group)
     live_feed.start()
     to_writer: DropOldestQueue[BpfEvent] = DropOldestQueue(WRITER_QUEUE_EVENTS)
@@ -53,7 +56,8 @@ def run_main_loop(config: Config) -> int:
 
     def publish(batch: list[BpfEvent]) -> None:
         to_writer.put(batch)
-        # serializing with no subscriber backs the reader up at high connection cardinality
+        # Serializing with no subscriber backs the reader up at high connection
+        # cardinality.
         if live_feed.has_subscribers():
             to_feed.put(batch)
 
@@ -85,15 +89,17 @@ def run_main_loop(config: Config) -> int:
     resume_event = threading.Event()
 
     def _request_shutdown(signum, frame):
-        # also wake the resume_event.wait() below so stop/restart tears down promptly
-        # instead of after the 5s poll timeout (the loop breaks on shutdown before resuming)
+        # Also wake the resume_event.wait() below so stop/restart tears down promptly
+        # instead of after the 5s poll timeout (the loop breaks on shutdown before
+        # resuming).
         shutdown_event.set()
         resume_event.set()
 
     signal.signal(signal.SIGINT, _request_shutdown)
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGUSR1, lambda signum, frame: resume_event.set())
-    # the reader sets ready once its probes are attached; bounded so a stall cannot hang startup
+    # The reader sets ready once its probes are attached; bounded so a stall cannot hang
+    # startup.
     deadline = time.monotonic() + 30
     while (
         not ready.wait(timeout=0.5)
@@ -104,9 +110,10 @@ def run_main_loop(config: Config) -> int:
         pass
     if reader.is_alive():
         sd_notify("READY=1")
-    # watch the threads; detect a real suspend/resume by the gap between CLOCK_BOOTTIME (counts
-    # time asleep) and CLOCK_MONOTONIC (does not). a plain wall-clock gap can also come from cpu
-    # starvation or SIGSTOP, and re-attaching then would only lose the traffic in between
+    # Watch the threads; detect a real suspend/resume by the gap between CLOCK_BOOTTIME
+    # (counts time asleep) and CLOCK_MONOTONIC (does not). A plain wall-clock gap can
+    # also come from cpu starvation or SIGSTOP, and re-attaching then would only lose
+    # the traffic in between.
     mono_last = time.monotonic()
     boot_last = time.clock_gettime(time.CLOCK_BOOTTIME)
     dropped_reported = {"writer": 0, "live feed": 0}
@@ -134,8 +141,8 @@ def run_main_loop(config: Config) -> int:
             logging.info("re-attaching the BPF program after resuming from suspend")
             reattach.set()
         mono_last, boot_last = mono_now, boot_now
-    # stop in pipeline order: the reader hands over what the kernel still holds, the writer
-    # writes everything it was handed
+    # Stop in pipeline order: the reader hands over what the kernel still holds, the
+    # writer writes everything it was handed.
     reader_stop.set()
     reader.join(timeout=10)
     writer_stop.set()
@@ -143,5 +150,6 @@ def run_main_loop(config: Config) -> int:
     feed_stop.set()
     feed.join(timeout=5)
     live_feed.stop()
-    # a clean exit only on signal; otherwise a non-zero exit lets the service manager restart us
+    # A clean exit only on signal; otherwise a non-zero exit lets the service manager
+    # restart us.
     return 0 if shutdown_event.is_set() else 1
