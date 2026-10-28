@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""a minimal rtnetlink client: the interfaces of the calling thread's network namespace, with
-their kind and byte counters, and their addresses. stdlib only"""
+"""A minimal rtnetlink client.
+
+The interfaces of the calling thread's network namespace, with their kind and byte
+counters, and their addresses. Stdlib only.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +29,7 @@ _NLMSGHDR = struct.Struct("=IHHII")
 _IFINFOMSG = struct.Struct("=BxHiII")
 _IFADDRMSG = struct.Struct("=BBBBI")
 _RTATTR = struct.Struct("=HH")
-# rtnl_link_stats64 starts with rx_packets, tx_packets, rx_bytes, tx_bytes
+#: rtnl_link_stats64 starts with rx_packets, tx_packets, rx_bytes, tx_bytes.
 _STATS64_HEAD = struct.Struct("=QQQQ")
 
 
@@ -34,7 +37,7 @@ _STATS64_HEAD = struct.Struct("=QQQQ")
 class Link:
     index: int
     name: str
-    # IFLA_INFO_KIND: "tun", "veth", "wireguard", ...; "" for physical devices and lo
+    #: IFLA_INFO_KIND: "tun", "veth", "wireguard", ...; "" for physical devices and lo.
     kind: str
     rx_bytes: int
     tx_bytes: int
@@ -61,7 +64,7 @@ def _attributes(data: bytes, offset: int) -> Iterator[tuple[int, bytes]]:
 
 
 def _dump(msg_type: int, body: bytes) -> Iterator[bytes]:
-    """the payloads of a dump request's answer, one per object"""
+    """The payloads of a dump request's answer, one per object."""
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_ROUTE) as sock:
         sock.settimeout(2)
         sock.bind((0, 0))
@@ -112,7 +115,8 @@ def addresses() -> list[Address]:
     for payload in _dump(RTM_GETADDR, _IFADDRMSG.pack(socket.AF_UNSPEC, 0, 0, 0, 0)):
         family, prefixlen, _flags, _scope, index = _IFADDRMSG.unpack_from(payload)
         attrs = dict(_attributes(payload, _IFADDRMSG.size))
-        # on a point-to-point link IFA_ADDRESS is the peer, IFA_LOCAL the address of this end
+        # On a point-to-point link IFA_ADDRESS is the peer, IFA_LOCAL the address of
+        # this end.
         raw = attrs.get(IFA_LOCAL) or attrs.get(IFA_ADDRESS)
         if raw is None or family not in (socket.AF_INET, socket.AF_INET6):
             continue

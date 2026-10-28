@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""what the writer knows about network namespaces and their interfaces: their names, which
-interface owns a local address, the TUN device of a process, and the bytes each interface
-moved. a namespace other than the daemon's own is queried from a short-lived thread that
-joins it (setns, CAP_SYS_ADMIN), so no other thread changes namespace and no file
-descriptor of this module pins a namespace that has gone"""
+"""What the writer knows about network namespaces and their interfaces.
+
+Their names, which interface owns a local address, the TUN device of a process, and the
+bytes each interface moved. A namespace other than the daemon's own is queried from a
+short-lived thread that joins it (setns, CAP_SYS_ADMIN), so no other thread changes
+namespace and no file descriptor of this module pins a namespace that has gone.
+"""
 
 from __future__ import annotations
 
@@ -20,15 +22,15 @@ from collections.abc import Callable
 
 from tracct import rtnetlink
 
-# where ip netns and docker keep their named namespaces
+#: Where ip netns and docker keep their named namespaces.
 NETNS_DIRS = ("/run/netns", "/run/docker/netns")
-# unnamed namespaces are reached through a process seen in them; they are forgotten after
-# this long without a connection, and at most this many are kept
+#: Unnamed namespaces are reached through a process seen in them; they are forgotten
+#: after this long without a connection, and at most this many are kept.
 UNNAMED_NETNS_SECONDS = 3600
 UNNAMED_NETNS_MAX = 256
-# a query in another namespace that takes longer is given up
+#: A query in another namespace that takes longer is given up.
 NETNS_QUERY_TIMEOUT = 5.0
-# the name given to the daemon's own namespace unless one of NETNS_DIRS names it
+#: The name given to the daemon's own namespace unless one of NETNS_DIRS names it.
 HOST_NETNS_NAME = "host"
 
 
@@ -45,15 +47,17 @@ def _query() -> Snapshot:
 def run_in_netns[T](
     path: str, function: Callable[[], T], timeout: float = NETNS_QUERY_TIMEOUT
 ) -> T:
-    """run function inside the network namespace that path (an nsfs file) refers to; a socket it
-    opens stays in that namespace"""
+    """Run function inside the network namespace that path (an nsfs file) refers to.
+
+    A socket it opens stays in that namespace.
+    """
     result: list[T] = []
     errors: list[BaseException] = []
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
 
     def run() -> None:
         try:
-            # changes this thread's namespace only, and the thread ends right after
+            # Changes this thread's namespace only, and the thread ends right after.
             os.setns(fd, os.CLONE_NEWNET)
             result.append(function())
         except BaseException as e:
@@ -75,12 +79,12 @@ def run_in_netns[T](
 
 
 def query_netns(path: str) -> Snapshot:
-    """the interfaces and addresses of the network namespace that path refers to"""
+    """The interfaces and addresses of the network namespace that path refers to."""
     return run_in_netns(path, _query)
 
 
 def named_namespaces() -> dict[int, tuple[str, str]]:
-    """{inode: (name, path)} for the namespaces in NETNS_DIRS"""
+    """{inode: (name, path)} for the namespaces in NETNS_DIRS."""
     named: dict[int, tuple[str, str]] = {}
     for directory in NETNS_DIRS:
         try:
@@ -97,7 +101,9 @@ def named_namespaces() -> dict[int, tuple[str, str]]:
 
 
 def tun_devices(pid: int) -> list[str]:
-    """the names of the TUN/TAP devices pid has attached (fdinfo 'iff:' of /dev/net/tun fds)"""
+    """The names of the TUN/TAP devices pid has attached (fdinfo 'iff:' of /dev/net/tun
+    fds).
+    """
     names = []
     try:
         fds = os.listdir(f"/proc/{pid}/fd")
@@ -117,7 +123,10 @@ def tun_devices(pid: int) -> list[str]:
 
 
 class NetInfo:
-    """refreshed once per write window by the writer; its lookups answer from the last refresh"""
+    """Refreshed once per write window by the writer.
+
+    Its lookups answer from the last refresh.
+    """
 
     def __init__(
         self,
@@ -125,32 +134,34 @@ class NetInfo:
         query: Callable[[str | None], Snapshot] | None = None,
     ) -> None:
         self.report = report
-        # query(None) answers for the daemon's own namespace, query(path) for another one
+        #: query(None) answers for the daemon's own namespace, query(path) for another
+        #: one.
         self.query = query or (
             lambda path: _query() if path is None else query_netns(path)
         )
         self.host = os.stat("/proc/self/ns/net").st_ino
-        # inode -> name of every namespace with a name, the daemon's own included
+        #: Inode -> name of every namespace with a name, the daemon's own included.
         self.names: dict[int, str] = {self.host: HOST_NETNS_NAME}
-        # unnamed namespace inode -> (pid seen in it, when), oldest first
+        #: Unnamed namespace inode -> (pid seen in it, when), oldest first.
         self.unnamed: collections.OrderedDict[int, tuple[int, float]] = (
             collections.OrderedDict()
         )
-        # (netns, address) -> (interface name, kind); exact addresses, then loopback networks
+        #: (netns, address) -> (interface name, kind) for the exact addresses; loopback
+        #: holds the loopback networks.
         self.owners: dict[tuple[int, str], tuple[str, str]] = {}
         self.loopback: dict[int, tuple[str, str]] = {}
-        # netns -> broadcast addresses of its IPv4 networks
+        #: Netns -> the broadcast addresses of its IPv4 networks.
         self.broadcasts: dict[int, set[str]] = {}
-        # (netns, ifindex, name) -> (rx, tx) at the last refresh
+        #: (netns, ifindex, name) -> (rx, tx) at the last refresh.
         self.counters: dict[tuple[int, int, str], tuple[int, int]] = {}
         self.tun_cache: dict[int, str] = {}
-        # inode -> path to join (None for the daemon's own) of the namespaces the last refresh
-        # looked at
+        #: Inode -> path to join (None for the daemon's own) of the namespaces the last
+        #: refresh looked at.
         self.paths: dict[int, str | None] = {}
         self.failed: set[int] = set()
 
     def note(self, netns: int, pid: int) -> None:
-        """remember that pid lives in netns, as a way into a namespace that has no name"""
+        """Remember that pid lives in netns, as a way into a namespace that has no name."""
         if not netns or netns == self.host or netns in self.names:
             return
         self.unnamed[netns] = (pid, time.monotonic())
@@ -159,7 +170,9 @@ class NetInfo:
             self.unnamed.popitem(last=False)
 
     def interface_of(self, netns: int, laddr: str) -> tuple[str, str]:
-        """(name, kind) of the interface that holds laddr in netns, ("", "") if none does"""
+        """(name, kind) of the interface that holds laddr in netns, ("", "") if none
+        does.
+        """
         owner = self.owners.get((netns, laddr))
         if owner is not None:
             return owner
@@ -172,19 +185,20 @@ class NetInfo:
         return "", ""
 
     def local_addresses(self, netns: int | None = None) -> set[str]:
-        """the addresses of a namespace (by default the daemon's own) and the broadcast
-        addresses of its IPv4 networks, as of the last refresh"""
+        """The addresses of a namespace (by default the daemon's own) and the broadcast
+        addresses of its IPv4 networks, as of the last refresh.
+        """
         netns = self.host if netns is None else netns
         return {
             address for inode, address in self.owners if inode == netns
         } | self.broadcasts.get(netns, set())
 
     def label(self, netns: int) -> str:
-        """a namespace's name, or its inode when it has none"""
+        """A namespace's name, or its inode when it has none."""
         return self.names.get(netns, str(netns))
 
     def tun_of(self, pid: int) -> str:
-        """the TUN device of pid when it has exactly one, else ''"""
+        """The TUN device of pid when it has exactly one, else ''."""
         name = self.tun_cache.get(pid)
         if name is None:
             devices = tun_devices(pid)
@@ -193,7 +207,10 @@ class NetInfo:
         return name
 
     def _targets(self) -> dict[int, str | None]:
-        """{inode: path to join, None for the daemon's own} of the namespaces to look at"""
+        """Return the namespaces to look at, as {inode: the path to join}.
+
+        The path is None for the daemon's own namespace.
+        """
         named = named_namespaces()
         self.names = {inode: name for inode, (name, _) in named.items()}
         self.names.setdefault(self.host, HOST_NETNS_NAME)
@@ -215,15 +232,18 @@ class NetInfo:
         return targets
 
     def refresh(self) -> list[tuple[int, str, str, int, int]]:
-        """look at every namespace again; returns (netns, interface, kind, rx, tx) with the
-        bytes each interface moved since the last refresh, for the interfaces that moved any"""
+        """Look at every namespace again.
+
+        Returns (netns, interface, kind, rx, tx) with the bytes each interface moved
+        since the last refresh, for the interfaces that moved any.
+        """
         owners: dict[tuple[int, str], tuple[str, str]] = {}
         loopback: dict[int, tuple[str, str]] = {}
         counters: dict[tuple[int, int, str], tuple[int, int]] = {}
         broadcasts: dict[int, set[str]] = {}
         traffic = []
         targets = self._targets()
-        # a namespace that has gone is no longer reported, nor remembered as failed
+        # A namespace that has gone is no longer reported, nor remembered as failed.
         self.failed &= set(targets)
         for inode, path in targets.items():
             try:
@@ -234,7 +254,8 @@ class NetInfo:
                     self.report(
                         f"netinfo: cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded"
                     )
-                # keep what the last look found, so the next one that works counts from there
+                # Keep what the last look found, so the next one that works counts from
+                # there.
                 owners.update(
                     {
                         key: value
@@ -279,9 +300,10 @@ class NetInfo:
                 counters[key] = (link.rx_bytes, link.tx_bytes)
                 previous = self.counters.get(key)
                 if previous is None:
-                    # the first look only sets the baseline
+                    # The first look only sets the baseline.
                     continue
-                # a counter that went back was reset (device recreated): count from zero
+                # A counter that went back was reset (device recreated): count from
+                # zero.
                 rx = (
                     link.rx_bytes - previous[0]
                     if link.rx_bytes >= previous[0]
