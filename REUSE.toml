@@ -1,9 +1,9 @@
 version = 1
 
 # Files that can't carry an SPDX comment, or shouldn't: the docs stay clean when rendered,
-# uv reads .python-version verbatim.
+# uv reads .python-version verbatim and regenerates uv.lock.
 [[annotations]]
-path = ["README.md", "CLAUDE.md", "docs/*.md", ".python-version"]
+path = ["README.md", "CLAUDE.md", "docs/*.md", ".python-version", "uv.lock"]
 SPDX-FileCopyrightText = "2026 René de Hesselle <dehesselle@web.de>"
 SPDX-License-Identifier = "0BSD"
 

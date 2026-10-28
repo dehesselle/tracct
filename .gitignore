@@ -140,6 +140,3 @@ src/tracct/version.py
 # MkDocs build output
 site/
 
-# uv lockfile: dev deps are ==-pinned in pyproject
-uv.lock
-

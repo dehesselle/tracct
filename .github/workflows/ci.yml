@@ -32,8 +32,8 @@ jobs:
       # keep aligned with [tool.ruff] in pyproject.toml
       - run: uvx --from 'ruff~=0.16.0' ruff check
       - run: uvx --from 'ruff~=0.16.0' ruff format --diff
-      # reuse runs from the pinned dev group
-      - run: uv sync
+      # reuse runs from the dev group, at the version in uv.lock
+      - run: uv sync --locked
       - run: uv run reuse lint
 
   build:
