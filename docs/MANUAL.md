@@ -39,11 +39,22 @@ tabs in alphabetical order, switched with the letter highlighted in their title 
   range named at the start of the plot's title. The three kinds of bytes are never added
   together.
 
-In a history tab, `Enter` keeps only the highlighted row's value and `e` excludes it; the
-filters stack up in a line above the tab, and `Backspace` takes the last one off. As on the
-live tab, that line also holds a kept find and any problem with the query server, and it
-appears only while there is one of them. The plot above the table draws the highlighted row,
-or all rows after `a`, as a line each for sent and received. A point is the highest rate of
+A history table starts with the sums over all its rows. On Processes and Interfaces there is
+one per layer, `(all · inner)`, `(all · tunnel)` and `(all · outer)`, as a VPN's traffic shows
+once per layer and adding them up would count it two or three times: inner is what goes
+through a VPN, seen at the program's socket or the `tun` device; tunnel the same at the VPN
+client; outer everything else, which is what leaves the network card (the VPN's own
+encrypted traffic too) and localhost. On Forwarded there is one `(all)`. The highlight starts
+on the largest row below them; a find hides them, as they sum up the rows it hides too.
+
+In a history tab, the chords under `,` `f` filter: `i` keeps only the highlighted row's value
+and `e` excludes it, `p` takes the last filter off and `c` all of them. A filter stays when
+another dimension is chosen on the left, which breaks the kept value down: keep an
+executable, then choose domain to see whom it talked to, with the sums above as its total.
+The filters stack up in a line above the tab. As on the live tab, that line also holds a
+kept find and any problem with the query server, and it appears only while there is one of
+them. The plot above the table draws the highlighted row, a sum too, as a line each for sent
+and received. A point is the highest rate of
 any 10 seconds within its bucket (a whole period in the rollups), so a short spike keeps its
 height at any zoom; if the daemon writes less often than every 10 seconds, the stretch is its
 write window and the title says so. A vertical line marks where the rollups end. Hovering

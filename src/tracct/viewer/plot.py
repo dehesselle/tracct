@@ -27,8 +27,6 @@ VIEW_DELAY = 0.15
 # query server's bucket limit at the longest bucket
 MIN_SPAN = 60
 MAX_SPAN = 10 * 365 * 86400
-# the subject of the plot of all rows, rather than of the highlighted one
-ALL_ROWS = "all rows"
 # in the title while the tab is updating, as snakecam shows it
 BUSY = "↻"
 # the stretch, in seconds, whose highest rate a point shows; the default write window, which
@@ -219,13 +217,11 @@ class TrafficPlot(PlotWidget, inherit_bindings=False):
     def update_title(self) -> None:
         """the range drawn, then the colors' key, where it takes no height from the lines, and
         whether the tab is updating, which comes and goes at the end where it moves nothing. the
-        highlighted row says which row is drawn, so only the plot of all rows names itself; the
-        stretch of the peaks only when the daemon's write window made it longer than asked for,
-        and that goes first when the title does not fit"""
+        highlighted row, a row of sums too, says which row is drawn; the stretch of the peaks only
+        when the daemon's write window made it longer than asked for, and that goes first when
+        the title does not fit"""
         out_label, in_label = self.labels
         head = Content(f"{self.heading} · " if self.heading else "")
-        if self.subject == ALL_ROWS:
-            head = Content.assemble(head, f"{ALL_ROWS} · ")
         key = Content.assemble(("━━", self._style("sent")), f" {out_label} ", ("━━", self._style("received")), f" {in_label}")
         rate = Content(f" · peak {duration(self.peak)} rate" if self.end and self.peak != PEAK_SECONDS else "")
         busy = Content(f" · {BUSY}" if self.busy else "")

@@ -27,7 +27,7 @@ from tracct.viewer.banner import Banner  # noqa: E402
 from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
-from tracct.viewer.plot import ALL_ROWS, BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
+from tracct.viewer.plot import BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -167,27 +167,55 @@ def test_history_drill_down(tmp_path):
             await pilot.pause(0.3)
             assert app.query_one(TabbedContent).active == "processes"
             assert _values(processes) == ["/usr/bin/curl", "/usr/sbin/nginx"]
-            assert processes.result["totals"] == [1111 + 5300, 11022 + 530]
-            # the plot follows the highlighted row
+            # above them the sums over all rows, one per layer, which are never added up
+            table = processes.query_one(DataTable)
+            assert [str(table.get_row_at(i)[0]) for i in range(table.row_count)] == ["(all · outer)", "(all · inner)", "/usr/bin/curl", "/usr/sbin/nginx"]
+            assert processes.table_rows[0][1:] == [6111, 11522]
+            # the plot follows the highlighted row, which starts on the largest value, not a sum
             plot = processes.query_one(TrafficPlot)
             await _until(pilot, lambda: "curl" in plot.subject)
             assert sum(a for a, _ in plot.values.values()) == 1111
-            # Enter keeps the highlighted row, e excludes it, Backspace pops the filter
+            # a sum is a row like any other: its layer's plot
+            table.focus()
+            await pilot.press("up")
+            await _until(pilot, lambda: plot.subject == "(all · inner)" and sum(a for a, _ in plot.values.values()) == 300)
+            # it has no value to filter on
+            await pilot.press("comma", "f", "i")
+            await pilot.pause(0.3)
+            assert not processes.filters
+            await pilot.press("down")
+            # , f i keeps the highlighted row, , f e excludes it, , f p pops the last filter
             processes.query_one(DataTable).focus()
             # no filter, no find, no problem: no banner
             banner = processes.query_one(Banner)
             assert not banner.display
+            # Enter on a row no longer filters
             await pilot.press("down", "enter")
+            await pilot.pause(0.3)
+            assert not processes.filters
+            await pilot.press("comma", "f", "i")
             await _until(pilot, lambda: processes.filters == [("exe", "/usr/sbin/nginx", False)] and _values(processes) == ["/usr/sbin/nginx"])
-            # the filters are in the banner, with the key that pops them
-            assert banner.display and _banner(processes) == ("filter: executable=/usr/sbin/nginx", "press ⌫ to pop a filter")
-            await pilot.press("backspace")
+            # the filters are in the banner, with the chord that clears them
+            assert banner.display and _banner(processes) == ("filter: executable=/usr/sbin/nginx", "press , f c to clear filters")
+            await pilot.press("comma", "f", "p")
             await _until(pilot, lambda: not processes.filters and len(_values(processes)) == 2)
             # the highlight stayed on nginx through the refresh
-            await pilot.press("e")
+            await pilot.press("comma", "f", "e")
             await _until(pilot, lambda: processes.filters == [("exe", "/usr/sbin/nginx", True)] and _values(processes) == ["/usr/bin/curl"])
-            await pilot.press("backspace")
+            # a drill-down: keep curl, break it down by namespace, keep that; , f c clears both and
+            # returns to the dimension it started from
+            await pilot.press("comma", "f", "p")
             await _until(pilot, lambda: len(_values(processes)) == 2)
+            # excluding nginx moved the highlight to curl, and it stayed there
+            await pilot.press("comma", "f", "i")
+            await _until(pilot, lambda: processes.filters == [("exe", "/usr/bin/curl", False)])
+            processes.select_dimension("netns")
+            processes.reload()
+            await _until(pilot, lambda: _values(processes) == ["host"])
+            await pilot.press("comma", "f", "i")
+            await _until(pilot, lambda: len(processes.filters) == 2)
+            await pilot.press("comma", "f", "c")
+            await _until(pilot, lambda: not processes.filters and processes.group_by == "exe" and len(_values(processes)) == 2)
             # another dimension
             processes.select_dimension("netns")
             processes.reload()
@@ -274,9 +302,6 @@ def test_plot_title_and_busy(tmp_path):
             await _until(pilot, lambda: plot.busy and _title(plot).endswith(f" · {BUSY}"))
             slow.clear()
             await _until(pilot, lambda: not plot.busy and BUSY not in _title(plot))
-            # the plot of all rows says so, as no row in the table stands for it
-            await pilot.press("a")
-            await _until(pilot, lambda: _title(plot).startswith(f"all history · {ALL_ROWS} · "))
             # a zoom is named by its ends
             plot.focus()
             await pilot.press("plus")

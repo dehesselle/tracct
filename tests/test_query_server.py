@@ -130,12 +130,30 @@ def test_interfaces_and_layers(tmp_path):
     _, rows = _aggregate(db, "iface", start=P0 + 2 * H)
     assert rows == {"host/eth0": (11, 22), f"{VPN}/tun0": (300, 30)}
     _, rows = _aggregate(db, "layer", start=P0 + 2 * H)
-    assert rows == {"outer/direct": (11, 22), "inner": (300, 30)}
+    assert rows == {"outer": (11, 22), "inner": (300, 30)}
     # interface counters: values are (tx, rx)
     _, rows = _aggregate(db, "iface", source="interfaces")
     assert rows == {"host/eth0": (600 + 70, 6000 + 700), f"{VPN}/tun0": (4, 40)}
     _, rows = _aggregate(db, "kind", source="interfaces")
     assert rows == {"": (670, 6700), "tun": (4, 40)}
+    # a tun device's counters are what went through the tunnel
+    _, rows = _aggregate(db, "layer", source="interfaces")
+    assert rows == {"outer": (670, 6700), "inner": (4, 40)}
+
+
+def test_totals_per_layer(tmp_path):
+    db = _db(tmp_path)
+    # the sums over all rows never add up layers: one per layer, largest first
+    response, _ = _aggregate(db, "exe")
+    assert response["totals_by"] == "layer" and response["parts"] == [["outer", 6111, 11522], ["inner", 300, 30]]
+    response, _ = _aggregate(db, "iface", source="interfaces")
+    assert response["parts"] == [["outer", 670, 6700], ["inner", 4, 40]]
+    # forwarded bytes have no layers: one sum
+    response, _ = _aggregate(db, "src", source="forwarded")
+    assert response["totals_by"] is None and response["parts"] == [[None, 2050, 105000]]
+    # a filter narrows them as it does the rows
+    response, rows = _aggregate(db, "exe", filters=[["layer", "inner", False]])
+    assert response["parts"] == [["inner", 300, 30]] and rows == {"/usr/sbin/nginx": (300, 30)}
 
 
 def test_forwarded(tmp_path):

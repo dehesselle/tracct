@@ -109,7 +109,14 @@ _IFACE_NAME = "CASE WHEN i.id = 0 THEN '' ELSE COALESCE(n.name, CAST(i.netns AS 
 _IFACE_NETNS = "COALESCE(n.name, CAST(i.netns AS TEXT))"
 IFACE = Dimension("interface", "t.iface_id", f"(SELECT {_IFACE_NAME} FROM {_IFACE_FROM} WHERE i.id = {{k}})", f"t.iface_id IN (SELECT i.id FROM {_IFACE_FROM} WHERE {_IFACE_NAME} IS ?)")
 # see "Layers" in docs/DESIGN.md: a socket on a tun is inside the tunnel, a raw row on a tun is the VPN client's
-LAYER = Dimension("layer", "CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer/direct' END", join=True)
+LAYER = Dimension("layer", "CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END", join=True)
+# the same on an interface's counters: a tun device carries what goes through the tunnel
+IFACE_LAYER = Dimension("layer", "CASE WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END", join=True)
+# the layers as conditions on a row, for the sums per layer every request adds up alongside its
+# rows; {tun} is the ids of the tun devices, read once per request rather than joined per row.
+# outer is what the others leave, so it needs no sum of its own
+LAYER_SUMS = (("inner", "t.iface_id IN ({tun}) AND t.family IS NOT 17"), ("tunnel", "t.iface_id IN ({tun}) AND t.family = 17"))
+IFACE_LAYER_SUMS = (("inner", "t.iface_id IN ({tun})"),)
 DOMAIN = _lookup("domain", "domain_id", "domains", "domain")
 PROTOCOL = Dimension("protocol", "t.protocol")
 
@@ -126,6 +133,12 @@ class Source:
     value_labels: tuple[str, str]
     dimensions: dict[str, Dimension]
     default: str
+    # the dimension the sums over all values are given per, so that layers are never added up:
+    # its values with the condition a row meets for each, and the value of the rows left over;
+    # None for one sum
+    totals_by: str | None = None
+    totals: tuple[tuple[str, str], ...] = ()
+    totals_rest: str | None = None
 
 
 SOURCES = {
@@ -156,6 +169,9 @@ SOURCES = {
             "domain": DOMAIN,
         },
         "exe",
+        "layer",
+        LAYER_SUMS,
+        "outer",
     ),
     "interfaces": Source(
         "Interfaces",
@@ -170,8 +186,12 @@ SOURCES = {
                 "namespace", "t.iface_id", f"(SELECT {_IFACE_NETNS} FROM {_IFACE_FROM} WHERE i.id = {{k}})", f"t.iface_id IN (SELECT i.id FROM {_IFACE_FROM} WHERE {_IFACE_NETNS} IS ?)"
             ),
             "kind": _lookup("kind", "iface_id", "interfaces", "kind"),
+            "layer": IFACE_LAYER,
         },
         "iface",
+        "layer",
+        IFACE_LAYER_SUMS,
+        "outer",
     ),
     "forwarded": Source(
         "Forwarded",
@@ -301,13 +321,16 @@ class _Plan:
             params += [value] * match.count("?")
         return f"FROM {table} t {JOIN_INTERFACE if self.join else ''} WHERE {' AND '.join(where)}", params
 
-    def union(self, key: Callable[[bool], str], leading: Callable[[], list] = list) -> tuple[str, list]:
-        """the parts as one UNION ALL of (k, a, b), each summed per key(rollup)"""
+    def union(self, key: Callable[[bool], str], leading: Callable[[], list] = list, sums: tuple[str, ...] = ()) -> tuple[str, list]:
+        """the parts as one UNION ALL of (k, a, b), each summed per key(rollup), and a0, b0, ...
+        summed over the rows that meet each of sums; grouping by the key alone keeps the order
+        of its index"""
         a, b = self.source.values
+        extra = "".join(f", SUM(CASE WHEN {condition} THEN t.{a} END) AS a{i}, SUM(CASE WHEN {condition} THEN t.{b} END) AS b{i}" for i, condition in enumerate(sums))
         selects, params = [], []
         for rollup, start, end in self.parts:
             from_where, part_params = self.from_where(rollup, start, end)
-            selects.append(f"SELECT {key(rollup)} AS k, SUM(t.{a}) AS a, SUM(t.{b}) AS b {from_where} GROUP BY k")
+            selects.append(f"SELECT {key(rollup)} AS k, SUM(t.{a}) AS a, SUM(t.{b}) AS b{extra} {from_where} GROUP BY k")
             params += leading() + part_params
         return " UNION ALL ".join(selects), params
 
@@ -316,7 +339,9 @@ class _Plan:
 
 
 def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """the byte sums per value of one dimension, largest first, with the sums over all values"""
+    """the byte sums per value of one dimension, largest first, and the sums over all values per
+    value of the source's totals_by (one sum without), whose sum is only right where it does not
+    add up layers"""
     source = _source(request)
     group = source.dimensions.get(request.get("group_by") or source.default)
     if group is None:
@@ -325,18 +350,28 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     start, end = _range(request)
     limit = _int(request, "limit", DEFAULT_ROWS, 1, MAX_ROWS)
     plan = _Plan(con, source, [group], filters, start, end, settings.ephemeral)
-    result: dict = {**plan.info(), "rows": [], "totals": [0, 0], "groups": 0, "truncated": False}
+    result: dict = {**plan.info(), "rows": [], "totals": [0, 0], "totals_by": source.totals_by, "parts": [], "groups": 0, "truncated": False}
     if not plan.parts:
         return result
-    union, params = plan.union(lambda rollup: plan.key(group, rollup))
+    # without a tun device every row is left over, and no sum is needed
+    tun = ", ".join(str(row[0]) for row in con.execute("SELECT id FROM interfaces WHERE kind = 'tun'"))
+    totals = tuple((name, condition.format(tun=tun)) for name, condition in source.totals) if tun else ()
+    conditions = tuple(condition for _, condition in totals)
+    union, params = plan.union(lambda rollup: plan.key(group, rollup), sums=conditions)
+    sums = "".join(f", SUM(SUM(u.a{i})) OVER (), SUM(SUM(u.b{i})) OVER ()" for i in range(len(conditions)))
     # keys with the same value (one name, several executables) become one row
     sql = (
-        f"SELECT {group.value_sql('u.k')} AS g, SUM(u.a), SUM(u.b), SUM(SUM(u.a)) OVER (), SUM(SUM(u.b)) OVER (), COUNT(*) OVER ()"
+        f"SELECT {group.value_sql('u.k')} AS g, SUM(u.a), SUM(u.b), SUM(SUM(u.a)) OVER (), SUM(SUM(u.b)) OVER (), COUNT(*) OVER (){sums}"
         f" FROM ({union}) u GROUP BY g ORDER BY SUM(u.a) + SUM(u.b) DESC, g LIMIT ?"
     )
     size = 0
-    for value, a, b, total_a, total_b, groups in con.execute(sql, [*params, limit]):
-        result["totals"], result["groups"] = [total_a, total_b], groups
+    for value, a, b, total_a, total_b, groups, *per_value in con.execute(sql, [*params, limit]):
+        if not result["groups"]:
+            # the window sums are the same on every row; a value with no bytes is not there
+            result["totals"], result["groups"] = [total_a, total_b], groups
+            parts = [[name, per_value[2 * i] or 0, per_value[2 * i + 1] or 0] for i, (name, _) in enumerate(totals)]
+            parts.append([source.totals_rest, total_a - sum(part[1] for part in parts), total_b - sum(part[2] for part in parts)])
+            result["parts"] = sorted((part for part in parts if part[1] or part[2]), key=lambda part: -(part[1] + part[2]))
         size += len(json.dumps(value)) + 48
         if size > MAX_RESPONSE_BYTES // 2:
             result["truncated"] = True
@@ -405,6 +440,7 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
             "oldest": oldest,
             "newest": newest,
             "split": split_point(con, source),
+            "totals_by": source.totals_by,
         }
     return {"now": int(time.time()), "sources": sources}
 

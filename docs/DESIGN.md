@@ -91,7 +91,9 @@ counters and namespaces that cannot be queried are detected and logged, not sile
   encrypted socket (outer). Each row is correct for its layer; totals must not add layers.
   Every row carries its interface, which tells the layers apart: a socket whose local address
   is on a `tun` interface is inner, an `AF_PACKET` row on a `tun` interface is tunnel, the
-  rest is outer or direct.
+  rest is outer: everything not inside a tunnel, which is what leaves the network card (a VPN's
+  carrier included, and all traffic of a host without one), and localhost too. An interface's
+  counters have the same layers: a `tun` device's are inner, the rest outer.
 - **Forwarded traffic** that the kernel routes through the host (an exit node, NAT for
   containers) or through one of its namespaces (a VPN namespace routing for others) touches
   no local socket. It is recorded from connection tracking, as IP bytes, in its own table,
@@ -256,7 +258,10 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
 The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
 source (connections, interfaces or forwarded flows) grouped by one dimension, narrowed by a
 list of include and exclude filters and a time range, and the same sums per time bucket for a
-timeline. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
+timeline. The sums over all values come per layer for connections and interfaces, never added
+up across layers, and computed in the same pass: a condition per layer on each row (the ids of
+the `tun` devices are read first, so no row joins the interfaces), with outer as what the
+others leave. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
 given length within it, never shorter than a write window, whose rows share one `contime`; a
 rollup counts as one stretch of its period. A wide bucket averages a short spike away, its
 peak does not. The write window and the period come from the daemon's config, so after a
@@ -276,9 +281,11 @@ the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
 
 `tracct view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
-and a history tab per source with one time range shared between them. A tab's plot
-(textual-plot) shows the highlighted row rather than the sum of all rows, so layers or
-interfaces are not added up unless asked for, and it draws peaks, not averages. Its time
+and a history tab per source with one time range shared between them. A tab's table starts
+with the sums over all rows, one row per layer, then the rows themselves, and its plot
+(textual-plot) draws the highlighted row, a sum only once the highlight is moved to it, so
+interfaces are not added up unless asked for, and layers never are. It draws peaks, not
+averages. Its time
 axis is the shared range: what it shows after zooming or panning comes to rest is exactly
 the range every tab then asks for, empty time included, and the plot's own limits (a minute
 to ten years, nothing before 1970) keep it within what the query server answers. The viewer
