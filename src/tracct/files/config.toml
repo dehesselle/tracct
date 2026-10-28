@@ -4,34 +4,60 @@
 
 # The base configuration from `tracct install`, which `tracct install -f` replaces: put
 # your own settings in a drop-in such as config.d/50-local.toml, which is read after this
-# file and wins per option. Every option is listed here at its default; docs/MANUAL.md
-# explains them. Restart the unit after a change.
+# file and wins per option. Every option is listed here at its default, with what it
+# does. Restart the unit after a change.
 
+# The SQLite database and how long it keeps what.
 [database]
+# Record to SQLite; false leaves only the live feed.
 enabled = true
+# Keep the rows of every write window this long; 0 keeps them forever. Fractions of a
+# day are allowed.
 raw_retention_days = 30
+# Keep the rollups this long; 0 keeps them forever.
 rollup_retention_days = 365
+# The rows of each period are summed into rollups once it has closed (1 to 1440).
 rollup_period_minutes = 60
+# Length of a write window: traffic is summed per connection and window.
 write_limit_seconds = 10
+# How often rollups and purges run, besides at startup.
 maintenance_interval_minutes = 60
 
+# What is recorded of each connection, and which connections are not.
 [log]
+# Store remote addresses and domains.
 addresses = true
+# Name addresses no program looked up by a PTR query (needs addresses).
 reverse_dns = true
+# Store the command lines of the process and its parent.
 commands = true
+# Store local and remote ports.
 ports = true
+# Connections with a matching local or remote port are not stored, e.g. [22].
 ignore_ports = []
+# Domain prefixes in reversed notation: "com.example." matches all its subdomains.
 ignore_domains = []
+# Addresses or networks, e.g. "10.0.0.0/8", matched against both ends.
 ignore_ips = []
 
+# What the kernel side captures, and the sizes of its buffers.
 [monitoring]
+# Also store every executed program as a row without traffic (ports -1).
 every_exe = false
+# Count AF_PACKET and AF_XDP mmap-ring receives; adds a per-frame softirq hook.
 mmap_ring_rx = false
+# Size of the exec event ring buffer in pages, a power of two up to 16384.
 exec_ring_buffer_pages = 256
+# Connections the kernel can hold between drains, up to 1048576.
 conn_map_max_entries = 65536
-# st_dev_mask = 0           # auto-detected when unset (0 on btrfs)
+# Mask for device numbers in inode checks; auto-detected when unset (0 on btrfs).
+# st_dev_mask = 0
+# Record forwarded traffic of every network namespace from connection tracking
+# (needs nf_conntrack_acct = 1).
 conntrack = true
 
+# Access to the live feed of `tracct view`.
 [viewer]
-# the group from tracct.sysusers, which tracct.service runs in
+# Group that gets events.sock; empty keeps the daemon's own. This is the group from
+# tracct.sysusers, which tracct.service runs in.
 group = "tracct-viewer"

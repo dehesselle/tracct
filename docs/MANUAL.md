@@ -212,37 +212,11 @@ raw_retention_days = 14
 ignore_ports = [22]
 ```
 
-The options and their defaults:
-
-```toml
-[database]
-enabled = true              # record to SQLite; false leaves only the live feed
-raw_retention_days = 30     # keep the rows of every write window this long; 0 keeps them forever
-rollup_retention_days = 365 # keep the rollups this long; 0 keeps them forever
-rollup_period_minutes = 60  # the rows of each period are summed into rollups once it has closed
-write_limit_seconds = 10    # length of a write window: traffic is summed per connection and window
-maintenance_interval_minutes = 60  # how often rollups and purges run, besides at startup
-
-[log]
-addresses = true            # store remote addresses and domains
-reverse_dns = true          # name addresses no program looked up by a PTR query (needs addresses)
-commands = true             # store command lines of the process and its parent
-ports = true                # store local and remote ports
-ignore_ports = []           # connections with a matching local or remote port are not stored
-ignore_domains = []         # domain prefixes in reversed notation, e.g. "com.example." matches all subdomains
-ignore_ips = []             # addresses or networks, e.g. "10.0.0.0/8", matched against both ends
-
-[monitoring]
-every_exe = false           # also store every executed program as a row without traffic (ports -1)
-mmap_ring_rx = false        # count AF_PACKET/AF_XDP mmap-ring receives; adds a per-frame softirq hook
-exec_ring_buffer_pages = 256  # size of the exec event ring buffer, a power of two up to 16384
-conn_map_max_entries = 65536  # connections the kernel can hold between drains, up to 1048576
-# st_dev_mask = 0           # mask for device numbers in inode checks; auto-detected (0 on btrfs)
-conntrack = true            # record forwarded traffic of every namespace from connection tracking (needs nf_conntrack_acct = 1)
-
-[viewer]
-group = ""                  # group that gets events.sock; empty keeps the daemon's own
-```
+Every option, its default and what it does are in the base `config.toml` itself
+([src/tracct/files/config.toml](../src/tracct/files/config.toml), installed as
+`/etc/opt/tracct/config.toml`). Its values are the defaults the daemon uses without it,
+except `[viewer] group`, which it sets to `tracct-viewer` (the default is empty, which
+keeps the daemon's own group). What follows is only what does not fit in a comment there.
 
 Out-of-range values for `exec_ring_buffer_pages`, `conn_map_max_entries`,
 `raw_retention_days`, `rollup_retention_days` (negative, `inf` or `nan`), `rollup_period_minutes` (1 to 1440),

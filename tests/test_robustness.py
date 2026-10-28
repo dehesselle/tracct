@@ -174,9 +174,13 @@ def test_config_drop_ins(tmp_path, caplog):
 
 def test_base_config_lists_the_defaults():
     """The config.toml that install writes names every option at the code's default,
-    apart from the viewer group it also creates.
+    apart from the viewer group it also creates, and explains each in a comment above it.
     """
     base = Path(tracct.__file__).parent / "files" / "config.toml"
+    lines = base.read_text().splitlines()
+    for number, line in enumerate(lines):
+        if "=" in line and not line.startswith("#"):
+            assert lines[number - 1].startswith("#"), line
     raw = tomllib.loads(base.read_text())
     for section in dataclasses.fields(Config):
         options = {field.name for field in dataclasses.fields(section.type)}
