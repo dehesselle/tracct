@@ -28,6 +28,7 @@ from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
 from tracct.viewer.plot import BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
+from tracct.viewer.span_picker import SpanPicker, span_label  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +84,32 @@ def test_tab_keys(tmp_path):
             await _until(pilot, lambda: not {"t", "shift+left", "shift+right", "z", "u"} & set(app.screen.active_bindings))
             await pilot.press("u")
             assert app.unit == "auto"
+
+    asyncio.run(drive())
+
+
+def test_span_picker(tmp_path):
+    async def drive():
+        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+        app.time_range.zooms.append((5, 10))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("t")
+            await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
+            picker = app.screen
+            options = picker.query_one("#picker-results")
+            # shortest first, the whole history last, opened on the current span
+            assert [span_label(i) for i in picker._shown][:2] == ["1 minute", "5 minutes"] and span_label(picker._shown[-1]) == "all history"
+            assert picker._shown[options.highlighted] == app.time_range.span
+            assert str(options.get_option_at_index(options.highlighted).prompt).endswith("(current)")
+            # Escape changes nothing
+            await pilot.press("escape")
+            await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
+            assert app.time_range.zooms == [(5, 10)]
+            # typing narrows the list, Enter takes the first match, which ends the zoom
+            await pilot.press("t", "7")
+            await _until(pilot, lambda: isinstance(app.screen, SpanPicker) and [span_label(i) for i in app.screen._shown] == ["7 days"])
+            await pilot.press("enter")
+            await _until(pilot, lambda: span_label(app.time_range.span) == "7 days" and not app.time_range.zooms)
 
     asyncio.run(drive())
 

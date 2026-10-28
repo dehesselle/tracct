@@ -64,8 +64,7 @@ class HistoryPane(Vertical):
     """
     BINDINGS = [
         # the time range and units are the app's, shared by the history tabs
-        Binding("t", "app.span(1)", "span"),
-        Binding("T", "app.span(-1)", show=False),
+        Binding("t", "app.span", "span"),
         # by a whole span of local time, next to t that picks its length; the range is the tab's,
         # not only the plot's, whose arrows pan by a few columns
         Binding("shift+left", "app.earlier(1)", "previous span", key_display="⇧←", group=Binding.Group("step span")),
