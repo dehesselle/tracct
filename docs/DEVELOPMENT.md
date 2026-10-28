@@ -56,10 +56,16 @@ are kept as `picosnitch-<version>` and do not count.
 ## Checks
 
 ```sh
-uv run ruff check
-uv run ruff format --check
+uvx --from 'ruff~=0.16.0' ruff check
+uvx --from 'ruff~=0.16.0' ruff format --check
 uv run reuse lint
 ```
+
+Ruff comes from outside the project: `required-version` in `pyproject.toml` and the CI
+lint job name the same minor, and are bumped together once its new findings are reviewed.
+The lint rules are still ruff 0.15's defaults plus import sorting; 0.16's wider defaults
+are taken on one part of tracct at a time. `bpf_wrapper.py` is left out of formatting, so
+it stays close to picosnitch's.
 
 ## Licensing
 

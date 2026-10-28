@@ -29,11 +29,11 @@ jobs:
         with:
           enable-cache: true
           version: "0.11.26"
-      # run linters via uv run, not uv tool run, so they use the pinned dev group
-      # instead of the latest release
+      # keep aligned with [tool.ruff] in pyproject.toml
+      - run: uvx --from 'ruff~=0.16.0' ruff check
+      - run: uvx --from 'ruff~=0.16.0' ruff format --diff
+      # reuse runs from the pinned dev group
       - run: uv sync
-      - run: uv run ruff check
-      - run: uv run ruff format --diff
       - run: uv run reuse lint
 
   build:
