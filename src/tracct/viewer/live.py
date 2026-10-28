@@ -43,9 +43,6 @@ def remote(event: dict) -> str:
 
 class LivePane(Vertical):
     DEFAULT_CSS = """
-    /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
-    LivePane DataTable { border: round $foreground 40%; }
-    LivePane DataTable:focus { border: round $accent; }
     LivePane #totals { height: 2fr; }
     LivePane #recent { height: 3fr; }
     """

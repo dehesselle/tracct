@@ -64,7 +64,7 @@ def test_tab_keys(tmp_path):
         app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
         async with app.run_test(size=(120, 40)) as pilot:
             tabs = app.query_one(TabbedContent)
-            assert [pane.id for pane in tabs.query(TabPane)] == ["forwarded", "interfaces", "live", "processes"]
+            assert [pane.id for pane in tabs.query(TabPane)] == ["live", "forwarded", "interfaces", "processes"]
             assert not tabs.query_one(Tabs).can_focus
             # Textual's own ctrl+q quits; no single key does
             assert "ctrl+q" in app.screen.active_bindings and not {"q", "question_mark"} & set(app.screen.active_bindings)
@@ -248,15 +248,19 @@ def test_history_drill_down(tmp_path):
             processes.reload()
             await _until(pilot, lambda: set(_values(processes)) == {"host", str(VPN)})
             assert not banner.display
+            # the table's title counts the rows only while some are hidden
+            assert not table.border_title
             # find narrows the rows shown; kept with Enter, the banner says it, and c clears it
             await pilot.press("slash", "h", "o", "s", "t")
             await _until(pilot, lambda: _values(processes) == ["host"])
+            assert table.border_title == "1 of 2 rows"
             # the input opens on the tab's own top line
             assert processes.children[0].has_class("find", "shown") and not banner.display
             await pilot.press("enter")
             await _until(pilot, lambda: _banner(processes) == ("find: host", "press c to clear"))
             await pilot.press("c")
             await _until(pilot, lambda: len(_values(processes)) == 2 and not banner.display)
+            assert not table.border_title
             # Escape clears an open one
             await pilot.press("slash", "h")
             await _until(pilot, lambda: _values(processes) == ["host"])

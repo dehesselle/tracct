@@ -14,8 +14,9 @@ from pathlib import Path
 from tracct.live_feed import EVENTS_SOCKET_PATH
 from tracct.query import QUERY_SOCKET_PATH
 
-# tab id -> (title, query source)
-TABS = {"forwarded": ("Forwarded", "forwarded"), "interfaces": ("Interfaces", "interfaces"), "live": ("Live", ""), "processes": ("Processes", "connections")}
+# tab id -> (title, query source); live first, then the history tabs, which share the plot's
+# time range, in alphabetical order
+TABS = {"live": ("Live", ""), "forwarded": ("Forwarded", "forwarded"), "interfaces": ("Interfaces", "interfaces"), "processes": ("Processes", "connections")}
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

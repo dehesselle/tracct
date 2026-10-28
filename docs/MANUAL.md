@@ -24,8 +24,8 @@ of `tracct-query.socket`). Its footer shows the keys of the tab in view; `Ctrl+Q
 ### The viewer
 
 `tracct view` needs the `tui` extra (`uv pip install 'tracct[tui]'`). It has four
-tabs in alphabetical order, switched with the letter highlighted in their title (`f`, `i`,
-`l`, `p`):
+tabs, Live first and then the history tabs in alphabetical order, switched with the letter
+highlighted in their title (`l`, `f`, `i`, `p`):
 
 - **Live**: connections as the daemon drains them, with totals per executable since the tab
   started. It keeps the newest 500 events and 100 executables; past that, the executables
@@ -34,8 +34,8 @@ tabs in alphabetical order, switched with the letter highlighted in their title 
   appears only for a problem with the feed or an active find. Clicking a column's header
   sorts by it, clicking it again reverses; the executables start sorted by path, the events
   newest first. `Space` pauses the events table, `r` resets both.
-- **Processes** (socket bytes), **Interfaces** (interface bytes) and **Forwarded** (IP bytes
-  of routed flows): the history, grouped by the dimension chosen on the left, over the time
+- **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and
+  **Processes** (socket bytes): the history, grouped by the dimension chosen on the left, over the time
   range named at the start of the plot's title. The three kinds of bytes are never added
   together.
 
@@ -45,7 +45,9 @@ once per layer and adding them up would count it two or three times: inner is wh
 through a VPN, seen at the program's socket or the `tun` device; tunnel the same at the VPN
 client; outer everything else, which is what leaves the network card (the VPN's own
 encrypted traffic too) and localhost. On Forwarded there is one `(all)`. The highlight starts
-on the largest row below them; a find hides them, as they sum up the rows it hides too.
+on the largest row below them; a find hides them, as they sum up the rows it hides too. The
+table's title counts the rows while a find hides some or there are more than it shows (up to
+1000).
 
 In a history tab, the chords under `,` `f` filter: `i` keeps only the highlighted row's value
 and `e` excludes it, `p` takes the last filter off and `c` all of them. A filter stays when
@@ -76,10 +78,10 @@ values changed from their defaults.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
 forwarded flow's source, ephemeral ports as 0. Dimensions marked "raw only" narrow the range
-to the raw rows, and the status line says from when.
+to the raw rows. The table's bottom border says from when, or where the rollups begin.
 
 ```text
-tracct view [--tab live|processes|interfaces|forwarded] [--events-socket PATH] [--query-socket PATH]
+tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [--query-socket PATH]
 ```
 
 ## Configuration

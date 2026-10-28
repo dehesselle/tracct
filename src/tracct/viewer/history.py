@@ -15,7 +15,7 @@ from rich.text import Text
 from textual import work
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable, Input, OptionList, Static
+from textual.widgets import DataTable, Input, OptionList
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
@@ -27,7 +27,7 @@ from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
 if TYPE_CHECKING:
     from tracct.viewer.app import ViewerApp
 
-# rows asked for per request; the status line says when there are more
+# rows asked for per request; the table's title says when there are more
 ROWS = 1000
 # how long the highlight has to rest on a row before its timeline is asked for
 TIMELINE_DELAY = 0.25
@@ -57,8 +57,6 @@ class Total:
 
 class HistoryPane(Vertical):
     DEFAULT_CSS = """
-    /* TODO: restyle; was $text-muted before the default theme */
-    HistoryPane .status { height: 2; padding: 0 1; }
     HistoryPane OptionList { width: 30; height: 1fr; }
     HistoryPane DataTable { height: 1fr; }
     """
@@ -115,7 +113,6 @@ class HistoryPane(Vertical):
             with Vertical():
                 yield TrafficPlot()
                 yield DataTable(cursor_type="row", zebra_stripes=True)
-        yield Static(classes="status")
 
     def configure(self, info: dict) -> None:
         """the source's dimensions and covered time, from describe"""
@@ -301,19 +298,20 @@ class HistoryPane(Vertical):
         return f"{time.strftime(f'%b %d {clock}', first)} – {tail}"
 
     def update_status(self) -> None:
-        status = self.query_one(".status", Static)
+        """the table's borders: its title counts the rows only while some are not shown, its
+        bottom border says where the range meets the rollups"""
+        table = self.query_one(DataTable)
         result = self.result
-        if not result:
-            status.update("")
-            return
-        # the sums over all rows are rows of the table
-        line = Text(f"{len(self.shown)} of {result['groups']} rows" if self.find or result["truncated"] else f"{result['groups']} rows")
-        notes = []
-        if result["clipped"]:
-            notes.append(f"addresses and source ports exist only in raw rows: shown from {moment(result['start'])}")
-        elif result["start"] < result["split"]:
-            notes.append(f"before {moment(result['split'])} from rollups: whole periods, no addresses, ephemeral ports as 0")
-        status.update(line + (Text("\n" + "; ".join(notes)) if notes else Text()))
+        title = subtitle = ""
+        if result:
+            if self.find or result["truncated"]:
+                title = f"{len(self.shown)} of {result['groups']} rows"
+            if result["clipped"]:
+                subtitle = f"raw rows only: from {moment(result['start'])}"
+            elif result["start"] < result["split"]:
+                subtitle = f"rollups before {moment(result['split'])}: no addresses, ephemeral ports as 0"
+        table.border_title = title
+        table.border_subtitle = subtitle
 
     # ── events and keys ──────────────────────────────────────────────
 

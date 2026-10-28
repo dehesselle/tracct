@@ -76,6 +76,9 @@ class ViewerApp(ChordMixin, App):
     # on_mount focuses the tab asked for instead
     AUTO_FOCUS = None
     CSS = """
+    /* a gray a little dimmer than an inactive tab's, so the titles in the border stay readable */
+    TabPane DataTable, TabPane OptionList { border: round $foreground 40%; }
+    TabPane DataTable:focus, TabPane OptionList:focus { border: round $accent; }
     .find { display: none; }
     .find.shown { display: block; }
     """
