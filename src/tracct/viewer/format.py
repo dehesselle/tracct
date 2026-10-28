@@ -32,7 +32,7 @@ PROTOCOLS = {
 }
 
 
-def format_bytes(n: int | float | None, byte_unit: str = "auto") -> str:
+def format_bytes(n: float | None, byte_unit: str = "auto") -> str:
     n = n or 0
     if byte_unit == "B":
         return f"{int(n):,}"
@@ -45,7 +45,7 @@ def format_bytes(n: int | float | None, byte_unit: str = "auto") -> str:
     return ""
 
 
-def bytes_cell(n: int | float | None, byte_unit: str = "auto") -> Text:
+def bytes_cell(n: float | None, byte_unit: str = "auto") -> Text:
     return Text(format_bytes(n, byte_unit), justify="right")
 
 

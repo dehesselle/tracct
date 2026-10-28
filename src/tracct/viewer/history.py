@@ -11,7 +11,7 @@ filters, over the viewer's time range, with the plot of the highlighted row.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from rich.text import Text
 from tcoda.widgets import DataTable
@@ -62,7 +62,7 @@ def _value_cell(dimension: str, value: object) -> Text:
 
 
 class HistoryPane(FindablePane):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         # The time range and the byte unit are the app's, shared by the history tabs.
         # In the span picker, s pressed again returns from a zoom to the span.
         Binding("s", "app.span", "span"),
@@ -91,7 +91,7 @@ class HistoryPane(FindablePane):
         Binding("comma f p", "pop_filter", "pop last", show=False),
         Binding("comma f c", "clear_filters", "clear", show=False),
     ]
-    CHORD_GROUPS = {"comma f": "filter"}
+    CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma f": "filter"}
 
     #: Whether the rows are being fetched, and whether the plot is.
     rows_loading: reactive[bool] = reactive(False, init=False)

@@ -64,9 +64,10 @@ uv run reuse lint
 
 Ruff comes from outside the project: `required-version` in `pyproject.toml` and the CI
 lint job name the same minor, and are bumped together once its new findings are reviewed.
-Formatting is ruff's default, at 88 columns. The lint rules are still ruff 0.15's defaults
-plus import sorting; 0.16's wider defaults are taken on one part of tracct at a time.
-`bpf_wrapper.py` is left out of formatting, so it stays close to picosnitch's. Commits
+Formatting is ruff's default, at 88 columns, and the lint rules are its defaults plus
+import sorting. `bpf_wrapper.py` is left out of formatting and ignores the two rules its
+picosnitch code breaks, so it stays close to picosnitch's. The per-file ignores marked as
+not yet taken on go as each part of tracct is worked through. Commits
 that only reformat go into `.git-blame-ignore-revs`.
 
 ## Licensing

@@ -18,6 +18,7 @@ import itertools
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from rich.text import Text
 from tcoda.widgets import DataTable
@@ -153,7 +154,7 @@ class LiveTotal:
 
 
 class LivePane(FindablePane):
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("space", "pause", "pause", key_display="␣"),
         Binding("r", "reset", "reset"),
     ]

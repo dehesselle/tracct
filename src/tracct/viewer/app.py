@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from tcoda.chords import ChordMixin
 from tcoda.dialogs import SettingsDialog
@@ -47,7 +48,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
     #: switch to it; on_mount focuses the tab asked for instead.
     AUTO_FOCUS = None
     CSS_PATH = "app.tcss"
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         # A tab's first letter, highlighted in its title.
         *(
             Binding(title[0].lower(), f"tab('{tab}')", show=False)

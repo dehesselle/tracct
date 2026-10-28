@@ -12,6 +12,8 @@ filters, or why it shows nothing.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -33,7 +35,7 @@ class FindablePane(Vertical):
     FindablePane > .find { display: none; }
     FindablePane > .find.shown { display: block; }
     """
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "find", "find"),
         # The banner says so while a find is kept.
         Binding("c", "clear_find", "clear find", show=False),
