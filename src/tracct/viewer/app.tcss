@@ -1,0 +1,31 @@
+/*
+ * SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+ *
+ * SPDX-License-Identifier: 0BSD
+ */
+
+/* A gray a little dimmer than an inactive tab's, so the titles in the borders stay
+   readable. */
+TabPane DataTable, TabPane OptionList, TrafficPlot {
+    border: round $foreground 40%;
+}
+TabPane DataTable:focus, TabPane OptionList:focus, TrafficPlot:focus {
+    border: round $accent;
+}
+
+/* The live tab: the summary above the latest events. */
+LivePane #summary { height: 2fr; }
+LivePane #events { height: 3fr; }
+
+/* A history tab: the dimensions on the left, the plot above the table. */
+HistoryPane OptionList { width: 30; height: 1fr; }
+HistoryPane DataTable { height: 1fr; }
+
+/* No axis labels: the border title says what is drawn. The tick labels get a fixed
+   width, so the lines do not shift sideways when the rates refit to a zoom. */
+TrafficPlot {
+    height: 33vh;
+    grid-columns: 12 1fr;
+    & > .plot--axis, &:focus > .plot--axis { color: $foreground 40%; }
+    & > .plot--tick { color: $foreground 70%; text-style: none; }
+}

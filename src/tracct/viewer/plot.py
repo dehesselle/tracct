@@ -41,21 +41,7 @@ class RateAxis(NumericFormatter):
 
 
 class TrafficPlot(Plot):
-    # no axis labels: the border title says what is drawn; the tick labels get a fixed width, so
-    # the lines do not shift sideways when the rates refit to a zoom
-    DEFAULT_CSS = """
-    TrafficPlot {
-        height: 33vh;
-        border: round $foreground 40%;
-        grid-columns: 12 1fr;
-        & > .plot--axis, &:focus > .plot--axis { color: $foreground 40%; }
-        & > .plot--tick { color: $foreground 70%; text-style: none; }
-    }
-    TrafficPlot:focus {
-        border: round $accent;
-    }
-    """
-
+    # its look is in app.tcss
     def __init__(self, *, id: str | None = None) -> None:
         # zooming and panning move the time axis only; the rate axis fits the data in view
         super().__init__(id=id, pan_and_zoom="x")

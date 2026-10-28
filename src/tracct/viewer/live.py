@@ -124,10 +124,6 @@ class LiveTotal:
 
 
 class LivePane(FindablePane):
-    DEFAULT_CSS = """
-    LivePane #summary { height: 2fr; }
-    LivePane #events { height: 3fr; }
-    """
     BINDINGS = [
         Binding("space", "pause", "pause", key_display="␣"),
         Binding("r", "reset", "reset"),

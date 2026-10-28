@@ -21,7 +21,7 @@ benchmark.
 | `src/tracct/live_feed.py` | `events.sock` publisher and subscriber |
 | `src/tracct/query.py` | the query socket's message framing and client |
 | `src/tracct/query_server.py` | the query server: sources, dimensions, raw and rollup routing, socket activation |
-| `src/tracct/viewer/` | `view` (Textual): app, the tabs' base with its find, live tab, history tabs, plot, the shared time range, pickers, the query client and connection messages, the query results as types, settings |
+| `src/tracct/viewer/` | `view` (Textual): app and its CSS (`app.tcss`), the tabs' base with its find, live tab, history tabs, plot, the shared time range, pickers, the query client and connection messages, the query results as types, settings |
 | `systemd/` | daemon unit, query socket and service, sysusers file |
 | `hatch_build.py` | build hook compiling the BPF object into the wheel |
 | `bench/` | accuracy and overhead benchmark against other tools |

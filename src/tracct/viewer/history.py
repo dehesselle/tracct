@@ -46,10 +46,6 @@ BUSY_DELAY_SECONDS = 0.3
 
 
 class HistoryPane(FindablePane):
-    DEFAULT_CSS = """
-    HistoryPane OptionList { width: 30; height: 1fr; }
-    HistoryPane DataTable { height: 1fr; }
-    """
     BINDINGS = [
         # the time range and units are the app's, shared by the history tabs
         # the picker's s again returns from a zoom to the span
