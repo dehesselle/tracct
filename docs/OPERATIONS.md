@@ -122,7 +122,17 @@ running daemon reports starts with the message's ID in brackets:
 tracct.monitor: [exec-ring-full] exec ring buffer full: dropped 12 exec event(s) (total 12); …
 ```
 
-Among them, warnings unless marked:
+`[log.messages]` in the configuration sets each message's level, or leaves it out with
+`"off"`; the base `config.toml` lists them all at their default levels. For instance, a
+host with uutils coreutils that does not need to hear about it once per start:
+
+```toml
+# config.d/50-local.toml
+[log.messages]
+multi-call-inode = "info"
+```
+
+The messages, warnings unless marked:
 
 - `hook-skipped`, `hook-failed` (error): a BPF hook that was not attached, and which
   traffic it leaves uncounted

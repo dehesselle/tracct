@@ -9,7 +9,16 @@ import typing
 
 from tracct.utils import sanitize_log_line
 
-__all__ = ["DEFAULTS", "report"]
+__all__ = ["DEFAULTS", "LEVEL_NAMES", "report", "set_levels"]
+
+#: The levels [log.messages] can give a message; off leaves it out.
+LEVEL_NAMES: typing.Final[dict[str, int | None]] = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "off": None,
+}
 
 #: Every message ID with its default level.
 DEFAULTS: typing.Final[dict[str, int]] = {
@@ -49,6 +58,16 @@ DEFAULTS: typing.Final[dict[str, int]] = {
 
 #: The level each message is logged at; None leaves it out.
 LEVELS: dict[str, int | None] = dict(DEFAULTS)
+
+
+def set_levels(levels: dict[str, str]) -> None:
+    """Give messages the levels named in [log.messages], the others their defaults.
+
+    Called before the threads start.
+    """
+    LEVELS.clear()
+    LEVELS.update(DEFAULTS)
+    LEVELS.update((msgid, LEVEL_NAMES[name]) for msgid, name in levels.items())
 
 
 def report(logger: logging.Logger, msgid: str, message: str) -> None:

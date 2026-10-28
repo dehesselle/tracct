@@ -40,6 +40,75 @@ ignore_domains = []
 # Addresses or networks, e.g. "10.0.0.0/8", matched against both ends.
 ignore_ips = []
 
+# The level of each message the running daemon logs, by the ID that starts its line:
+# "debug", "info", "warning", "error", or "off" to leave it out. A drop-in can set a
+# single one; the others keep theirs.
+[log.messages]
+# The kernel lacks what BPF needs; the daemon stops.
+bpf-requirements-failed = "error"
+# The BPF program did not load; the daemon stops.
+bpf-init-failed = "error"
+# The send and receive hooks did not attach; the daemon stops.
+bpf-attach-failed = "error"
+# An optional hook has no kernel symbol; the traffic it names goes uncounted.
+hook-skipped = "warning"
+# An optional hook failed to attach; the traffic it names goes uncounted.
+hook-failed = "error"
+# No getaddrinfo uprobe: domains come from reverse DNS only.
+dns-uprobe-missing = "warning"
+# Reading a connection map failed in one drain.
+drain-failed = "error"
+# One connection of a drain could not be handled.
+drain-entry-failed = "error"
+# The reader loop hit an unexpected error and carries on.
+monitor-failed = "error"
+# A connection map nearly filled up, so connections may have been evicted.
+map-near-capacity = "warning"
+# Exec events were dropped, losing their process attribution.
+exec-ring-full = "warning"
+# DNS events were dropped; their domains come from reverse DNS.
+dns-ring-full = "warning"
+# A hardlinked multi-call binary (uutils coreutils), once each.
+multi-call-inode = "warning"
+# The writer fell behind the reader and the oldest events were dropped.
+writer-queue-full = "warning"
+# The live feed fell behind; nothing recorded is lost.
+live-feed-queue-full = "warning"
+# A viewer fell too far behind and was disconnected.
+live-feed-subscribers-dropped = "warning"
+# A thread died; the daemon exits for systemd to restart it.
+thread-died = "error"
+# The BPF program is attached again after a suspend.
+resumed-from-suspend = "info"
+# events.sock could not be given to [viewer] group.
+live-feed-group = "warning"
+# A database write failed; it is retried with the next window.
+sqlite-retry = "warning"
+# Writes failed for so long that the oldest pending rows were dropped.
+retry-buffer-full = "warning"
+# The writer loop hit an unexpected error and carries on.
+writer-failed = "error"
+# The database is corrupt; it is set aside and the daemon restarts on a new one.
+database-unusable = "error"
+# The clock is ahead of the newest row, so retention purged nothing.
+retention-skipped = "error"
+# A maintenance pass that rolled up or deleted something.
+maintenance-done = "info"
+# Maintenance skipped a pass because the clock jumped.
+maintenance-clock-jump = "warning"
+# The clock went back, so periods are rolled up again.
+clock-went-back = "warning"
+# A namespace's conntrack table cannot be read; its forwarded traffic goes unrecorded.
+conntrack-unreadable = "warning"
+# A namespace's forwarded flows carry no counters (nf_conntrack_acct is off).
+conntrack-no-counters = "warning"
+# The kernel dropped ended-flow events; those flows miss their last bytes.
+conntrack-events-lost = "warning"
+# A namespace's ended-flow listener stopped until the daemon restarts.
+conntrack-listener-stopped = "warning"
+# A network namespace cannot be joined; its interfaces go unrecorded.
+netns-unreadable = "warning"
+
 # What the kernel side captures, and the sizes of its buffers.
 [monitoring]
 # Also store every executed program as a row without traffic (ports -1).

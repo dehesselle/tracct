@@ -11,6 +11,7 @@ no root/BPF.
 
 import ctypes
 import dataclasses
+import logging
 import os
 import socket
 import struct
@@ -23,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import tracct
-from tracct import utils
+from tracct import messages, utils
 from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
 from tracct.config import Config, ViewerConfig, load_config
 
@@ -187,7 +188,32 @@ def test_base_config_lists_the_defaults():
         assert set(raw[section.name]) == options - {"st_dev_mask"}, section.name
     assert raw["viewer"]["group"] == "tracct-viewer"
     config = load_config(base)
+    # Every message at its default level.
+    assert config.log.messages == {
+        msgid: logging.getLevelName(level).lower()
+        for msgid, level in messages.DEFAULTS.items()
+    }
+    config.log.messages = {}
     assert dataclasses.replace(config, viewer=ViewerConfig()) == Config()
+
+
+def test_config_message_levels(tmp_path, caplog):
+    """[log.messages] keeps known messages with known levels, and a drop-in adds to it."""
+    (tmp_path / "config.toml").write_text(
+        '[log.messages]\nmulti-call-inode = "info"\nexec-ring-full = "loud"\n'
+        'no-such-message = "off"\n'
+    )
+    (tmp_path / "config.d").mkdir()
+    (tmp_path / "config.d" / "50-local.toml").write_text(
+        '[log.messages]\nsqlite-retry = "off"\n'
+    )
+    config = load_config(tmp_path / "config.toml")
+    assert config.log.messages == {"multi-call-inode": "info", "sqlite-retry": "off"}
+    assert "config.log.messages: unknown message 'no-such-message'" in caplog.text
+    assert "config.log.messages.exec-ring-full: expected one of" in caplog.text
+    (tmp_path / "config.toml").write_text("[log]\nmessages = 5\n")
+    assert load_config(tmp_path / "config.toml").log.messages == {"sqlite-retry": "off"}
+    assert "log.messages: expected a table, got int, skipping" in caplog.text
 
 
 def test_config_drop_ins_without_config_toml(tmp_path):

@@ -57,6 +57,15 @@ def test_report_follows_the_level_set_and_off(caplog, monkeypatch):
     ]
 
 
+def test_set_levels_names_some_and_resets_the_rest(monkeypatch):
+    monkeypatch.setattr(messages, "LEVELS", dict(messages.DEFAULTS))
+    messages.set_levels({"multi-call-inode": "info", "sqlite-retry": "off"})
+    assert messages.LEVELS["multi-call-inode"] == logging.INFO
+    assert messages.LEVELS["sqlite-retry"] is None
+    messages.set_levels({})
+    assert messages.LEVELS == messages.DEFAULTS
+
+
 def test_report_strips_control_characters(caplog):
     messages.report(logging.getLogger("tracct"), "exec-ring-full", "a\x1b[2Kb\nc")
     assert caplog.records[0].getMessage() == "[exec-ring-full] a[2Kbc"

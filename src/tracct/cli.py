@@ -27,6 +27,7 @@ from tracct.constants import (
 from tracct.install import add_arguments as add_install_arguments
 from tracct.install import add_uninstall_arguments, run_install, run_uninstall
 from tracct.main_loop import run_main_loop
+from tracct.messages import set_levels
 from tracct.query_server import run_query_server
 from tracct.status import status
 from tracct.utils import (
@@ -251,6 +252,7 @@ def main() -> int:
         return err
     # Read once: a change takes a restart.
     config = load_config()
+    set_levels(config.log.messages)
     files = config_files()
     logger.info(
         f"config: {', '.join(map(str, files)) if files else f'{CONFIG_PATH} (not found, using defaults)'}"

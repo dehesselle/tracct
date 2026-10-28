@@ -12,6 +12,7 @@ import tomllib
 from pathlib import Path
 
 from tracct.constants import CONFIG_PATH
+from tracct.messages import DEFAULTS, LEVEL_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ class LogConfig:
     ignore_ports: list[int] = dataclasses.field(default_factory=list)
     ignore_domains: list[str] = dataclasses.field(default_factory=list)
     ignore_ips: list[str] = dataclasses.field(default_factory=list)
+    #: Message ID -> level name, for the messages not logged at their default level.
+    messages: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -120,6 +123,15 @@ def _apply(config: Config, raw: dict, path: Path) -> None:
                             f"{path}: {section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping"
                         )
                         continue
+                    if expected_type.__origin__ is dict:
+                        if not isinstance(value, dict):
+                            logger.warning(
+                                f"{path}: {section_name}.{field.name}: expected a table, got {type(value).__name__}, skipping"
+                            )
+                            continue
+                        # A table adds to the earlier files' rather than replacing it,
+                        # so a drop-in can set one key.
+                        value = {**getattr(section_obj, field.name), **value}
                 elif not isinstance(expected_type, type):
                     # field.type may be a forward-ref string under `from __future__
                     # import annotations`.
@@ -145,8 +157,8 @@ def _apply(config: Config, raw: dict, path: Path) -> None:
 def load_config(config_path: Path = CONFIG_PATH) -> Config:
     """Load config.toml and its drop-ins over the defaults.
 
-    A later file wins per option, and a list replaces the one before. Missing files mean
-    all defaults.
+    A later file wins per option, a list replaces the one before and a table adds to it.
+    Missing files mean all defaults.
     """
     config = Config()
     for path in config_files(config_path):
@@ -252,4 +264,16 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         for port in config.log.ignore_ports
         if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535
     ]
+    # Drop unknown messages and levels; set_levels() takes the rest as they are.
+    valid_messages = {}
+    for msgid, level in config.log.messages.items():
+        if msgid not in DEFAULTS:
+            logger.warning(f"config.log.messages: unknown message {msgid!r}, ignoring")
+        elif not isinstance(level, str) or level not in LEVEL_NAMES:
+            logger.warning(
+                f"config.log.messages.{msgid}: expected one of {', '.join(LEVEL_NAMES)}, got {level!r}, ignoring"
+            )
+        else:
+            valid_messages[msgid] = level
+    config.log.messages = valid_messages
     return config

@@ -196,7 +196,9 @@ systemd variables point to.
 
 The daemon reads `config.toml` and then every `config.d/*.toml` beside it, in name order,
 once at startup; restart the unit after a change. A later file wins per option, and a list
-in it replaces the earlier list rather than adding to it. Missing files mean all defaults.
+in it replaces the earlier list rather than adding to it, while `[log.messages]` adds to the
+earlier one, so a drop-in can set the level of a single message. Missing files mean all
+defaults.
 Unknown sections and keys are reported in the journal with their file and ignored; a value
 of the wrong type is skipped with a warning; a file that cannot be read is skipped, and the
 others still apply.
