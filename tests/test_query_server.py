@@ -33,17 +33,35 @@ def _db(tmp_path):
         con.execute(f"CREATE TABLE {table} ({schema}) STRICT")
     for statement in SENTINELS + INDEXES:
         con.execute(statement)
-    con.execute("INSERT INTO executables VALUES (1, '/usr/bin/curl', 'curl', 'curl example.com'), (2, '/usr/bin/bash', 'bash', 'bash'), (3, '/usr/sbin/nginx', 'nginx', 'nginx')")
+    con.execute(
+        "INSERT INTO executables VALUES (1, '/usr/bin/curl', 'curl', 'curl example.com'), (2, '/usr/bin/bash', 'bash', 'bash'), (3, '/usr/sbin/nginx', 'nginx', 'nginx')"
+    )
     con.execute("INSERT INTO units VALUES (1, 'nginx.service')")
-    con.execute("INSERT INTO addresses VALUES (1, '10.0.0.2'), (2, '93.184.215.14'), (3, '100.64.0.2'), (4, '198.51.100.7')")
+    con.execute(
+        "INSERT INTO addresses VALUES (1, '10.0.0.2'), (2, '93.184.215.14'), (3, '100.64.0.2'), (4, '198.51.100.7')"
+    )
     con.execute("INSERT INTO domains VALUES (1, 'com.example')")
-    con.execute(f"INSERT INTO interfaces VALUES (1, {HOST}, 'eth0', ''), (2, {HOST}, 'tailscale0', 'tun'), (3, {VPN}, 'tun0', 'tun')")
+    con.execute(
+        f"INSERT INTO interfaces VALUES (1, {HOST}, 'eth0', ''), (2, {HOST}, 'tailscale0', 'tun'), (3, {VPN}, 'tun0', 'tun')"
+    )
     con.execute(f"INSERT INTO netns VALUES ({HOST}, 'host')")
     # contime, send, recv, events, exe, pexe, unit, uid, family, protocol, lport, rport, laddr, raddr, domain, netns, iface
     con.executemany(
         "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?)",
         [
-            (P0 + H + 100, 100000, 100000, 1, 0, 50000, 443, 2, 1, HOST, 1),  # purged period: from the rollup
+            (
+                P0 + H + 100,
+                100000,
+                100000,
+                1,
+                0,
+                50000,
+                443,
+                2,
+                1,
+                HOST,
+                1,
+            ),  # purged period: from the rollup
             (P0 + 2 * H + 10, 1, 2, 1, 0, 50001, 443, 2, 1, HOST, 1),
             (P0 + 3 * H + 10, 10, 20, 1, 0, 50002, 443, 2, 1, HOST, 1),
             (P0 + 3 * H + 20, 300, 30, 3, 1, 80, 50003, 3, 0, VPN, 3),
@@ -56,13 +74,37 @@ def _db(tmp_path):
             (P0, 1, 0, 0, 443, 1, HOST, 1000, 10000),
             (P0 + H, 1, 0, 0, 443, 1, HOST, 100, 1000),
             (P0 + H, 3, 1, 80, 0, 0, HOST, 5000, 500),
-            (P0 + 2 * H, 1, 0, 0, 443, 1, HOST, 999999, 999999),  # still raw: from the raw rows
+            (
+                P0 + 2 * H,
+                1,
+                0,
+                0,
+                443,
+                1,
+                HOST,
+                999999,
+                999999,
+            ),  # still raw: from the raw rows
         ],
     )
-    con.executemany("INSERT INTO interface_traffic VALUES (?, ?, ?, ?)", [(P0 + H + 100, 1, 100000, 100000), (P0 + 2 * H + 10, 1, 700, 70), (P0 + 3 * H + 10, 3, 40, 4)])
-    con.executemany("INSERT INTO interface_traffic_rollup VALUES (?, ?, ?, ?)", [(P0 + H, 1, 6000, 600), (P0 + 2 * H, 1, 999999, 999999)])
-    con.execute(f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80)")
-    con.execute(f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST}, 6, 3, 443, 0, 50, 5000, 1, 4, 1)")
+    con.executemany(
+        "INSERT INTO interface_traffic VALUES (?, ?, ?, ?)",
+        [
+            (P0 + H + 100, 1, 100000, 100000),
+            (P0 + 2 * H + 10, 1, 700, 70),
+            (P0 + 3 * H + 10, 3, 40, 4),
+        ],
+    )
+    con.executemany(
+        "INSERT INTO interface_traffic_rollup VALUES (?, ?, ?, ?)",
+        [(P0 + H, 1, 6000, 600), (P0 + 2 * H, 1, 999999, 999999)],
+    )
+    con.execute(
+        f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80)"
+    )
+    con.execute(
+        f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST}, 6, 3, 443, 0, 50, 5000, 1, 4, 1)"
+    )
     con.execute(f"INSERT INTO meta VALUES ('rollup_watermark', {P0 + 3 * H})")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
@@ -71,13 +113,23 @@ def _db(tmp_path):
 
 
 def _ask(db, op, write_window=10, **request):
-    response = query_server.QueryServer(db, ephemeral=EPHEMERAL, write_window=write_window, rollup_period=H).answer({"op": op, **request})
+    response = query_server.QueryServer(
+        db, ephemeral=EPHEMERAL, write_window=write_window, rollup_period=H
+    ).answer({"op": op, **request})
     assert response["ok"], response.get("error")
     return response
 
 
 def _aggregate(db, group_by, start=P0, end=P0 + 4 * H, **request):
-    response = _ask(db, "aggregate", source=request.pop("source", "connections"), group_by=group_by, start=start, end=end, **request)
+    response = _ask(
+        db,
+        "aggregate",
+        source=request.pop("source", "connections"),
+        group_by=group_by,
+        start=start,
+        end=end,
+        **request,
+    )
     return response, {value: (a, b) for value, a, b in response["rows"]}
 
 
@@ -86,10 +138,17 @@ def test_raw_rows_take_over_from_rollups(tmp_path):
     response, rows = _aggregate(db, "exe")
     # the purged period's remainder and the rolled-up period that is still raw are not read twice
     assert response["split"] == P0 + 2 * H
-    assert rows == {"/usr/bin/curl": (1000 + 100 + 1 + 10, 10000 + 1000 + 2 + 20), "/usr/sbin/nginx": (5000 + 300, 500 + 30)}
+    assert rows == {
+        "/usr/bin/curl": (1000 + 100 + 1 + 10, 10000 + 1000 + 2 + 20),
+        "/usr/sbin/nginx": (5000 + 300, 500 + 30),
+    }
     assert [row[0] for row in response["rows"]] == ["/usr/bin/curl", "/usr/sbin/nginx"]
     assert response["totals"] == [1111 + 5300, 11022 + 530]
-    assert response["groups"] == 2 and not response["truncated"] and not response["clipped"]
+    assert (
+        response["groups"] == 2
+        and not response["truncated"]
+        and not response["clipped"]
+    )
 
 
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
@@ -121,7 +180,9 @@ def test_filters_include_and_exclude(tmp_path):
     # unnamed namespaces go by inode, and a filter takes the value as it came back
     _, rows = _aggregate(db, "netns", start=P0 + 2 * H)
     assert rows == {"host": (11, 22), str(VPN): (300, 30)}
-    _, rows = _aggregate(db, "exe", start=P0 + 2 * H, filters=[["netns", str(VPN), False]])
+    _, rows = _aggregate(
+        db, "exe", start=P0 + 2 * H, filters=[["netns", str(VPN), False]]
+    )
     assert list(rows) == ["/usr/sbin/nginx"]
 
 
@@ -145,7 +206,10 @@ def test_totals_per_layer(tmp_path):
     db = _db(tmp_path)
     # the sums over all rows never add up layers: one per layer, largest first
     response, _ = _aggregate(db, "exe")
-    assert response["totals_by"] == "layer" and response["parts"] == [["outer", 6111, 11522], ["inner", 300, 30]]
+    assert response["totals_by"] == "layer" and response["parts"] == [
+        ["outer", 6111, 11522],
+        ["inner", 300, 30],
+    ]
     response, _ = _aggregate(db, "iface", source="interfaces")
     assert response["parts"] == [["outer", 670, 6700], ["inner", 4, 40]]
     # forwarded bytes have no layers: one sum
@@ -153,7 +217,9 @@ def test_totals_per_layer(tmp_path):
     assert response["totals_by"] is None and response["parts"] == [[None, 2050, 105000]]
     # a filter narrows them as it does the rows
     response, rows = _aggregate(db, "exe", filters=[["layer", "inner", False]])
-    assert response["parts"] == [["inner", 300, 30]] and rows == {"/usr/sbin/nginx": (300, 30)}
+    assert response["parts"] == [["inner", 300, 30]] and rows == {
+        "/usr/sbin/nginx": (300, 30)
+    }
 
 
 def test_forwarded(tmp_path):
@@ -166,10 +232,25 @@ def test_forwarded(tmp_path):
 
 def test_timeline(tmp_path):
     db = _db(tmp_path)
-    response = _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H)
-    assert response["buckets"] == [[P0, 1000, 10000], [P0 + H, 5100, 1500], [P0 + 2 * H, 1, 2], [P0 + 3 * H, 310, 50]]
+    response = _ask(
+        db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H
+    )
+    assert response["buckets"] == [
+        [P0, 1000, 10000],
+        [P0 + H, 5100, 1500],
+        [P0 + 2 * H, 1, 2],
+        [P0 + 3 * H, 310, 50],
+    ]
     # a filter on one row's value gives that row's timeline
-    response = _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, filters=[["exe", "/usr/sbin/nginx", False]])
+    response = _ask(
+        db,
+        "timeline",
+        source="connections",
+        start=P0,
+        end=P0 + 4 * H,
+        step=H,
+        filters=[["exe", "/usr/sbin/nginx", False]],
+    )
     assert response["buckets"] == [[P0 + H, 5000, 500], [P0 + 3 * H, 300, 30]]
     with pytest.raises(AssertionError, match="buckets"):
         _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=1)
@@ -177,7 +258,9 @@ def test_timeline(tmp_path):
 
 def test_timeline_peaks(tmp_path):
     db = _db(tmp_path)
-    response = _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=10)
+    response = _ask(
+        db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=10
+    )
     assert response["peak"] == 10
     # a rollup is one stretch as long as its period; raw rows are per stretch of 10 s, so the
     # last hour's two windows, 10 s apart, peak at the larger one
@@ -188,11 +271,30 @@ def test_timeline_peaks(tmp_path):
         [P0 + 3 * H, 310, 50, pytest.approx(30.0), pytest.approx(3.0)],
     ]
     # a stretch is never shorter than a write window: one of 30 s holds both windows
-    response = _ask(db, "timeline", write_window=30, source="connections", start=P0 + 3 * H, end=P0 + 4 * H, step=H, peak=10)
-    assert response["peak"] == 30 and response["buckets"] == [[P0 + 3 * H, 310, 50, pytest.approx(310 / 30), pytest.approx(50 / 30)]]
+    response = _ask(
+        db,
+        "timeline",
+        write_window=30,
+        source="connections",
+        start=P0 + 3 * H,
+        end=P0 + 4 * H,
+        step=H,
+        peak=10,
+    )
+    assert response["peak"] == 30 and response["buckets"] == [
+        [P0 + 3 * H, 310, 50, pytest.approx(310 / 30), pytest.approx(50 / 30)]
+    ]
     # a stretch longer than the bucket says nothing about it
     with pytest.raises(AssertionError, match="peak"):
-        _ask(db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=2 * H)
+        _ask(
+            db,
+            "timeline",
+            source="connections",
+            start=P0,
+            end=P0 + 4 * H,
+            step=H,
+            peak=2 * H,
+        )
 
 
 def test_describe(tmp_path):
@@ -211,12 +313,50 @@ def test_describe(tmp_path):
     [
         ({"op": "drop"}, "unknown op"),
         ({"op": "aggregate", "source": "executables"}, "unknown source"),
-        ({"op": "aggregate", "source": "connections", "group_by": "exe; DROP TABLE connections"}, "unknown dimension"),
-        ({"op": "aggregate", "source": "connections", "filters": [["e.exe", "x", False]]}, "unknown dimension"),
-        ({"op": "aggregate", "source": "connections", "filters": [["exe", ["x"], False]]}, "filter value"),
-        ({"op": "aggregate", "source": "connections", "filters": [["exe", "x", "yes"]]}, "exclude"),
-        ({"op": "aggregate", "source": "connections", "filters": [["exe", "x", False]] * 17}, "at most"),
-        ({"op": "aggregate", "source": "connections", "start": 10, "end": 5}, "after start"),
+        (
+            {
+                "op": "aggregate",
+                "source": "connections",
+                "group_by": "exe; DROP TABLE connections",
+            },
+            "unknown dimension",
+        ),
+        (
+            {
+                "op": "aggregate",
+                "source": "connections",
+                "filters": [["e.exe", "x", False]],
+            },
+            "unknown dimension",
+        ),
+        (
+            {
+                "op": "aggregate",
+                "source": "connections",
+                "filters": [["exe", ["x"], False]],
+            },
+            "filter value",
+        ),
+        (
+            {
+                "op": "aggregate",
+                "source": "connections",
+                "filters": [["exe", "x", "yes"]],
+            },
+            "exclude",
+        ),
+        (
+            {
+                "op": "aggregate",
+                "source": "connections",
+                "filters": [["exe", "x", False]] * 17,
+            },
+            "at most",
+        ),
+        (
+            {"op": "aggregate", "source": "connections", "start": 10, "end": 5},
+            "after start",
+        ),
         ({"op": "aggregate", "source": "connections", "limit": 0}, "limit"),
         ({"op": "aggregate", "source": "connections", "start": "yesterday"}, "integer"),
     ],
@@ -231,7 +371,9 @@ def test_bad_requests(tmp_path, request_, error):
 
 
 def test_database_missing_or_other_version(tmp_path):
-    response = query_server.QueryServer(tmp_path / "tracct.db").answer({"op": "describe"})
+    response = query_server.QueryServer(tmp_path / "tracct.db").answer(
+        {"op": "describe"}
+    )
     assert not response["ok"] and "no database" in response["error"]
     db = _db(tmp_path)
     con = sqlite3.connect(db)
@@ -245,18 +387,27 @@ def test_database_missing_or_other_version(tmp_path):
 def test_slow_query_is_interrupted(tmp_path, monkeypatch):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
-    con.executemany("INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1)", [(P0 + 3 * H + i % 3000, HOST) for i in range(20000)])
+    con.executemany(
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1)",
+        [(P0 + 3 * H + i % 3000, HOST) for i in range(20000)],
+    )
     con.commit()
     con.close()
     monkeypatch.setattr(query_server, "QUERY_TIMEOUT_SECONDS", 0)
-    response = query_server.QueryServer(db).answer({"op": "aggregate", "source": "connections", "group_by": "raddr"})
+    response = query_server.QueryServer(db).answer(
+        {"op": "aggregate", "source": "connections", "group_by": "raddr"}
+    )
     assert not response["ok"] and "longer than" in response["error"]
 
 
 def _serve(tmp_path, db, idle_exit=None):
     listener, activated = query_server.listening_socket(tmp_path / "query.sock")
     assert not activated
-    thread = threading.Thread(target=query_server.QueryServer(db).serve, args=(listener, idle_exit), daemon=True)
+    thread = threading.Thread(
+        target=query_server.QueryServer(db).serve,
+        args=(listener, idle_exit),
+        daemon=True,
+    )
     thread.start()
     return listener, thread
 
@@ -266,8 +417,17 @@ def test_socket_round_trip_and_idle_exit(tmp_path):
     listener, thread = _serve(tmp_path, db, idle_exit=1)
     try:
         client = QueryClient(tmp_path / "query.sock", timeout=5)
-        assert client.request("describe")["sources"]["connections"]["split"] == P0 + 2 * H
-        rows = client.request("aggregate", source="connections", group_by="exe", start=P0, end=P0 + 4 * H, limit=1)
+        assert (
+            client.request("describe")["sources"]["connections"]["split"] == P0 + 2 * H
+        )
+        rows = client.request(
+            "aggregate",
+            source="connections",
+            group_by="exe",
+            start=P0,
+            end=P0 + 4 * H,
+            limit=1,
+        )
         assert len(rows["rows"]) == 1 and rows["truncated"] and rows["groups"] == 2
         with pytest.raises(QueryError, match="unknown source"):
             client.request("aggregate", source="nope")
@@ -302,7 +462,11 @@ def test_client_cap_and_bad_messages(tmp_path, monkeypatch):
         raw.connect(str(tmp_path / "query.sock"))
         raw.sendall(struct.pack(">I", query_server.MAX_REQUEST_BYTES + 1))
         response = recv_message(raw, 1 << 20)
-        assert response is not None and not response["ok"] and "exceeds" in response["error"]
+        assert (
+            response is not None
+            and not response["ok"]
+            and "exceeds" in response["error"]
+        )
         raw.close()
     finally:
         listener.close()

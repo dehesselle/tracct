@@ -127,7 +127,9 @@ class ResProfiler(threading.Thread):
             "cpu_p90_pct": round(_pct(cpus, 90), 1),
             "cpu_p95_pct": round(_pct(cpus, 95), 1),
             "cpu_p99_pct": round(_pct(cpus, 99), 1),
-            "cpu_peak_pct": round(max(cpus), 1),  # single-sample max: kept for reference, not published
+            "cpu_peak_pct": round(
+                max(cpus), 1
+            ),  # single-sample max: kept for reference, not published
             "pss_avg_mb": round(sum(psss) / len(psss), 1),
             "pss_p95_mb": round(_pct(psss, 95), 1),
             "pss_peak_mb": round(max(psss), 1),

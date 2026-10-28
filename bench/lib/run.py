@@ -28,11 +28,36 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import report as reportmod
 from adapters import ADAPTERS
-from harness import BIN, ERROR, FAIL, NA, RESULTS, Ctx, Netlab, combine_trials, gt_directions, save_json, score_bandwidth, score_detection, sh
+from harness import (
+    BIN,
+    ERROR,
+    FAIL,
+    NA,
+    RESULTS,
+    Ctx,
+    Netlab,
+    combine_trials,
+    gt_directions,
+    save_json,
+    score_bandwidth,
+    score_detection,
+    sh,
+)
 from resprof import ResProfiler
 from scenarios import build_scenarios
 
-DEFAULT_TOOLS = ["tracct", "nethogs", "bandwhich", "opensnitch", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig", "sniffnet"]
+DEFAULT_TOOLS = [
+    "tracct",
+    "nethogs",
+    "bandwhich",
+    "opensnitch",
+    "littlesnitch",
+    "bcc-baseline",
+    "bcc-tcptop",
+    "bpftrace",
+    "sysdig",
+    "sniffnet",
+]
 
 # Fairness isolation: only the tool under test may run during its own benchmark.
 # Three tools run as systemd services and two of them (opensnitch,
@@ -68,15 +93,23 @@ def preflight(tools, scenarios):
 
     for b in ("benchgen", "benchgen_static", "benchserver"):
         if not (BIN / b).exists():
-            missing.append(f"bin/{b} (compile the helpers first: sudo bash lib/build.sh)")
+            missing.append(
+                f"bin/{b} (compile the helpers first: sudo bash lib/build.sh)"
+            )
 
     if "tracct" in tools and sh("command -v uv").returncode != 0:
-        missing.append("uv on root's PATH (tracct is built from the source tree with it)")
+        missing.append(
+            "uv on root's PATH (tracct is built from the source tree with it)"
+        )
 
     if "s17" in sids:  # in-container egress
         if sh("command -v docker").returncode != 0:
             sh("apt-get install -y docker.io", timeout=900)
-        subprocess.run(["systemctl", "start", "docker"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["systemctl", "start", "docker"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         if sh("command -v docker").returncode != 0:
             missing.append("docker (s17 runs a generator inside a container)")
         # pull now: a cold pull inside the first trial would time out that trial
@@ -86,10 +119,15 @@ def preflight(tools, scenarios):
                 missing.append(f"docker image alpine:3.20 ({r.stderr.strip()[:200]})")
 
     if "s08" in sids and sh("modprobe sctp").returncode != 0:  # SCTP transfer
-        missing.append("sctp kernel module (s08); on Ubuntu it ships in linux-modules-extra")
+        missing.append(
+            "sctp kernel module (s08); on Ubuntu it ships in linux-modules-extra"
+        )
 
     if missing:
-        print("\n!!! PREFLIGHT FAILED -- the run would report these as tool results:", flush=True)
+        print(
+            "\n!!! PREFLIGHT FAILED -- the run would report these as tool results:",
+            flush=True,
+        )
         for m in missing:
             print(f"    missing: {m}", flush=True)
         sys.exit(2)
@@ -103,7 +141,11 @@ def quiesce_other_monitors(current):
     tool under test truly runs alone. Logs the isolation result as an auditable record."""
     for svc in MONITOR_SERVICES:
         if svc != current:
-            subprocess.run(["systemctl", "stop", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ["systemctl", "stop", svc],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
     # `systemctl stop` blocks until the daemon's MainPID exits, but opensnitch and
     # little-snitch keep tearing down eBPF/child processes for ~10s after that. Wait
     # out that graceful teardown (rather than SIGKILL, which could orphan opensnitch's
@@ -111,12 +153,21 @@ def quiesce_other_monitors(current):
     others = [(t, sig) for t, sig in _MONITOR_SIG.items() if t != current]
     stray = [t for t, _ in others]
     for _ in range(60):  # up to ~30s for the daemons to finish exiting
-        stray = [t for t, sig in others if subprocess.run(["pgrep", "-f", sig], stdout=subprocess.DEVNULL).returncode == 0]
+        stray = [
+            t
+            for t, sig in others
+            if subprocess.run(
+                ["pgrep", "-f", sig], stdout=subprocess.DEVNULL
+            ).returncode
+            == 0
+        ]
         if not stray:
             break
         time.sleep(0.5)
     if stray:
-        raise RuntimeError(f"competing monitor(s) still running: {stray}; this tool would not be measured alone")
+        raise RuntimeError(
+            f"competing monitor(s) still running: {stray}; this tool would not be measured alone"
+        )
     else:
         print(f"[{current}] isolation OK: no other monitor daemon running", flush=True)
 
@@ -130,13 +181,38 @@ def host():
         except OSError:
             return ""
 
-    release = dict(line.split("=", 1) for line in read("/etc/os-release").splitlines() if "=" in line)
-    cpu = next((line.split(":", 1)[1].strip() for line in read("/proc/cpuinfo").splitlines() if line.startswith("model name")), "")
-    mem_kb = next((int(line.split()[1]) for line in read("/proc/meminfo").splitlines() if line.startswith("MemTotal:")), 0)
+    release = dict(
+        line.split("=", 1)
+        for line in read("/etc/os-release").splitlines()
+        if "=" in line
+    )
+    cpu = next(
+        (
+            line.split(":", 1)[1].strip()
+            for line in read("/proc/cpuinfo").splitlines()
+            if line.startswith("model name")
+        ),
+        "",
+    )
+    mem_kb = next(
+        (
+            int(line.split()[1])
+            for line in read("/proc/meminfo").splitlines()
+            if line.startswith("MemTotal:")
+        ),
+        0,
+    )
     return {
         "os": release.get("PRETTY_NAME", "").strip('"'),
         "kernel": sh("uname -r").stdout.strip(),
-        "machine": " ".join(x for x in (read("/sys/class/dmi/id/sys_vendor"), read("/sys/class/dmi/id/product_name")) if x),
+        "machine": " ".join(
+            x
+            for x in (
+                read("/sys/class/dmi/id/sys_vendor"),
+                read("/sys/class/dmi/id/product_name"),
+            )
+            if x
+        ),
         "cpu": cpu,
         "vcpus": os.cpu_count(),
         "mem_gb": round(mem_kb / 1024**2),
@@ -148,7 +224,14 @@ def unscored(ad, gtd, note):
     or broken ground truth): ERROR, never a tool verdict; N/A stays N/A."""
     return {
         "gt": gtd,
-        "obs": {"detected": False, "attributed": None, "names": [], "sent": None, "recv": None, "note": note},
+        "obs": {
+            "detected": False,
+            "attributed": None,
+            "names": [],
+            "sent": None,
+            "recv": None,
+            "note": note,
+        },
         "det": ERROR,
         "det_note": note,
         "bw": ERROR if ad.does_bandwidth else NA,
@@ -161,7 +244,11 @@ def run_trial(ad, scn, ctx):
     ad.pre_trial()
     if not ad.alive():
         # a dead monitor observes nothing; running traffic would score that as a tool FAIL
-        return unscored(ad, {"app_sent": 0, "app_recv": 0, "ok": False}, "monitor process not running at trial start")
+        return unscored(
+            ad,
+            {"app_sent": 0, "app_recv": 0, "ok": False},
+            "monitor process not running at trial start",
+        )
     gt = scn.run(ctx)
     gt.test_dirs = scn.directions  # score only the directions this scenario tests
     gtd = {
@@ -193,7 +280,14 @@ def run_trial(ad, scn, ctx):
         bw, bwdetail = NA, {"note": "no bandwidth capability"}
     return {
         "gt": gtd,
-        "obs": {"detected": obs.flow_detected, "attributed": obs.proc_attributed, "names": obs.names, "sent": obs.sent, "recv": obs.recv, "note": obs.note},
+        "obs": {
+            "detected": obs.flow_detected,
+            "attributed": obs.proc_attributed,
+            "names": obs.names,
+            "sent": obs.sent,
+            "recv": obs.recv,
+            "note": obs.note,
+        },
         "det": det,
         "det_note": detnote,
         "bw": bw,
@@ -220,13 +314,18 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
     }
     print(f"\n########## {toolname} ##########", flush=True)
     try:
-        quiesce_other_monitors(toolname)  # a stuck competing daemon = this tool's setup error; later tools re-check
+        quiesce_other_monitors(
+            toolname
+        )  # a stuck competing daemon = this tool's setup error; later tools re-check
         print(f"[{toolname}] install ...", flush=True)
         ad.install()
         # read the version from the tool that is actually installed, so reports
         # state observed versions rather than intended ones
         out["version"] = ad.version()
-        print(f"[{toolname}] version {out['version'] or 'unknown'} ({ad.VERSION_SOURCE})", flush=True)
+        print(
+            f"[{toolname}] version {out['version'] or 'unknown'} ({ad.VERSION_SOURCE})",
+            flush=True,
+        )
         # fresh peer server per tool so protocol state (e.g. SCTP associations)
         # can't accumulate across tools and wedge later transfers.
         netlab.start_servers()
@@ -234,7 +333,9 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         ad.start()
         # a monitor that died while starting would turn every trial into ERROR
         if not ad.alive():
-            raise RuntimeError(f"monitor not running after start; see its log in results/{toolname}/")
+            raise RuntimeError(
+                f"monitor not running after start; see its log in results/{toolname}/"
+            )
     except Exception as e:
         # no scenarios run at all: flagged so the reports say "not measured" instead
         # of rendering the empty matrix as a tool that scored zero
@@ -249,7 +350,9 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         return out
 
     ctx = Ctx(netlab)
-    ctx.gen_prefix = list(getattr(ad, "gen_prefix", []))  # e.g. systemd-run for little-snitch
+    ctx.gen_prefix = list(
+        getattr(ad, "gen_prefix", [])
+    )  # e.g. systemd-run for little-snitch
     # resource profiler: sample the tool's process tree (CPU + PSS) across its
     # whole session -- avg is typical cost under the benchmark workload, p95 CPU
     # / peak PSS the worst. runs in a thread; a few /proc reads per second.
@@ -277,17 +380,41 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         ctl_dl, ctl_ul = build_scenarios()[:2]  # s01 download, s02 upload
         for attempt in (1, 2):
             cd = run_trial(ad, ctl_dl, ctx)
-            out["control"] = {"det": cd["det"], "bw": cd["bw"], "gt": cd["gt"], "obs": cd["obs"]}
-            print(f"[{toolname}] control s01 (attempt {attempt}) -> det={cd['det']} bw={cd['bw']} (gt recv={cd['gt']['app_recv']} reported={cd['obs']['recv']})", flush=True)
+            out["control"] = {
+                "det": cd["det"],
+                "bw": cd["bw"],
+                "gt": cd["gt"],
+                "obs": cd["obs"],
+            }
+            print(
+                f"[{toolname}] control s01 (attempt {attempt}) -> det={cd['det']} bw={cd['bw']} (gt recv={cd['gt']['app_recv']} reported={cd['obs']['recv']})",
+                flush=True,
+            )
             cu = run_trial(ad, ctl_ul, ctx)
-            out["control_up"] = {"det": cu["det"], "bw": cu["bw"], "gt": cu["gt"], "obs": cu["obs"]}
-            print(f"[{toolname}] control s02 (attempt {attempt}) -> det={cu['det']} bw={cu['bw']} (gt sent={cu['gt']['app_sent']} reported={cu['obs']['sent']})", flush=True)
+            out["control_up"] = {
+                "det": cu["det"],
+                "bw": cu["bw"],
+                "gt": cu["gt"],
+                "obs": cu["obs"],
+            }
+            print(
+                f"[{toolname}] control s02 (attempt {attempt}) -> det={cu['det']} bw={cu['bw']} (gt sent={cu['gt']['app_sent']} reported={cu['obs']['sent']})",
+                flush=True,
+            )
             # a bandwidth-capable tool must report bytes in both directions
-            zero_bytes = ad.does_bandwidth and ((cu["obs"]["sent"] or 0) <= 0 or (cd["obs"]["recv"] or 0) <= 0)
-            control_ok = cd["det"] not in (FAIL, ERROR) and cu["det"] not in (FAIL, ERROR) and not zero_bytes
+            zero_bytes = ad.does_bandwidth and (
+                (cu["obs"]["sent"] or 0) <= 0 or (cd["obs"]["recv"] or 0) <= 0
+            )
+            control_ok = (
+                cd["det"] not in (FAIL, ERROR)
+                and cu["det"] not in (FAIL, ERROR)
+                and not zero_bytes
+            )
             if control_ok:
                 if attempt > 1:
-                    out["errors"].append("control passed on the second attempt (first attempt missed; probe warm-up)")
+                    out["errors"].append(
+                        "control passed on the second attempt (first attempt missed; probe warm-up)"
+                    )
                 break
     except Exception as e:
         out["errors"].append(f"control: {e}")
@@ -296,11 +423,23 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         # A control can fail because the tool genuinely does not report the
         # transfer, which is a result rather than a broken setup, so the
         # scenarios still run and the failure is published with them.
-        out["errors"].append("control transfer was not reported by this tool on either attempt; its results are published with this caveat")
-        print(f"[{toolname}] CONTROL FAILED -- continuing, recorded as a run note", flush=True)
+        out["errors"].append(
+            "control transfer was not reported by this tool on either attempt; its results are published with this caveat"
+        )
+        print(
+            f"[{toolname}] CONTROL FAILED -- continuing, recorded as a run note",
+            flush=True,
+        )
 
     for scn in scenarios:
-        rec = {"sid": scn.sid, "name": scn.name, "category": scn.category, "note": scn.note, "desc": scn.desc, "trials": []}
+        rec = {
+            "sid": scn.sid,
+            "name": scn.name,
+            "category": scn.category,
+            "note": scn.note,
+            "desc": scn.desc,
+            "trials": [],
+        }
         for t in range(trials):
             try:
                 rec["trials"].append(run_trial(ad, scn, ctx))
@@ -312,7 +451,10 @@ def run_tool(toolname, scenarios, netlab, trials, profile=True):
         rec["det_final"], rec["det_flaky"] = combine_trials(det_v)
         rec["bw_final"], rec["bw_flaky"] = combine_trials(bw_v)
         out["scenarios"][scn.sid] = rec
-        print(f"[{toolname}] {scn.sid} {scn.name[:34]:34} det={rec['det_final']:7} bw={rec['bw_final']:7}{' TRIALS-DISAGREED' if rec['det_flaky'] or rec['bw_flaky'] else ''}", flush=True)
+        print(
+            f"[{toolname}] {scn.sid} {scn.name[:34]:34} det={rec['det_final']:7} bw={rec['bw_final']:7}{' TRIALS-DISAGREED' if rec['det_flaky'] or rec['bw_flaky'] else ''}",
+            flush=True,
+        )
 
     if prof:
         prof.stop()
@@ -331,7 +473,9 @@ def main():
     ap.add_argument("--scenarios", default="all")
     ap.add_argument("--trials", type=int, default=5)
     ap.add_argument("--report-only", action="store_true")
-    ap.add_argument("--no-profile", action="store_true", help="skip CPU/memory resource profiling")
+    ap.add_argument(
+        "--no-profile", action="store_true", help="skip CPU/memory resource profiling"
+    )
     args = ap.parse_args()
 
     if args.report_only:
@@ -354,13 +498,22 @@ def main():
     try:
         for tool in tools:
             try:
-                outs[tool] = run_tool(tool, all_scn, netlab, args.trials, profile=not args.no_profile)
+                outs[tool] = run_tool(
+                    tool, all_scn, netlab, args.trials, profile=not args.no_profile
+                )
             except Exception:
                 # no single tool's failure may take down the rest of a multi-hour run
                 print(f"[{tool}] TOOL ABORTED:\n{traceback.format_exc()}", flush=True)
                 # persist the abort: without this the reports would silently pick up
                 # a previous run's results.json for this tool and publish them as this run's
-                outs[tool] = {"tool": tool, "run_date": time.strftime("%Y-%m-%d"), "setup_failed": True, "scenarios": {}, "control": None, "errors": [f"aborted: {traceback.format_exc()}"]}
+                outs[tool] = {
+                    "tool": tool,
+                    "run_date": time.strftime("%Y-%m-%d"),
+                    "setup_failed": True,
+                    "scenarios": {},
+                    "control": None,
+                    "errors": [f"aborted: {traceback.format_exc()}"],
+                }
                 save_json(RESULTS / tool / "results.json", outs[tool])
     finally:
         netlab.down()
@@ -372,16 +525,24 @@ def main():
 
     # Run health, last and loudest: a tool that was never measured is a harness
     # failure, not a score of zero, and must not be read off the scorecards as one.
-    broken = [t for t, o in outs.items() if o.get("setup_failed") or not o.get("scenarios")]
+    broken = [
+        t for t, o in outs.items() if o.get("setup_failed") or not o.get("scenarios")
+    ]
     noted = [t for t, o in outs.items() if o.get("errors") and t not in broken]
     for t in noted:
-        print(f"[{t}] ran with {len(outs[t]['errors'])} recorded error(s); see results/{t}/results.json", flush=True)
+        print(
+            f"[{t}] ran with {len(outs[t]['errors'])} recorded error(s); see results/{t}/results.json",
+            flush=True,
+        )
     if broken:
         print(f"\n!!! NOT MEASURED (setup failed): {', '.join(broken)}", flush=True)
         for t in broken:
             first = (outs[t].get("errors") or ["(no error recorded)"])[0]
             print(f"    {t}: {' '.join(first.split())[:300]}", flush=True)
-        print("!!! Their scorecard columns are marked not-measured; fix the setup and rerun those tools.", flush=True)
+        print(
+            "!!! Their scorecard columns are marked not-measured; fix the setup and rerun those tools.",
+            flush=True,
+        )
         sys.exit(1)
 
 

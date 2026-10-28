@@ -19,7 +19,9 @@ os.environ["RUNTIME_DIRECTORY"] = _TMP_RUN
 from tracct import live_feed  # noqa: E402
 
 # Patch the socket path to live under our temp dir
-live_feed.EVENTS_SOCKET_PATH = type(live_feed.EVENTS_SOCKET_PATH)(os.path.join(_TMP_RUN, "events.sock"))
+live_feed.EVENTS_SOCKET_PATH = type(live_feed.EVENTS_SOCKET_PATH)(
+    os.path.join(_TMP_RUN, "events.sock")
+)
 
 
 def test_publish_and_subscribe():

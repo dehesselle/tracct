@@ -84,7 +84,6 @@ dev = [
 # with the pin in .github/workflows/ci.yml.
 required-version = "~=0.16.0"
 target-version = "py312"
-line-length = 200
 exclude = [".venv", "build", "dist"]
 
 [tool.ruff.lint]

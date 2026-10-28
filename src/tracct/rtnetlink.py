@@ -65,7 +65,12 @@ def _dump(msg_type: int, body: bytes) -> Iterator[bytes]:
     with socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_ROUTE) as sock:
         sock.settimeout(2)
         sock.bind((0, 0))
-        sock.send(_NLMSGHDR.pack(_NLMSGHDR.size + len(body), msg_type, NLM_F_REQUEST | NLM_F_DUMP, 1, 0) + body)
+        sock.send(
+            _NLMSGHDR.pack(
+                _NLMSGHDR.size + len(body), msg_type, NLM_F_REQUEST | NLM_F_DUMP, 1, 0
+            )
+            + body
+        )
         while True:
             data = sock.recv(65536)
             offset = 0
@@ -91,7 +96,9 @@ def links() -> list[Link]:
             if attr == IFLA_IFNAME:
                 name = value.split(b"\0", 1)[0].decode(errors="replace")
             elif attr == IFLA_STATS64 and len(value) >= _STATS64_HEAD.size:
-                _rx_packets, _tx_packets, rx_bytes, tx_bytes = _STATS64_HEAD.unpack_from(value)
+                _rx_packets, _tx_packets, rx_bytes, tx_bytes = (
+                    _STATS64_HEAD.unpack_from(value)
+                )
             elif attr == IFLA_LINKINFO:
                 for info, info_value in _attributes(value, 0):
                     if info == IFLA_INFO_KIND:

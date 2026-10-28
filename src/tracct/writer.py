@@ -21,7 +21,13 @@ from tracct.constants import DB_PATH, RETRY_BUFFER_MAX
 from tracct.netinfo import NetInfo
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
-from tracct.utils import DropOldestQueue, ephemeral_port_start, log_error, quarantine_database, sqlite_error_means_corrupt
+from tracct.utils import (
+    DropOldestQueue,
+    ephemeral_port_start,
+    log_error,
+    quarantine_database,
+    sqlite_error_means_corrupt,
+)
 
 # distinct connections one write window may hold; past it the window is written early
 WINDOW_CONNECTIONS_MAX = 65536
@@ -54,8 +60,16 @@ ROLLUPS = (
     " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns, protocol, src_id, dp, domain_id",
 )
 # the tables purged past the raw and the rollup retention, with their time column
-RAW_TABLES = (("connections", "contime"), ("interface_traffic", "contime"), ("forwarded", "contime"))
-ROLLUP_TABLES = (("connections_rollup", "period"), ("interface_traffic_rollup", "period"), ("forwarded_rollup", "period"))
+RAW_TABLES = (
+    ("connections", "contime"),
+    ("interface_traffic", "contime"),
+    ("forwarded", "contime"),
+)
+ROLLUP_TABLES = (
+    ("connections_rollup", "period"),
+    ("interface_traffic_rollup", "period"),
+    ("forwarded_rollup", "period"),
+)
 # lookup entries nothing refers to, one transaction each; executables uses the exe_id and
 # pexe_id indexes, the others scan the tables referring to them
 ORPHAN_DELETES = (
@@ -113,11 +127,19 @@ class WriteWindow:
     so memory follows the number of distinct connections rather than events. the events are not
     modified, the live feed may still be sending the same objects"""
 
-    def __init__(self, config: Config, reverse_dns: ReverseDns | None = None, netinfo: NetInfo | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        reverse_dns: ReverseDns | None = None,
+        netinfo: NetInfo | None = None,
+    ) -> None:
         self.config = config
         self.reverse_dns = reverse_dns
         self.netinfo = netinfo
-        self.ignored_networks = [ipaddress.ip_network(ip_subnet, strict=False) for ip_subnet in config.log.ignore_ips]
+        self.ignored_networks = [
+            ipaddress.ip_network(ip_subnet, strict=False)
+            for ip_subnet in config.log.ignore_ips
+        ]
         self.connections: dict[tuple, list[int]] = {}
         self.flows: dict[tuple, list[int]] = {}
         # many connections in one window share a cmdline, and this string work dominated at high cardinality
@@ -129,14 +151,22 @@ class WriteWindow:
     def clean_cmdline(self, raw: str) -> str:
         cleaned = self.cmdlines.get(raw)
         if cleaned is None:
-            cleaned = shlex.join(raw.encode("utf-8", "ignore").decode("utf-8", "ignore").strip("\0\t\n ").split("\0"))
+            cleaned = shlex.join(
+                raw.encode("utf-8", "ignore")
+                .decode("utf-8", "ignore")
+                .strip("\0\t\n ")
+                .split("\0")
+            )
             self.cmdlines[raw] = cleaned
         return cleaned
 
     def ignored(self, *addresses: str) -> bool:
         if self.ignored_networks:
             for address in addresses:
-                if address and any(ipaddress.ip_address(address) in network for network in self.ignored_networks):
+                if address and any(
+                    ipaddress.ip_address(address) in network
+                    for network in self.ignored_networks
+                ):
                     return True
         return False
 
@@ -173,7 +203,11 @@ class WriteWindow:
             netns = int(proc.get("netns", 0) or 0)
             # the interface follows from netns and laddr in the key, and is looked up once per
             # row in take_rows; only a TUN row needs its process for it, which is not in the key
-            tun = self.netinfo.tun_of(proc["pid"]) if family == socket.AF_PACKET and self.netinfo is not None else ""
+            tun = (
+                self.netinfo.tun_of(proc["pid"])
+                if family == socket.AF_PACKET and self.netinfo is not None
+                else ""
+            )
             key = (
                 (proc["exe"], proc["name"], cmdline),
                 (proc["pexe"], proc["pname"], pcmdline),
@@ -191,7 +225,11 @@ class WriteWindow:
             )
             counters = self.connections.get(key)
             if counters is None:
-                self.connections[key] = [proc["send"], proc["recv"], proc.get("pkts", 1)]
+                self.connections[key] = [
+                    proc["send"],
+                    proc["recv"],
+                    proc.get("pkts", 1),
+                ]
                 if self.netinfo is not None:
                     self.netinfo.note(netns, proc["pid"])
                 # asked for now, so the answer has the rest of the window to arrive
@@ -207,12 +245,21 @@ class WriteWindow:
         for flow in flows:
             src, dst = (flow.src, flow.dst) if log.addresses else ("", "")
             sport, dport = (flow.sport, flow.dport) if log.ports else (0, 0)
-            if sport in log.ignore_ports or dport in log.ignore_ports or self.ignored(src, dst):
+            if (
+                sport in log.ignore_ports
+                or dport in log.ignore_ports
+                or self.ignored(src, dst)
+            ):
                 continue
             key = (flow.netns, flow.protocol, src, sport, dst, dport)
             counters = self.flows.get(key)
             if counters is None:
-                self.flows[key] = [flow.orig_bytes, flow.reply_bytes, flow.orig_packets, flow.reply_packets]
+                self.flows[key] = [
+                    flow.orig_bytes,
+                    flow.reply_bytes,
+                    flow.orig_packets,
+                    flow.reply_packets,
+                ]
                 if dst and self.reverse_dns is not None:
                     self.reverse_dns.lookup(dst)
             else:
@@ -222,10 +269,17 @@ class WriteWindow:
                 counters[3] += flow.reply_packets
 
     def domain_of(self, address: str) -> str:
-        return self.reverse_dns.lookup(address) if address and self.reverse_dns is not None else ""
+        return (
+            self.reverse_dns.lookup(address)
+            if address and self.reverse_dns is not None
+            else ""
+        )
 
     def is_ignored_domain(self, domain: str) -> bool:
-        return any(domain.startswith(domain_prefix) for domain_prefix in self.config.log.ignore_domains)
+        return any(
+            domain.startswith(domain_prefix)
+            for domain_prefix in self.config.log.ignore_domains
+        )
 
     def take_rows(self) -> tuple[list[tuple], list[tuple]]:
         """the window as connection and forwarded rows for the database, with domains from
@@ -236,7 +290,14 @@ class WriteWindow:
             *identity, laddr, raddr, domain, netns, tun = key
             if not domain:
                 domain = self.domain_of(raddr)
-            key = (*identity, laddr, raddr, domain, netns, self.interface(netns, laddr, tun))
+            key = (
+                *identity,
+                laddr,
+                raddr,
+                domain,
+                netns,
+                self.interface(netns, laddr, tun),
+            )
             if self.is_ignored_domain(domain):
                 continue
             # a connection with and without the domain the program looked up are one row now
@@ -251,19 +312,43 @@ class WriteWindow:
         for (netns, protocol, src, sport, dst, dport), counters in self.flows.items():
             domain = self.domain_of(dst)
             if not self.is_ignored_domain(domain):
-                flow_rows.append((contime, netns, protocol, src, sport, dst, dport, domain, *counters))
+                flow_rows.append(
+                    (
+                        contime,
+                        netns,
+                        protocol,
+                        src,
+                        sport,
+                        dst,
+                        dport,
+                        domain,
+                        *counters,
+                    )
+                )
         self.connections = {}
         self.flows = {}
         self.cmdlines = {}
-        return [(contime, send, recv, n_events, *key) for key, (send, recv, n_events) in rows.items()], flow_rows
+        return [
+            (contime, send, recv, n_events, *key)
+            for key, (send, recv, n_events) in rows.items()
+        ], flow_rows
 
 
-def _chunked_delete(con: sqlite3.Connection, table: str, column: str, cutoff: int, between_chunks: Callable[[], bool]) -> tuple[int, bool]:
+def _chunked_delete(
+    con: sqlite3.Connection,
+    table: str,
+    column: str,
+    cutoff: int,
+    between_chunks: Callable[[], bool],
+) -> tuple[int, bool]:
     """delete the rows of table older than cutoff; returns how many, and whether between_chunks stopped it"""
     deleted = 0
     while True:
         with con:
-            chunk = con.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {column} < ? LIMIT ?)", (cutoff, PURGE_CHUNK_ROWS)).rowcount
+            chunk = con.execute(
+                f"DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {column} < ? LIMIT ?)",
+                (cutoff, PURGE_CHUNK_ROWS),
+            ).rowcount
         deleted += chunk
         if chunk < PURGE_CHUNK_ROWS:
             return deleted, False
@@ -271,7 +356,12 @@ def _chunked_delete(con: sqlite3.Connection, table: str, column: str, cutoff: in
             return deleted, True
 
 
-def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Callable[[], bool], ephemeral: int | None = None) -> int:
+def roll_up(
+    con: sqlite3.Connection,
+    period_minutes: int,
+    between_periods: Callable[[], bool],
+    ephemeral: int | None = None,
+) -> int:
     """sum the raw rows of every period that has closed since the last one rolled up, per period;
     the watermark in meta marks where the next starts. returns the number of periods summed"""
     period = period_minutes * 60
@@ -284,7 +374,9 @@ def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Calla
     newest = con.execute(newest_sql).fetchone()[0]
     if newest is not None:
         closed = min(closed, newest // period * period)
-    row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
+    row = con.execute(
+        "SELECT value FROM meta WHERE key = 'rollup_watermark'"
+    ).fetchone()
     watermark = row[0] if row is not None else 0
     if watermark > now:
         # the clock went back past periods rolled up while it ran ahead: their rollups go, and
@@ -292,8 +384,12 @@ def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Calla
         with con:
             for table, column in ROLLUP_TABLES:
                 con.execute(f"DELETE FROM {table} WHERE {column} >= ?", (current,))
-            con.execute("UPDATE meta SET value = ? WHERE key = 'rollup_watermark'", (current,))
-        log_error(f"maintenance: the wall clock went back behind the rolled-up periods; rolling up again from {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(current))}")
+            con.execute(
+                "UPDATE meta SET value = ? WHERE key = 'rollup_watermark'", (current,)
+            )
+        log_error(
+            f"maintenance: the wall clock went back behind the rolled-up periods; rolling up again from {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(current))}"
+        )
         watermark = current
     periods = 0
     while watermark < closed:
@@ -313,9 +409,20 @@ def roll_up(con: sqlite3.Connection, period_minutes: int, between_periods: Calla
         with con:
             if start < end:
                 for statement in ROLLUPS:
-                    con.execute(statement, {"period": start // period * period, "ephemeral": ephemeral, "start": start, "end": end})
+                    con.execute(
+                        statement,
+                        {
+                            "period": start // period * period,
+                            "ephemeral": ephemeral,
+                            "start": start,
+                            "end": end,
+                        },
+                    )
                 periods += 1
-            con.execute("INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (end,))
+            con.execute(
+                "INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (end,),
+            )
         watermark = end
         if watermark < closed and between_periods():
             break
@@ -326,10 +433,14 @@ def retention_seconds(config: Config) -> tuple[int, int]:
     """the raw and the rollup retention in seconds, 0 for keeping forever; retention may be a
     fraction of a day, rounded up so a tiny one never becomes 0"""
     database = config.database
-    return math.ceil(database.raw_retention_days * 86400), math.ceil(database.rollup_retention_days * 86400)
+    return math.ceil(database.raw_retention_days * 86400), math.ceil(
+        database.rollup_retention_days * 86400
+    )
 
 
-def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]) -> tuple[int, int]:
+def purge_database(
+    con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]
+) -> tuple[int, int]:
     """roll up the closed periods, then delete the rows past their retention in chunks (raw rows
     only once rolled up). between_chunks runs after each committed chunk or period and ends the
     purge by returning True. returns the numbers of periods rolled up and rows deleted"""
@@ -340,16 +451,25 @@ def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Call
     raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
     if newest is not None and shortest > 0 and now - shortest > newest:
-        logging.error("tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted")
+        logging.error(
+            "tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted"
+        )
         return periods, 0
-    watermark_row = con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()
+    watermark_row = con.execute(
+        "SELECT value FROM meta WHERE key = 'rollup_watermark'"
+    ).fetchone()
     watermark = watermark_row[0] if watermark_row is not None else 0
     purges = []
     # retention 0 is the usual "keep forever"; raw rows go only once they are rolled up
     if raw_seconds > 0:
-        purges += [(table, column, min(now - raw_seconds, watermark)) for table, column in RAW_TABLES]
+        purges += [
+            (table, column, min(now - raw_seconds, watermark))
+            for table, column in RAW_TABLES
+        ]
     if rollup_seconds > 0:
-        purges += [(table, column, now - rollup_seconds) for table, column in ROLLUP_TABLES]
+        purges += [
+            (table, column, now - rollup_seconds) for table, column in ROLLUP_TABLES
+        ]
     deleted = 0
     for table, column, cutoff in purges:
         count, stopped = _chunked_delete(con, table, column, cutoff, between_chunks)
@@ -359,7 +479,9 @@ def purge_database(con: sqlite3.Connection, config: Config, between_chunks: Call
     return periods, deleted
 
 
-def delete_orphans(con: sqlite3.Connection, between_statements: Callable[[], bool]) -> int:
+def delete_orphans(
+    con: sqlite3.Connection, between_statements: Callable[[], bool]
+) -> int:
     """delete the lookup entries nothing refers to any more, one table per transaction.
     between_statements runs after each and ends the cleanup by returning True. returns the
     number of entries deleted"""
@@ -376,7 +498,11 @@ class ClockCheck:
     """how far the wall clock moved apart from the boot clock between two calls: a clock set by
     hand or stepped by NTP. the boot clock keeps counting through a suspend"""
 
-    def __init__(self, wall: Callable[[], float] = time.time, boot: Callable[[], float] = lambda: time.clock_gettime(time.CLOCK_BOOTTIME)) -> None:
+    def __init__(
+        self,
+        wall: Callable[[], float] = time.time,
+        boot: Callable[[], float] = lambda: time.clock_gettime(time.CLOCK_BOOTTIME),
+    ) -> None:
         self.wall = wall
         self.boot = boot
         self.last: tuple[float, float] | None = None
@@ -388,7 +514,9 @@ class ClockCheck:
         return 0.0 if last is None else (now[0] - last[0]) - (now[1] - last[1])
 
 
-def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threading.Event) -> None:
+def run_writer(
+    config: Config, batches: DropOldestQueue[BpfEvent], stop: threading.Event
+) -> None:
     """the writer thread: sums the reader's batches per write window, writes them to SQLite with
     the interface counters and forwarded flows of the window, and rolls up and purges past the
     retention windows; once stop is set it writes what is left and returns"""
@@ -399,16 +527,27 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
     units = Interned("units", ("unit",), ("",))
     interfaces = Interned("interfaces", ("netns", "name", "kind"), NO_INTERFACE)
     interned = (executables, domains, addresses, units, interfaces)
-    reverse_dns = ReverseDns() if config.log.addresses and config.log.reverse_dns else None
+    reverse_dns = (
+        ReverseDns() if config.log.addresses and config.log.reverse_dns else None
+    )
     netinfo = NetInfo(log_error) if config.database.enabled else None
-    forwarded = Trackers(log_error) if netinfo is not None and config.monitoring.conntrack else None
+    forwarded = (
+        Trackers(log_error)
+        if netinfo is not None and config.monitoring.conntrack
+        else None
+    )
 
     def collect_forwarded() -> list[Flow]:
         """the forwarded flows of every namespace the last refresh looked at; a namespace that
         cannot be read is reported and skipped, so the rest of the window is still written"""
         if forwarded is None or netinfo is None:
             return []
-        return forwarded.collect({inode: (netinfo.label(inode), path, netinfo.local_addresses(inode)) for inode, path in netinfo.paths.items()})
+        return forwarded.collect(
+            {
+                inode: (netinfo.label(inode), path, netinfo.local_addresses(inode))
+                for inode, path in netinfo.paths.items()
+            }
+        )
 
     if netinfo is not None:
         # the baseline the first window's interface counters and forwarded flows start from
@@ -430,7 +569,10 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
         if netinfo is not None:
             # first, so the window's rows find the namespaces and addresses as they are now
             contime = int(time.time())
-            iface_rows += [(contime, (netns, name, kind), rx, tx) for netns, name, kind, rx, tx in netinfo.refresh()]
+            iface_rows += [
+                (contime, (netns, name, kind), rx, tx)
+                for netns, name, kind, rx, tx in netinfo.refresh()
+            ]
             window.add_flows(collect_forwarded())
         rows, flows = window.take_rows()
         transaction += rows
@@ -443,7 +585,25 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
                 con = sqlite3.connect(file_path)
                 with con:
                     conn_rows = []
-                    for contime, send, recv, n_events, exe_key, pexe_key, unit, uid, family, protocol, lport, rport, laddr, raddr, domain, netns, iface in transaction:
+                    for (
+                        contime,
+                        send,
+                        recv,
+                        n_events,
+                        exe_key,
+                        pexe_key,
+                        unit,
+                        uid,
+                        family,
+                        protocol,
+                        lport,
+                        rport,
+                        laddr,
+                        raddr,
+                        domain,
+                        netns,
+                        iface,
+                    ) in transaction:
                         conn_rows.append(
                             (
                                 contime,
@@ -465,12 +625,31 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
                                 interfaces.id(con, iface),
                             )
                         )
-                    con.executemany("INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", conn_rows)
-                    con.executemany("INSERT INTO interface_traffic VALUES (?, ?, ?, ?)", [(contime, interfaces.id(con, iface), rx, tx) for contime, iface, rx, tx in iface_rows])
+                    con.executemany(
+                        "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        conn_rows,
+                    )
+                    con.executemany(
+                        "INSERT INTO interface_traffic VALUES (?, ?, ?, ?)",
+                        [
+                            (contime, interfaces.id(con, iface), rx, tx)
+                            for contime, iface, rx, tx in iface_rows
+                        ],
+                    )
                     con.executemany(
                         "INSERT INTO forwarded VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         [
-                            (contime, netns, protocol, addresses.id(con, (src,)), sport, addresses.id(con, (dst,)), dport, domains.id(con, (domain,)), *counters)
+                            (
+                                contime,
+                                netns,
+                                protocol,
+                                addresses.id(con, (src,)),
+                                sport,
+                                addresses.id(con, (dst,)),
+                                dport,
+                                domains.id(con, (domain,)),
+                                *counters,
+                            )
                             for contime, netns, protocol, src, sport, dst, dport, domain, *counters in flow_rows
                         ],
                     )
@@ -489,15 +668,32 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
                 table.rolled_back()
             if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
                 raise
-            log_error("SQLite execute %s%s on line %s, will retry %s entries" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?", len(transaction)))
+            log_error(
+                "SQLite execute %s%s on line %s, will retry %s entries"
+                % (
+                    type(e).__name__,
+                    str(e.args),
+                    e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                    len(transaction),
+                )
+            )
         if transaction_success or not config.database.enabled:
             transaction, iface_rows, flow_rows = [], [], []
             return
         # a persistent write outage would grow the buffers unbounded; keep the newest
-        dropped = [len(rows) - RETRY_BUFFER_MAX for rows in (transaction, iface_rows, flow_rows)]
+        dropped = [
+            len(rows) - RETRY_BUFFER_MAX
+            for rows in (transaction, iface_rows, flow_rows)
+        ]
         if any(count > 0 for count in dropped):
-            transaction, iface_rows, flow_rows = transaction[-RETRY_BUFFER_MAX:], iface_rows[-RETRY_BUFFER_MAX:], flow_rows[-RETRY_BUFFER_MAX:]
-            connections, interface_rows, forwarded_rows = (max(0, count) for count in dropped)
+            transaction, iface_rows, flow_rows = (
+                transaction[-RETRY_BUFFER_MAX:],
+                iface_rows[-RETRY_BUFFER_MAX:],
+                flow_rows[-RETRY_BUFFER_MAX:],
+            )
+            connections, interface_rows, forwarded_rows = (
+                max(0, count) for count in dropped
+            )
             log_error(
                 f"writer retry buffer full (persistent write outage), dropped the oldest {connections} connection, {interface_rows} interface and {forwarded_rows} forwarded row(s);"
                 f" retrying {len(transaction) + len(iface_rows) + len(flow_rows)}"
@@ -512,12 +708,20 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
     def write_if_due() -> None:
         nonlocal last_write
         # interface counters and forwarded flows are due every window, with or without connections
-        if time.monotonic() - last_write > config.database.write_limit_seconds or len(window) >= WINDOW_CONNECTIONS_MAX:
+        if (
+            time.monotonic() - last_write > config.database.write_limit_seconds
+            or len(window) >= WINDOW_CONNECTIONS_MAX
+        ):
             last_write = time.monotonic()
             write()
 
     clock = ClockCheck()
-    orphan_interval = min([ORPHAN_INTERVAL_SECONDS, *(seconds for seconds in retention_seconds(config) if seconds > 0)])
+    orphan_interval = min(
+        [
+            ORPHAN_INTERVAL_SECONDS,
+            *(seconds for seconds in retention_seconds(config) if seconds > 0),
+        ]
+    )
     # entries become orphans only when rows are deleted; the first cleanup follows the first purge
     next_orphans = time.monotonic()
     deleted_since_orphans = 0
@@ -538,7 +742,9 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
         jump = clock.jump()
         if abs(jump) > CLOCK_JUMP_SECONDS:
             # rows past their retention by a clock set wrong would be gone for good
-            log_error(f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it")
+            log_error(
+                f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it"
+            )
             return
         started = time.monotonic()
         orphans = None
@@ -546,7 +752,11 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
         try:
             periods, deleted = purge_database(con, config, between_chunks)
             deleted_since_orphans += deleted
-            if deleted_since_orphans and time.monotonic() >= next_orphans and not stop.is_set():
+            if (
+                deleted_since_orphans
+                and time.monotonic() >= next_orphans
+                and not stop.is_set()
+            ):
                 orphans = delete_orphans(con, between_orphan_deletes)
                 next_orphans = time.monotonic() + orphan_interval
                 deleted_since_orphans = 0
@@ -555,8 +765,12 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
             # orphan cleanup deletes ids the caches may hold
             clear_id_caches()
         if periods or deleted or orphans is not None:
-            cleanup = "" if orphans is None else f" and {orphans} unreferenced lookup entries"
-            logging.info(f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s")
+            cleanup = (
+                "" if orphans is None else f" and {orphans} unreferenced lookup entries"
+            )
+            logging.info(
+                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s"
+            )
 
     # the first pass runs at startup
     next_maintenance = time.monotonic()
@@ -572,15 +786,29 @@ def run_writer(config: Config, batches: DropOldestQueue[BpfEvent], stop: threadi
                     return
                 write_if_due()
                 if config.database.enabled and time.monotonic() >= next_maintenance:
-                    next_maintenance = time.monotonic() + config.database.maintenance_interval_minutes * 60
+                    next_maintenance = (
+                        time.monotonic()
+                        + config.database.maintenance_interval_minutes * 60
+                    )
                     maintain()
             except Exception as e:
-                if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
+                if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(
+                    e
+                ):
                     # the thread ends and the daemon exits, for the service manager to start it on a new db
-                    logging.error(f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart")
+                    logging.error(
+                        f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart"
+                    )
                     quarantine_database(file_path)
                     raise
-                log_error("writer %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                log_error(
+                    "writer %s%s on line %s"
+                    % (
+                        type(e).__name__,
+                        str(e.args),
+                        e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                    )
+                )
     finally:
         if reverse_dns is not None:
             reverse_dns.close()

@@ -57,7 +57,9 @@ class LivePane(Vertical):
         self._lock = threading.Lock()
         self._incoming: collections.deque[dict] = collections.deque(maxlen=INCOMING_MAX)
         # newest first
-        self.recent: collections.deque[dict] = collections.deque(maxlen=config.get(LIVE_EVENTS))
+        self.recent: collections.deque[dict] = collections.deque(
+            maxlen=config.get(LIVE_EVENTS)
+        )
         # (name, exe) -> [sent, received, events, unit, last seen]
         self.totals: dict[tuple[str, str], list] = {}
         # executables dropped from totals for the limit, since the tab started or was reset
@@ -90,7 +92,12 @@ class LivePane(Vertical):
             ("sent", Text("sent", justify="right"), lambda entry: entry[1][0]),
             ("received", Text("received", justify="right"), lambda entry: entry[1][1]),
         ):
-            totals.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_totals, by_value))
+            totals.add_column(
+                label,
+                key=key,
+                sortable=True,
+                sort_key=self._by_value(self._shown_totals, by_value),
+            )
         totals.sort_by("exe")
         recent = self.query_one("#recent", DataTable)
         for key, label, by_value in (
@@ -98,12 +105,29 @@ class LivePane(Vertical):
             ("name", "name", None),
             ("parent", "parent", None),
             ("unit", "unit", None),
-            ("lport", Text("lport", justify="right"), lambda event: _int(event.get("lport"))),
+            (
+                "lport",
+                Text("lport", justify="right"),
+                lambda event: _int(event.get("lport")),
+            ),
             ("remote", "remote", None),
-            ("sent", Text("sent", justify="right"), lambda event: _int(event.get("send"))),
-            ("received", Text("received", justify="right"), lambda event: _int(event.get("recv"))),
+            (
+                "sent",
+                Text("sent", justify="right"),
+                lambda event: _int(event.get("send")),
+            ),
+            (
+                "received",
+                Text("received", justify="right"),
+                lambda event: _int(event.get("recv")),
+            ),
         ):
-            recent.add_column(label, key=key, sortable=True, sort_key=self._by_value(self._shown_recent, by_value))
+            recent.add_column(
+                label,
+                key=key,
+                sortable=True,
+                sort_key=self._by_value(self._shown_recent, by_value),
+            )
         recent.sort_by("time", reverse=True)
         self.subscribe()
         self.set_interval(REDRAW_SECONDS, self.redraw)
@@ -169,13 +193,17 @@ class LivePane(Vertical):
         executables = config.get(LIVE_EXECUTABLES)
         if len(self.totals) > executables:
             # the executables idle the longest make room
-            ranked = sorted(self.totals.items(), key=lambda item: item[1][4], reverse=True)
+            ranked = sorted(
+                self.totals.items(), key=lambda item: item[1][4], reverse=True
+            )
             self.dropped += len(ranked) - executables
             self.totals = dict(ranked[:executables])
             self._dirty = True
         events = config.get(LIVE_EVENTS)
         if self.recent.maxlen != events:
-            self.recent = collections.deque(itertools.islice(self.recent, events), maxlen=events)
+            self.recent = collections.deque(
+                itertools.islice(self.recent, events), maxlen=events
+            )
             self._dirty = True
 
     def matches(self, *fields: object) -> bool:
@@ -198,14 +226,32 @@ class LivePane(Vertical):
             if self.matches(name, exe, unit):
                 row_key = f"{name}\0{exe}"
                 self._shown_totals[row_key] = ((name, exe), entry)
-                rows.append((row_key, (Text(clean(exe)), Text(clean(name)), Text(clean(unit)), Text(str(count), justify="right"), bytes_cell(sent), bytes_cell(received))))
+                rows.append(
+                    (
+                        row_key,
+                        (
+                            Text(clean(exe)),
+                            Text(clean(name)),
+                            Text(clean(unit)),
+                            Text(str(count), justify="right"),
+                            bytes_cell(sent),
+                            bytes_cell(received),
+                        ),
+                    )
+                )
         # the cursor stays on its executable as the rows move with the sort
         _replace_rows(self.query_one("#totals", DataTable), rows, follow=True)
         if recent:
             self._shown_recent.clear()
             rows = []
             for event in self.recent:
-                if not self.matches(event.get("name"), event.get("exe"), event.get("unit"), event.get("domain"), event.get("raddr")):
+                if not self.matches(
+                    event.get("name"),
+                    event.get("exe"),
+                    event.get("unit"),
+                    event.get("domain"),
+                    event.get("raddr"),
+                ):
                     continue
                 row_key = str(event["_seq"])
                 self._shown_recent[row_key] = event
@@ -218,7 +264,12 @@ class LivePane(Vertical):
                             Text(clean(event.get("name") or "")),
                             Text(clean(event.get("pname") or "")),
                             Text(clean(event.get("unit") or "")),
-                            Text(str(lport) if isinstance(lport, int) and lport > 0 else "", justify="right"),
+                            Text(
+                                str(lport)
+                                if isinstance(lport, int) and lport > 0
+                                else "",
+                                justify="right",
+                            ),
                             Text(clean(remote(event))),
                             bytes_cell(event.get("send", 0)),
                             bytes_cell(event.get("recv", 0)),
@@ -237,11 +288,17 @@ class LivePane(Vertical):
         kept = bool(self.find) and not self.query_one(".find", Input).has_class("shown")
         if kept:
             notes.append(f"find: {self.find}")
-        self.query_one(Banner).say(notes, "press c to clear" if kept else "", error=self.state != "connected")
+        self.query_one(Banner).say(
+            notes, "press c to clear" if kept else "", error=self.state != "connected"
+        )
         summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
-        self.query_one("#totals", DataTable).border_title = f"{summary} · {int(time.time() - self.since)} s"
+        self.query_one(
+            "#totals", DataTable
+        ).border_title = f"{summary} · {int(time.time() - self.since)} s"
         recent = self.query_one("#recent", DataTable)
-        recent.border_title = f"last {config.get(LIVE_EVENTS)} events · {self.events} total"
+        recent.border_title = (
+            f"last {config.get(LIVE_EVENTS)} events · {self.events} total"
+        )
         recent.border_subtitle = "table is frozen" if self.paused else ""
 
     def action_pause(self) -> None:
@@ -269,7 +326,9 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) else 0
 
 
-def _replace_rows(table: DataTable, rows: list[tuple[str, tuple]], follow: bool) -> None:
+def _replace_rows(
+    table: DataTable, rows: list[tuple[str, tuple]], follow: bool
+) -> None:
     """new rows, in the table's sort order at once rather than on the next idle; the cursor
     follows its row by key, or keeps its place"""
     cursor = table.cursor_row

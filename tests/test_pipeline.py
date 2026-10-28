@@ -105,7 +105,10 @@ def test_window_fills_domains_at_write():
     assert dns.asked == ["93.184.215.14", "192.0.2.1"]
     dns.names = {"93.184.215.14": "com.example", "192.0.2.1": "org.ignored.www"}
     rows, _ = window.take_rows()
-    assert [(send, recv, n_events, domain) for _, send, recv, n_events, *_, domain, _, _ in rows] == [(201, 4001, 9, "com.example")]
+    assert [
+        (send, recv, n_events, domain)
+        for _, send, recv, n_events, *_, domain, _, _ in rows
+    ] == [(201, 4001, 9, "com.example")]
 
 
 class _FakeNetInfo:
@@ -131,14 +134,51 @@ def test_window_interfaces_and_flows():
     netinfo = _FakeNetInfo()
     dns = _FakeDns()
     dns.names = {"198.51.100.7": "org.example.cdn"}
-    window = writer.WriteWindow(Config(), typing.cast(ReverseDns, dns), typing.cast(NetInfo, netinfo))
-    window.add([_event(), _event(laddr="10.9.9.9", lport=50001), _event(pid=77, family=17, protocol=0, laddr="", raddr="", lport=0, rport=0, domain="")])
-    flow = Flow(4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40)
+    window = writer.WriteWindow(
+        Config(), typing.cast(ReverseDns, dns), typing.cast(NetInfo, netinfo)
+    )
+    window.add(
+        [
+            _event(),
+            _event(laddr="10.9.9.9", lport=50001),
+            _event(
+                pid=77,
+                family=17,
+                protocol=0,
+                laddr="",
+                raddr="",
+                lport=0,
+                rport=0,
+                domain="",
+            ),
+        ]
+    )
+    flow = Flow(
+        4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40
+    )
     window.add_flows([flow, flow])
     rows, flows = window.take_rows()
-    assert sorted(row[-1] for row in rows) == [(0, "", ""), (4026531840, "eth0", ""), (4026531840, "tailscale0", "tun")]
+    assert sorted(row[-1] for row in rows) == [
+        (0, "", ""),
+        (4026531840, "eth0", ""),
+        (4026531840, "tailscale0", "tun"),
+    ]
     assert netinfo.noted == [(4026531840, 4242)] * 2 + [(4026531840, 77)]
-    assert [flow_row[1:] for flow_row in flows] == [(4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, "org.example.cdn", 2000, 100000, 20, 80)]
+    assert [flow_row[1:] for flow_row in flows] == [
+        (
+            4026531840,
+            6,
+            "100.64.0.2",
+            40000,
+            "198.51.100.7",
+            443,
+            "org.example.cdn",
+            2000,
+            100000,
+            20,
+            80,
+        )
+    ]
 
 
 def _init_database(tmp_path, monkeypatch):
@@ -163,9 +203,14 @@ def test_writer_writes_what_is_left_on_stop(tmp_path, monkeypatch):
     thread.join(timeout=10)
     assert not thread.is_alive()
     con = sqlite3.connect(db)
-    rows = con.execute("SELECT c.rport, c.send, c.recv, e.exe, d.domain FROM connections c JOIN executables e ON c.exe_id = e.id JOIN domains d ON c.domain_id = d.id ORDER BY c.rport").fetchall()
+    rows = con.execute(
+        "SELECT c.rport, c.send, c.recv, e.exe, d.domain FROM connections c JOIN executables e ON c.exe_id = e.id JOIN domains d ON c.domain_id = d.id ORDER BY c.rport"
+    ).fetchall()
     con.close()
-    assert rows == [(80, 100, 2000, "/usr/bin/curl", "org.example"), (443, 100, 2000, "/usr/bin/curl", "com.example")]
+    assert rows == [
+        (80, 100, 2000, "/usr/bin/curl", "org.example"),
+        (443, 100, 2000, "/usr/bin/curl", "com.example"),
+    ]
 
 
 def test_writer_writes_full_window_early(tmp_path, monkeypatch):
@@ -207,8 +252,13 @@ def test_writer_quarantines_unusable_db(tmp_path, monkeypatch):
     db = _init_database(tmp_path, monkeypatch)
     db.write_bytes(b"this is not a sqlite database" * 64)
     failures: list[type] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: failures.append(args.exc_type))
-    thread = threading.Thread(target=writer.run_writer, args=(Config(), DropOldestQueue(1000), threading.Event()))
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: failures.append(args.exc_type)
+    )
+    thread = threading.Thread(
+        target=writer.run_writer,
+        args=(Config(), DropOldestQueue(1000), threading.Event()),
+    )
     thread.start()
     thread.join(timeout=10)
     assert not thread.is_alive()

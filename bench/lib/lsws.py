@@ -86,7 +86,9 @@ class LittleSnitchStream:
             for r in u.get("rows") or []:
                 rid = r.get("id")
                 st = r.get("statistics") or {}
-                e = self.rows.setdefault(rid, {"title": None, "indent": 0, "sent": 0, "recv": 0})
+                e = self.rows.setdefault(
+                    rid, {"title": None, "indent": 0, "sent": 0, "recv": 0}
+                )
                 if r.get("title") is not None:
                     e["title"] = r.get("title")
                 e["indent"] = r.get("indentationLevel", e["indent"])
@@ -96,7 +98,9 @@ class LittleSnitchStream:
             for sblock in u.get("statistics") or []:
                 rid = sblock.get("id")
                 st = sblock.get("statistics") or {}
-                e = self.rows.setdefault(rid, {"title": None, "indent": 0, "sent": 0, "recv": 0})
+                e = self.rows.setdefault(
+                    rid, {"title": None, "indent": 0, "sent": 0, "recv": 0}
+                )
                 # the `statistics` block is the cumulative, byte-exact total (the
                 # `trafficEvents` are only approximate increments) -> SET, never ADD.
                 e["sent"] = st.get("bytesSent", e["sent"])
@@ -152,6 +156,13 @@ class LittleSnitchStream:
                 t = e.get("title") or ""
                 if name_substr in t:
                     # prefer the top-level (indent 0) row = the app total
-                    if best is None or e["indent"] < best["indent"] or (e["indent"] == best["indent"] and e["sent"] + e["recv"] > best["sent"] + best["recv"]):
+                    if (
+                        best is None
+                        or e["indent"] < best["indent"]
+                        or (
+                            e["indent"] == best["indent"]
+                            and e["sent"] + e["recv"] > best["sent"] + best["recv"]
+                        )
+                    ):
                         best = e
             return (best["sent"], best["recv"]) if best else None

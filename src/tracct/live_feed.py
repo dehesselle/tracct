@@ -82,12 +82,18 @@ class LiveFeedPublisher:
                     gid = grp.getgrnam(self._group).gr_gid
                     os.chown(EVENTS_SOCKET_PATH, -1, gid)
                 except (KeyError, PermissionError) as e:
-                    logging.warning(f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}")
+                    logging.warning(
+                        f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}"
+                    )
             self._sock.listen(8)
             self._wake_r, self._wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
-            self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+            self._accept_thread = threading.Thread(
+                target=self._accept_loop, daemon=True
+            )
             self._accept_thread.start()
-            self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop, daemon=True
+            )
             self._writer_thread.start()
         except Exception:
             self._sock = None
@@ -115,11 +121,15 @@ class LiveFeedPublisher:
     def publish(self, event: dict) -> None:
         self.publish_many([event])
 
-    def publish_many(self, events: collections.abc.Sequence[collections.abc.Mapping[str, object]]) -> None:
+    def publish_many(
+        self, events: collections.abc.Sequence[collections.abc.Mapping[str, object]]
+    ) -> None:
         """Serialize events once and queue them for every subscriber; the writer thread sends them."""
         if not events or self._sock is None or not self._subscribers:
             return
-        payload = "".join(json.dumps(event, default=str) + "\n" for event in events).encode("utf-8", "replace")
+        payload = "".join(
+            json.dumps(event, default=str) + "\n" for event in events
+        ).encode("utf-8", "replace")
         with self._lock:
             overflowed = []
             for sub in self._subscribers:

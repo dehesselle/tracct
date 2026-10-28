@@ -112,7 +112,9 @@ class ToolAdapter:
         for _ in range(self.DEADLINE_HITS):
             s, r, us, ur, nm = sample()
             total_s, total_r = s + us, r + ur
-            total = (total_s if "egress" in directions else 0) + (total_r if "ingress" in directions else 0)
+            total = (total_s if "egress" in directions else 0) + (
+                total_r if "ingress" in directions else 0
+            )
             if total >= best_total:
                 best = (s, r, us, ur, total_s, total_r, nm)
                 best_total = total
@@ -122,7 +124,10 @@ class ToolAdapter:
                 zero += 1
                 if zero >= self.ZERO_HITS:
                     break
-            cur = (round(total_s) if "egress" in directions else 0, round(total_r) if "ingress" in directions else 0)
+            cur = (
+                round(total_s) if "egress" in directions else 0,
+                round(total_r) if "ingress" in directions else 0,
+            )
             if cur == prev and total > 0:
                 stable += 1
                 if stable >= self.STABLE_HITS:
@@ -190,12 +195,19 @@ class Tracct(ToolAdapter):
             r = sh(f"uv venv {self.PREFIX}", timeout=600)
             if r.returncode != 0:
                 raise RuntimeError(f"tracct venv failed: {r.stderr}\n{r.stdout}")
-        r = sh(f"VIRTUAL_ENV={self.PREFIX} uv pip install --reinstall-package tracct {self.SRC}", timeout=900)
+        r = sh(
+            f"VIRTUAL_ENV={self.PREFIX} uv pip install --reinstall-package tracct {self.SRC}",
+            timeout=900,
+        )
         if r.returncode != 0:
             raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
-        sh(f"install -m 644 {self.SRC}/systemd/tracct.service /etc/systemd/system/tracct.service")
+        sh(
+            f"install -m 644 {self.SRC}/systemd/tracct.service /etc/systemd/system/tracct.service"
+        )
         # -D: a stock install has no /etc/sysusers.d, and without the viewer group the unit cannot start
-        sh(f"install -D -m 644 {self.SRC}/systemd/tracct.sysusers /etc/sysusers.d/tracct.conf")
+        sh(
+            f"install -D -m 644 {self.SRC}/systemd/tracct.sysusers /etc/sysusers.d/tracct.conf"
+        )
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")
 
@@ -207,11 +219,16 @@ class Tracct(ToolAdapter):
     def start(self):
         # Fresh DB each run so this run's rows are unambiguous (names repeat across runs).
         sh("systemctl stop tracct")
-        sh("rm -f /var/lib/private/tracct/tracct.db /var/lib/private/tracct/tracct.db-wal /var/lib/private/tracct/tracct.db-shm")
+        sh(
+            "rm -f /var/lib/private/tracct/tracct.db /var/lib/private/tracct/tracct.db-wal /var/lib/private/tracct/tracct.db-shm"
+        )
         sh("systemctl restart tracct")
         # wait for the daemon + DB to come up
         for _ in range(40):
-            if Path(self.DB).exists() and sh("systemctl is-active --quiet tracct").returncode == 0:
+            if (
+                Path(self.DB).exists()
+                and sh("systemctl is-active --quiet tracct").returncode == 0
+            ):
                 break
             time.sleep(0.5)
         time.sleep(3)
@@ -219,7 +236,9 @@ class Tracct(ToolAdapter):
     def _maxrowid(self):
         try:
             con = sqlite3.connect(f"file:{self.DB}?mode=ro", uri=True, timeout=5)
-            r = con.execute("SELECT COALESCE(MAX(rowid),0) FROM connections").fetchone()[0]
+            r = con.execute(
+                "SELECT COALESCE(MAX(rowid),0) FROM connections"
+            ).fetchone()[0]
             con.close()
             return r
         except Exception:
@@ -279,7 +298,9 @@ class Tracct(ToolAdapter):
         DEADLINE_HITS = 90  # ~54s hard cap (headroom above the two ~15s windows)
         for _ in range(DEADLINE_HITS):
             try:
-                sent, recv, names, attributed, elsewhere = self._query(snap, gt.exe, gt.peer, gt.rport)
+                sent, recv, names, attributed, elsewhere = self._query(
+                    snap, gt.exe, gt.peer, gt.rport
+                )
             except Exception as e:
                 return Observation(invalid=True, note=f"database read failed: {e}")
             total = sent + recv
@@ -292,7 +313,9 @@ class Tracct(ToolAdapter):
             cur = (sent, recv)
             if cur == prev and total > 0:
                 stable += 1
-                if stable >= STABLE_HITS:  # flush settled below target -> genuine undercount
+                if (
+                    stable >= STABLE_HITS
+                ):  # flush settled below target -> genuine undercount
                     break
             else:
                 stable = 0
@@ -304,7 +327,9 @@ class Tracct(ToolAdapter):
             names=names,
             sent=sent,
             recv=recv,
-            note="" if attributed else ("recorded under another executable" if elsewhere else ""),
+            note=""
+            if attributed
+            else ("recorded under another executable" if elsewhere else ""),
         )
 
     def pids(self):
@@ -361,16 +386,38 @@ class Nethogs(ToolAdapter):
             sh(f"git clone https://github.com/raboof/nethogs {src}", timeout=300)
         sh(f"git -C {src} fetch --tags", timeout=300)
         sh(f"git -C {src} checkout v{self.VERSION}")
-        r = sh(f"make -C {src} clean; make -C {src} && make -C {src} install", timeout=600)
-        if f"version {self.VERSION}" not in sh("/usr/local/sbin/nethogs -V 2>&1").stdout:
-            raise RuntimeError(f"nethogs {self.VERSION} build failed: {r.stderr[-800:]}")
+        r = sh(
+            f"make -C {src} clean; make -C {src} && make -C {src} install", timeout=600
+        )
+        if (
+            f"version {self.VERSION}"
+            not in sh("/usr/local/sbin/nethogs -V 2>&1").stdout
+        ):
+            raise RuntimeError(
+                f"nethogs {self.VERSION} build failed: {r.stderr[-800:]}"
+            )
 
     def start(self):
         # -t trace, -C include UDP, -v2 cumulative bytes, -a include loopback,
         # -d1 refresh 1s. Continuous; parse the growing log. No shell, so self.proc
         # IS nethogs (killing it directly, not orphaning it behind a shell).
         self.log = self.sess / "nethogs.log"
-        self.proc = subprocess.Popen(["/usr/local/sbin/nethogs", "-t", "-C", "-v", "2", "-a", "-d", "1", "vbench0", "lo"], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            [
+                "/usr/local/sbin/nethogs",
+                "-t",
+                "-C",
+                "-v",
+                "2",
+                "-a",
+                "-d",
+                "1",
+                "vbench0",
+                "lo",
+            ],
+            stdout=open(self.log, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(3)
 
     def stop(self):
@@ -446,7 +493,9 @@ class Nethogs(ToolAdapter):
         directions = set(gt.test_dirs or ("egress", "ingress"))
         for block in self._blocks()[0][self._block0 :]:
             cur = self.delta_from(block, self._snap, gt.exe)
-            total = (cur[0] + cur[2] if "egress" in directions else 0) + (cur[1] + cur[3] if "ingress" in directions else 0)
+            total = (cur[0] + cur[2] if "egress" in directions else 0) + (
+                cur[1] + cur[3] if "ingress" in directions else 0
+            )
             if total >= best_total:
                 best, best_total = cur, total
         return best
@@ -455,15 +504,28 @@ class Nethogs(ToolAdapter):
         # nethogs' -v2 totals are monotonic-cumulative; use the shared target/plateau
         # poll so it gets the same collection budget as the other cumulative tools.
         ref = sum(layer_ref(gt, self.layer, d) for d in (gt.test_dirs or []))
-        a_s, a_r, u_s, u_r, total_s, total_r, names = self._poll_cumulative(lambda: self._delta(gt), 0.97 * ref, gt.test_dirs)
+        a_s, a_r, u_s, u_r, total_s, total_r, names = self._poll_cumulative(
+            lambda: self._delta(gt), 0.97 * ref, gt.test_dirs
+        )
         u_s, u_r, total_s, total_r = _drop_noise(u_s, u_r, total_s, total_r, ref)
         attributed = bool(a_s or a_r)
         unknown = bool(u_s or u_r)
         detected = attributed or unknown
-        note = f"named {int(a_s)}/{int(a_r)}, unknown {int(u_s)}/{int(u_r)}" if unknown else ""
+        note = (
+            f"named {int(a_s)}/{int(a_r)}, unknown {int(u_s)}/{int(u_r)}"
+            if unknown
+            else ""
+        )
         if not attributed and unknown:
             names = ["unknown"]
-        return Observation(flow_detected=detected, proc_attributed=attributed, names=names, sent=int(total_s), recv=int(total_r), note=note)
+        return Observation(
+            flow_detected=detected,
+            proc_attributed=attributed,
+            names=names,
+            sent=int(total_s),
+            recv=int(total_r),
+            note=note,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -485,12 +547,28 @@ class Bandwhich(ToolAdapter):
         sh(f"tar xzf {tgz} -C {DL}")
         sh(f"install -m0755 {DL}/bandwhich /usr/local/bin/bandwhich")
         if self.version() != self.VERSION:
-            raise RuntimeError(f"bandwhich {self.VERSION} install failed, found {self.version() or 'nothing'}")
+            raise RuntimeError(
+                f"bandwhich {self.VERSION} install failed, found {self.version() or 'nothing'}"
+            )
 
     def start(self):
         self.log = self.sess / "bandwhich.log"
-        self._pos, self._done, self._cur = 0, [], None  # incremental parse state, see _blocks()
-        self.proc = subprocess.Popen(["/usr/local/bin/bandwhich", "--raw", "--total-utilization", "--no-resolve", "--show-dns"], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        self._pos, self._done, self._cur = (
+            0,
+            [],
+            None,
+        )  # incremental parse state, see _blocks()
+        self.proc = subprocess.Popen(
+            [
+                "/usr/local/bin/bandwhich",
+                "--raw",
+                "--total-utilization",
+                "--no-resolve",
+                "--show-dns",
+            ],
+            stdout=open(self.log, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(3)
 
     def stop(self):
@@ -542,7 +620,9 @@ class Bandwhich(ToolAdapter):
             return [], {}
         end = new.rfind(b"\n") + 1  # a line still being written is read next time
         self._pos += end
-        self._cur = self.parse_lines(new[:end].decode(errors="replace").splitlines(), self._done, self._cur)
+        self._cur = self.parse_lines(
+            new[:end].decode(errors="replace").splitlines(), self._done, self._cur
+        )
         return self._done, (self._cur or {})
 
     @staticmethod
@@ -575,7 +655,9 @@ class Bandwhich(ToolAdapter):
         directions = set(gt.test_dirs or ("egress", "ingress"))
         for block in self._blocks()[0][self._block0 :]:
             cur = self.delta_from(block, self._snap, gt.exe)
-            total = (cur[0] + cur[2] if "egress" in directions else 0) + (cur[1] + cur[3] if "ingress" in directions else 0)
+            total = (cur[0] + cur[2] if "egress" in directions else 0) + (
+                cur[1] + cur[3] if "ingress" in directions else 0
+            )
             if total >= best_total:
                 best, best_total = cur, total
         return best
@@ -585,15 +667,28 @@ class Bandwhich(ToolAdapter):
         # egress attribution to short-lived processes can lag well past a short
         # window; the shared target/plateau poll waits it out and takes the max.
         ref = sum(layer_ref(gt, self.layer, d) for d in (gt.test_dirs or []))
-        a_s, a_r, u_s, u_r, total_s, total_r, names = self._poll_cumulative(lambda: self._delta(gt), 0.97 * ref, gt.test_dirs)
+        a_s, a_r, u_s, u_r, total_s, total_r, names = self._poll_cumulative(
+            lambda: self._delta(gt), 0.97 * ref, gt.test_dirs
+        )
         u_s, u_r, total_s, total_r = _drop_noise(u_s, u_r, total_s, total_r, ref)
         attributed = bool(a_s or a_r)
         unknown = bool(u_s or u_r)
         detected = attributed or unknown
-        note = f"named {int(a_s)}/{int(a_r)}, <UNKNOWN> {int(u_s)}/{int(u_r)}" if unknown else ""
+        note = (
+            f"named {int(a_s)}/{int(a_r)}, <UNKNOWN> {int(u_s)}/{int(u_r)}"
+            if unknown
+            else ""
+        )
         if not attributed and unknown:
             names = ["<UNKNOWN>"]
-        return Observation(flow_detected=detected, proc_attributed=attributed, names=names, sent=total_s, recv=total_r, note=note)
+        return Observation(
+            flow_detected=detected,
+            proc_attributed=attributed,
+            names=names,
+            sent=total_s,
+            recv=total_r,
+            note=note,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -619,27 +714,49 @@ class OpenSnitch(ToolAdapter):
         cfg = json.loads(Path("/etc/opensnitchd/default-config.json").read_text())
         cfg["DefaultAction"] = "allow"
         cfg.setdefault("Server", {})
-        cfg["Server"]["Loggers"] = [{"Name": "syslog", "Server": "", "Protocol": "", "Format": "json", "Tag": "opensnitch", "Workers": 1}]
+        cfg["Server"]["Loggers"] = [
+            {
+                "Name": "syslog",
+                "Server": "",
+                "Protocol": "",
+                "Format": "json",
+                "Tag": "opensnitch",
+                "Workers": 1,
+            }
+        ]
         # eBPF .o may not match kernel 7.0 — fall back to /proc scanning if so
         cfg["ProcMonitorMethod"] = "ebpf"
-        Path("/etc/opensnitchd/default-config.json").write_text(json.dumps(cfg, indent=2))
+        Path("/etc/opensnitchd/default-config.json").write_text(
+            json.dumps(cfg, indent=2)
+        )
 
     def start(self):
         sh("systemctl restart opensnitch")
         time.sleep(4)
         # if eBPF failed to load, retry with proc monitor so attribution still works
-        if sh("journalctl -u opensnitch --since '-15s' | grep -qi 'ebpf.*\\(fail\\|error\\|cannot\\)'").returncode == 0:
+        if (
+            sh(
+                "journalctl -u opensnitch --since '-15s' | grep -qi 'ebpf.*\\(fail\\|error\\|cannot\\)'"
+            ).returncode
+            == 0
+        ):
             cfg = json.loads(Path("/etc/opensnitchd/default-config.json").read_text())
             cfg["ProcMonitorMethod"] = "proc"
-            Path("/etc/opensnitchd/default-config.json").write_text(json.dumps(cfg, indent=2))
+            Path("/etc/opensnitchd/default-config.json").write_text(
+                json.dumps(cfg, indent=2)
+            )
             sh("systemctl restart opensnitch")
             time.sleep(4)
 
     def pre_trial(self):
         self._journal_error = ""
-        r = sh(["journalctl", "-t", "opensnitch", "-n", "0", "--show-cursor", "--no-pager"])
+        r = sh(
+            ["journalctl", "-t", "opensnitch", "-n", "0", "--show-cursor", "--no-pager"]
+        )
         if r.returncode != 0:
-            self._journal_error = f"journal cursor query failed: {(r.stderr or '').strip()}"
+            self._journal_error = (
+                f"journal cursor query failed: {(r.stderr or '').strip()}"
+            )
             self._cursor = ""
             return
         m = re.search(r"^-- cursor: (.+)$", r.stdout, re.MULTILINE)
@@ -679,7 +796,9 @@ class OpenSnitch(ToolAdapter):
         port = str(gt.rport) if gt.rport else ""
         if port and ("SPT" not in fields or "DPT" not in fields):
             raise ValueError("missing connection port fields")
-        return (fields["SRC"] == gt.peer and (not port or fields["SPT"] == port)) or (fields["DST"] == gt.peer and (not port or fields["DPT"] == port))
+        return (fields["SRC"] == gt.peer and (not port or fields["SPT"] == port)) or (
+            fields["DST"] == gt.peer and (not port or fields["DPT"] == port)
+        )
 
     def _invalid_journal(self, note):
         self._journal_error = note
@@ -697,9 +816,22 @@ class OpenSnitch(ToolAdapter):
         attributed, names, count, by_endpoint = False, [], 0, False
         deadline = time.time() + self.JOURNAL_WAIT
         while True:
-            r = sh(["journalctl", "-t", "opensnitch", "-o", "cat", "--after-cursor", self._cursor, "--no-pager"])
+            r = sh(
+                [
+                    "journalctl",
+                    "-t",
+                    "opensnitch",
+                    "-o",
+                    "cat",
+                    "--after-cursor",
+                    self._cursor,
+                    "--no-pager",
+                ]
+            )
             if r.returncode != 0:
-                return self._invalid_journal(f"journal query failed: {(r.stderr or '').strip()}")
+                return self._invalid_journal(
+                    f"journal query failed: {(r.stderr or '').strip()}"
+                )
             attributed, names, count, by_endpoint = False, [], 0, False
             for line in r.stdout.splitlines():
                 if "CONNECTION" not in line:
@@ -727,7 +859,14 @@ class OpenSnitch(ToolAdapter):
             names=names[:3],
             sent=None,
             recv=None,
-            note=f"{count} connection record(s) matched process" + ("" if attributed else "; endpoint seen under another process" if by_endpoint else ""),
+            note=f"{count} connection record(s) matched process"
+            + (
+                ""
+                if attributed
+                else "; endpoint seen under another process"
+                if by_endpoint
+                else ""
+            ),
         )
 
     def pids(self):
@@ -752,8 +891,13 @@ class Sniffnet(ToolAdapter):
     DEB = f"https://github.com/GyulyVGC/sniffnet/releases/download/v{VERSION}/Sniffnet_LinuxDEB_amd64.deb"
 
     def install(self):
-        if self.VERSION not in sh("dpkg-query -W -f '${Version}' sniffnet 2>/dev/null").stdout:
-            sh("apt-get install -y xvfb libpcap0.8 libasound2t64 libfontconfig1 libgtk-3-0t64 libxkbcommon-x11-0 tesseract-ocr imagemagick")
+        if (
+            self.VERSION
+            not in sh("dpkg-query -W -f '${Version}' sniffnet 2>/dev/null").stdout
+        ):
+            sh(
+                "apt-get install -y xvfb libpcap0.8 libasound2t64 libfontconfig1 libgtk-3-0t64 libxkbcommon-x11-0 tesseract-ocr imagemagick"
+            )
             deb = _download(self.DEB, DL / f"sniffnet-{self.VERSION}.deb")
             sh(f"apt-get install -y --allow-downgrades {deb}", timeout=600)
 
@@ -761,13 +905,22 @@ class Sniffnet(ToolAdapter):
         # sniffnet is a native GPU GUI with no export, so run it under Xvfb and
         # OCR its Overview "Program" panel for per-process attribution.
         sh("pkill -x Xvfb; rm -f /tmp/.X99-lock")
-        self.xvfb = subprocess.Popen(["Xvfb", self.DISPLAY, "-screen", "0", "1600x1000x24"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.xvfb = subprocess.Popen(
+            ["Xvfb", self.DISPLAY, "-screen", "0", "1600x1000x24"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         time.sleep(2)
         self._launch()
 
     def _launch(self):
         env = {**os.environ, "DISPLAY": self.DISPLAY, "ICED_BACKEND": "tiny-skia"}
-        self.proc = subprocess.Popen(["sniffnet", "--adapter", "vbench0"], env=env, stdout=open(self.sess / "sniffnet.log", "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            ["sniffnet", "--adapter", "vbench0"],
+            env=env,
+            stdout=open(self.sess / "sniffnet.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(6)
 
     def pre_trial(self):
@@ -779,9 +932,17 @@ class Sniffnet(ToolAdapter):
         time.sleep(1)
         # a dead or wedged Xvfb turns every later read invalid; relaunch it (the
         # fresh sniffnet instance follows) after a failed read or if it died
-        if getattr(self, "xvfb", None) is None or self.xvfb.poll() is not None or getattr(self, "_x_suspect", False):
+        if (
+            getattr(self, "xvfb", None) is None
+            or self.xvfb.poll() is not None
+            or getattr(self, "_x_suspect", False)
+        ):
             sh("pkill -x Xvfb; rm -f /tmp/.X99-lock")
-            self.xvfb = subprocess.Popen(["Xvfb", self.DISPLAY, "-screen", "0", "1600x1000x24"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.xvfb = subprocess.Popen(
+                ["Xvfb", self.DISPLAY, "-screen", "0", "1600x1000x24"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             time.sleep(2)
             self._x_suspect = False
         self._launch()
@@ -802,12 +963,35 @@ class Sniffnet(ToolAdapter):
         png.unlink(missing_ok=True)
         crop.unlink(missing_ok=True)
         try:
-            r = sh(["import", "-window", "root", str(png)], timeout=30, env={**os.environ, "DISPLAY": self.DISPLAY})
+            r = sh(
+                ["import", "-window", "root", str(png)],
+                timeout=30,
+                env={**os.environ, "DISPLAY": self.DISPLAY},
+            )
             if r.returncode != 0 or not png.exists():
-                raise RuntimeError(f"screenshot failed (rc={r.returncode}); X server unreachable?")
+                raise RuntimeError(
+                    f"screenshot failed (rc={r.returncode}); X server unreachable?"
+                )
             # the three panels share text lines in a full-window OCR
-            sh(["convert", str(png), "-crop", self.PROG_PANEL, "+repage", "-colorspace", "gray", "-resize", "300%", str(crop)], timeout=30)
-            r = sh(["tesseract", str(crop if crop.exists() else png), "-", "--psm", "6"], timeout=30)
+            sh(
+                [
+                    "convert",
+                    str(png),
+                    "-crop",
+                    self.PROG_PANEL,
+                    "+repage",
+                    "-colorspace",
+                    "gray",
+                    "-resize",
+                    "300%",
+                    str(crop),
+                ],
+                timeout=30,
+            )
+            r = sh(
+                ["tesseract", str(crop if crop.exists() else png), "-", "--psm", "6"],
+                timeout=30,
+            )
             return r.stdout
         except subprocess.TimeoutExpired:
             sh("pkill -x import 2>/dev/null")
@@ -836,7 +1020,11 @@ class Sniffnet(ToolAdapter):
 
         rows = self._ocr_rows(text)
         for label, nbytes in rows:
-            if label != "?" and (difflib.SequenceMatcher(None, label.lower(), gt.exe.lower()).ratio() > 0.62 or gt.exe.split(".")[0][3:] in label.lower()):
+            if label != "?" and (
+                difflib.SequenceMatcher(None, label.lower(), gt.exe.lower()).ratio()
+                > 0.62
+                or gt.exe.split(".")[0][3:] in label.lower()
+            ):
                 return nbytes, label
         return (None, "?") if any(lbl == "?" for lbl, _ in rows) else (None, "")
 
@@ -858,7 +1046,11 @@ class Sniffnet(ToolAdapter):
         dirs = gt.test_dirs or ["ingress"]
         single = len(dirs) == 1
         if ocr_bytes is not None:
-            note = "per-program total from the GUI" if single else "per-program total from the GUI; one combined figure, cannot split direction"
+            note = (
+                "per-program total from the GUI"
+                if single
+                else "per-program total from the GUI; one combined figure, cannot split direction"
+            )
             return Observation(
                 flow_detected=True,
                 proc_attributed=True,
@@ -879,7 +1071,14 @@ class Sniffnet(ToolAdapter):
                 recv=unattr if single and dirs[0] == "ingress" else None,
                 note="listed unattributed (?) by Sniffnet",
             )
-        return Observation(flow_detected=False, proc_attributed=False, names=[], sent=0, recv=0, note="no Program row")
+        return Observation(
+            flow_detected=False,
+            proc_attributed=False,
+            names=[],
+            sent=0,
+            recv=0,
+            note="no Program row",
+        )
 
     def stop(self):
         for p in (getattr(self, "proc", None), getattr(self, "xvfb", None)):
@@ -905,7 +1104,13 @@ class LittleSnitch(ToolAdapter):
     # systemd service to get a distinct app row. --pipe keeps stdout (the RESULT
     # line) flowing back to the harness.
     # RuntimeMaxSec bounds the detached generator if the harness kills the --pipe client
-    gen_prefix = ["systemd-run", "--pipe", "--quiet", "--collect", "--property=RuntimeMaxSec=120"]
+    gen_prefix = [
+        "systemd-run",
+        "--pipe",
+        "--quiet",
+        "--collect",
+        "--property=RuntimeMaxSec=120",
+    ]
 
     def _current_deb(self):
         """(url, version) of the amd64 .deb obdev publishes right now."""
@@ -913,7 +1118,9 @@ class LittleSnitch(ToolAdapter):
             page = resp.read().decode("utf-8", "replace")
         m = self._DEB_RE.search(page)
         if not m:
-            raise RuntimeError(f"no littlesnitch amd64 .deb linked on {self.DL_PAGE}; their download page changed")
+            raise RuntimeError(
+                f"no littlesnitch amd64 .deb linked on {self.DL_PAGE}; their download page changed"
+            )
         return urllib.parse.urljoin(self.DL_PAGE, m.group(1)), m.group(2)
 
     def install(self):
@@ -926,10 +1133,14 @@ class LittleSnitch(ToolAdapter):
         deb = _download(url, DL / f"littlesnitch-{ver}.deb")
         size = Path(deb).stat().st_size
         if size < 100000:
-            raise RuntimeError(f"littlesnitch .deb from {url} is {size} bytes; download failed or truncated")
+            raise RuntimeError(
+                f"littlesnitch .deb from {url} is {size} bytes; download failed or truncated"
+            )
         r = sh(f"apt-get install -y {deb}", timeout=600)
         if self._installed() != ver:
-            raise RuntimeError(f"littlesnitch {ver} install failed, found {self.version() or 'nothing'}: {(r.stdout + r.stderr)[-800:]}")
+            raise RuntimeError(
+                f"littlesnitch {ver} install failed, found {self.version() or 'nothing'}: {(r.stdout + r.stderr)[-800:]}"
+            )
 
     def _installed(self):
         """Installed version without any debian revision, to compare with upstream's."""
@@ -972,7 +1183,9 @@ class LittleSnitch(ToolAdapter):
             cur = stream.find(gt.exe)
             return (cur[0], cur[1], 0, 0, [gt.exe]) if cur else (0, 0, 0, 0, [])
 
-        a_s, a_r, _, _, _, _, names = self._poll_cumulative(sample, 0.97 * (gt.app_sent + gt.app_recv), gt.test_dirs)
+        a_s, a_r, _, _, _, _, names = self._poll_cumulative(
+            sample, 0.97 * (gt.app_sent + gt.app_recv), gt.test_dirs
+        )
         found = (a_s, a_r) if names else None
         if found is None:
             # no row for this generator: check whether another app's row grew by
@@ -983,9 +1196,29 @@ class LittleSnitch(ToolAdapter):
                 ps, pr = self._snap.get(title, (0, 0))
                 grew = max(grew, (s - ps) + (r - pr))
             if want and grew >= 0.5 * want:
-                return Observation(flow_detected=True, proc_attributed=False, names=["another app"], sent=0, recv=0, note="recorded under another application")
-            return Observation(flow_detected=False, proc_attributed=False, sent=0, recv=0, note="no matching app row")
-        return Observation(flow_detected=True, proc_attributed=True, names=[gt.exe], sent=found[0], recv=found[1], note="WebSocket per-app stats")
+                return Observation(
+                    flow_detected=True,
+                    proc_attributed=False,
+                    names=["another app"],
+                    sent=0,
+                    recv=0,
+                    note="recorded under another application",
+                )
+            return Observation(
+                flow_detected=False,
+                proc_attributed=False,
+                sent=0,
+                recv=0,
+                note="no matching app row",
+            )
+        return Observation(
+            flow_detected=True,
+            proc_attributed=True,
+            names=[gt.exe],
+            sent=found[0],
+            recv=found[1],
+            note="WebSocket per-app stats",
+        )
 
     def pids(self):
         return _systemd_mainpid("littlesnitch")
@@ -1010,10 +1243,16 @@ def _bcc_setup(version):
     directory python3 does not search."""
     r = sh("apt-get install -y linux-headers-$(uname -r)", timeout=900)
     if r.returncode != 0:
-        raise RuntimeError(f"kernel headers for the running kernel not installable: {r.stderr}")
-    eggs = sorted(Path("/usr/local/lib").glob(f"python3*/dist-packages/bcc-{version}-*.egg"))
+        raise RuntimeError(
+            f"kernel headers for the running kernel not installable: {r.stderr}"
+        )
+    eggs = sorted(
+        Path("/usr/local/lib").glob(f"python3*/dist-packages/bcc-{version}-*.egg")
+    )
     if not eggs:
-        raise RuntimeError(f"bcc {version} python bindings not found under /usr/local/lib")
+        raise RuntimeError(
+            f"bcc {version} python bindings not found under /usr/local/lib"
+        )
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"  # else tcplife's low-volume output stays buffered
     env["LD_LIBRARY_PATH"] = "/usr/local/lib"
@@ -1067,10 +1306,15 @@ class Bcc(ToolAdapter):
     UP_TOOLS = "/usr/local/share/bcc/tools"
 
     def install(self):
-        if self.version() != self.VERSION or not Path(f"{self.UP_TOOLS}/tcplife").exists():
+        if (
+            self.version() != self.VERSION
+            or not Path(f"{self.UP_TOOLS}/tcplife").exists()
+        ):
             _build_bcc()
             if self.version() != self.VERSION:
-                raise RuntimeError(f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}")
+                raise RuntimeError(
+                    f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}"
+                )
         self.env = _bcc_setup(self.VERSION)
         self.tcplife = f"{self.UP_TOOLS}/tcplife"
         self.tcpconnect = f"{self.UP_TOOLS}/tcpconnect"
@@ -1079,8 +1323,18 @@ class Bcc(ToolAdapter):
         self.life = self.sess / "tcplife.log"
         self.conn = self.sess / "tcpconnect.log"
         # tcplife -s = CSV: PID,COMM,...,TX_KB,RX_KB per closed TCP session
-        self.proc = subprocess.Popen(["python3", "-u", self.tcplife, "-s"], env=self.env, stdout=open(self.life, "w"), stderr=subprocess.STDOUT)
-        self.proc2 = subprocess.Popen(["python3", "-u", self.tcpconnect], env=self.env, stdout=open(self.conn, "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            ["python3", "-u", self.tcplife, "-s"],
+            env=self.env,
+            stdout=open(self.life, "w"),
+            stderr=subprocess.STDOUT,
+        )
+        self.proc2 = subprocess.Popen(
+            ["python3", "-u", self.tcpconnect],
+            env=self.env,
+            stdout=open(self.conn, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(8)
         # bcc JIT-compiles its programs against the running kernel's headers; on
         # very new kernels this can fail. Detect it so we score N/A (not FAIL).
@@ -1105,7 +1359,10 @@ class Bcc(ToolAdapter):
     def alive(self):
         # two probe processes: either one dying leaves the trial unmeasured (ERROR),
         # not a tool miss. The base class only knows about self.proc.
-        return all(p is None or p.poll() is None for p in (getattr(self, "proc", None), getattr(self, "proc2", None)))
+        return all(
+            p is None or p.poll() is None
+            for p in (getattr(self, "proc", None), getattr(self, "proc2", None))
+        )
 
     def collect(self, gt: GT) -> Observation:
         # the JIT compile can fail after start()'s check, so re-check here too.
@@ -1117,9 +1374,15 @@ class Bcc(ToolAdapter):
                 except FileNotFoundError:
                     pass
         if getattr(self, "broken", False):
-            return Observation(na=True, note="bcc programs fail to JIT-compile against the 7.0 kernel headers")
+            return Observation(
+                na=True,
+                note="bcc programs fail to JIT-compile against the 7.0 kernel headers",
+            )
         if _bcc_crashed(self.life, self.conn):
-            return Observation(invalid=True, note="tcplife/tcpconnect crashed (traceback in its log); nothing was measured")
+            return Observation(
+                invalid=True,
+                note="tcplife/tcpconnect crashed (traceback in its log); nothing was measured",
+            )
         # bcc tcplife/tcpconnect are TCP-only
         if gt.proto not in ("tcp",):
             return Observation(na=True, note="bcc tcplife/tcpconnect are TCP-only")
@@ -1136,14 +1399,18 @@ class Bcc(ToolAdapter):
         while True:
             attributed, names, sent, recv, seen = False, [], 0.0, 0.0, False
             try:
-                for ln in open(self.conn, errors="replace").read().splitlines()[self._conn0 :]:
+                for ln in (
+                    open(self.conn, errors="replace").read().splitlines()[self._conn0 :]
+                ):
                     if gt.exe in ln:
                         attributed = True
                         names.append(gt.exe)
             except FileNotFoundError:
                 pass
             try:
-                for ln in open(self.life, errors="replace").read().splitlines()[self._life0 :]:
+                for ln in (
+                    open(self.life, errors="replace").read().splitlines()[self._life0 :]
+                ):
                     if gt.exe not in ln:
                         continue
                     parts = ln.split(",")
@@ -1164,7 +1431,12 @@ class Bcc(ToolAdapter):
                 break
             time.sleep(0.8)
         return Observation(
-            flow_detected=attributed or seen, proc_attributed=attributed, names=names[:1], sent=int(sent) if seen else 0, recv=int(recv) if seen else 0, note="tcplife fires on session close"
+            flow_detected=attributed or seen,
+            proc_attributed=attributed,
+            names=names[:1],
+            sent=int(sent) if seen else 0,
+            recv=int(recv) if seen else 0,
+            note="tcplife fires on session close",
         )
 
     def stop(self):
@@ -1191,7 +1463,9 @@ class BccTcptop(ToolAdapter):
         if self.version() != self.VERSION or not Path(up).exists():
             _build_bcc()
             if self.version() != self.VERSION:
-                raise RuntimeError(f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}")
+                raise RuntimeError(
+                    f"bcc {self.VERSION} build failed, found {self.version() or 'nothing'}"
+                )
         self.env = _bcc_setup(self.VERSION)
         self.tcptop = up
 
@@ -1199,7 +1473,12 @@ class BccTcptop(ToolAdapter):
         self.log = self.sess / "tcptop.log"
         # -C: don't clear the screen; 1s interval. rows are per-interval throughput
         # "PID COMM(<=12) LADDR RADDR RX_KB TX_KB" -> sum the intervals per exe.
-        self.proc = subprocess.Popen(["python3", "-u", self.tcptop, "-C", "1"], env=self.env, stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            ["python3", "-u", self.tcptop, "-C", "1"],
+            env=self.env,
+            stdout=open(self.log, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(8)
         self.broken = self._broken()
 
@@ -1210,13 +1489,21 @@ class BccTcptop(ToolAdapter):
             return False
 
     def pre_trial(self):
-        self._n0 = sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        self._n0 = (
+            sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        )
 
     def collect(self, gt: GT) -> Observation:
         if self.broken or self._broken():
-            return Observation(na=True, note="bcc tcptop fails to JIT-compile against the 7.0 kernel headers")
+            return Observation(
+                na=True,
+                note="bcc tcptop fails to JIT-compile against the 7.0 kernel headers",
+            )
         if _bcc_crashed(self.log):
-            return Observation(invalid=True, note="tcptop crashed (traceback in its log); nothing was measured")
+            return Observation(
+                invalid=True,
+                note="tcptop crashed (traceback in its log); nothing was measured",
+            )
         if gt.proto != "tcp":
             return Observation(na=True, note="bcc tcptop is TCP-only")
         sent = recv = 0.0
@@ -1284,15 +1571,23 @@ class Bpftrace(ToolAdapter):
 
     def start(self):
         self.log = self.sess / "bpftrace.log"
-        self.proc = subprocess.Popen(["bpftrace", "-e", self.SCRIPT], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            ["bpftrace", "-e", self.SCRIPT],
+            stdout=open(self.log, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(8)
 
     def pre_trial(self):
-        self._n0 = sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        self._n0 = (
+            sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        )
 
     def collect(self, gt: GT) -> Observation:
         if gt.proto != "tcp":
-            return Observation(na=True, note="this bpftrace probe hooks tcp_* only (TCP)")
+            return Observation(
+                na=True, note="this bpftrace probe hooks tcp_* only (TCP)"
+            )
         sent = recv = 0.0
         attributed = False
         names = []
@@ -1368,27 +1663,39 @@ class Sysdig(ToolAdapter):
             raise RuntimeError(f"sysdig install failed: {r.stderr}\n{r.stdout}")
         r = sh("modprobe scap")
         if r.returncode != 0:
-            raise RuntimeError(f"scap module not available for the running kernel: {r.stderr}")
+            raise RuntimeError(
+                f"scap module not available for the running kernel: {r.stderr}"
+            )
 
     def start(self):
         self.log = self.sess / "sysdig.log"
-        self.proc = subprocess.Popen(["sysdig", "-p", self.FMT, self.FILTER], stdout=open(self.log, "w"), stderr=subprocess.STDOUT)
+        self.proc = subprocess.Popen(
+            ["sysdig", "-p", self.FMT, self.FILTER],
+            stdout=open(self.log, "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(8)
         self.broken = self._broken()
 
     def _broken(self):
         try:
             txt = open(self.log, errors="replace").read().lower()
-            return "error" in txt and ("probe" in txt or "scap" in txt or "driver" in txt)
+            return "error" in txt and (
+                "probe" in txt or "scap" in txt or "driver" in txt
+            )
         except FileNotFoundError:
             return False
 
     def pre_trial(self):
-        self._n0 = sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        self._n0 = (
+            sum(1 for _ in open(self.log, errors="replace")) if self.log.exists() else 0
+        )
 
     def collect(self, gt: GT) -> Observation:
         if self.broken or self._broken():
-            return Observation(na=True, note="Sysdig probe failed to load on this kernel")
+            return Observation(
+                na=True, note="Sysdig probe failed to load on this kernel"
+            )
         sent = recv = 0.0
         attributed = False
         names = []
@@ -1429,4 +1736,18 @@ class Sysdig(ToolAdapter):
         sh("pkill -f 'sysdig -p'")
 
 
-ADAPTERS = {c.name: c for c in [Tracct, Nethogs, Bandwhich, OpenSnitch, Sniffnet, LittleSnitch, Bcc, BccTcptop, Bpftrace, Sysdig]}
+ADAPTERS = {
+    c.name: c
+    for c in [
+        Tracct,
+        Nethogs,
+        Bandwhich,
+        OpenSnitch,
+        Sniffnet,
+        LittleSnitch,
+        Bcc,
+        BccTcptop,
+        Bpftrace,
+        Sysdig,
+    ]
+}

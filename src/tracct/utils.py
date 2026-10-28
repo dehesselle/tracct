@@ -38,7 +38,16 @@ def sqlite_error_means_corrupt(e: sqlite3.Error) -> bool:
     False for transient errors (locked by the live daemon, busy, disk I/O) where quarantining
     would destroy a healthy database. Shared by the cli boot check and the writer."""
     msg = str(e).lower()
-    return any(s in msg for s in ("malformed", "not a database", "no such table", "no such column", "encrypted"))
+    return any(
+        s in msg
+        for s in (
+            "malformed",
+            "not a database",
+            "no such table",
+            "no such column",
+            "encrypted",
+        )
+    )
 
 
 def quarantine_database(db_path: Path) -> None:
@@ -46,12 +55,16 @@ def quarantine_database(db_path: Path) -> None:
     replayed into the new database the next start creates"""
     for suffix in ("", "-wal", "-shm"):
         try:
-            db_path.with_name(db_path.name + suffix).rename(db_path.with_name(db_path.name + ".bad" + suffix))
+            db_path.with_name(db_path.name + suffix).rename(
+                db_path.with_name(db_path.name + ".bad" + suffix)
+            )
         except OSError:
             pass
 
 
-def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Connection:
+def connect_db_readonly(
+    db_path: Path | str, timeout: float = 5.0
+) -> sqlite3.Connection:
     """a read-only connection to a regular, not hardlinked database file; raises
     sqlite3.OperationalError when it cannot be opened"""
     try:
@@ -59,8 +72,14 @@ def connect_db_readonly(db_path: Path | str, timeout: float = 5.0) -> sqlite3.Co
     except OSError as e:
         raise sqlite3.OperationalError(f"could not inspect {db_path}: {e}") from e
     if not stat.S_ISREG(db_stat.st_mode) or db_stat.st_nlink != 1:
-        raise sqlite3.OperationalError(f"refusing non-regular or hardlinked database: {db_path}")
-    con = sqlite3.connect(f"file:{urllib.parse.quote(os.fspath(db_path), safe='/')}?mode=ro", uri=True, timeout=timeout)
+        raise sqlite3.OperationalError(
+            f"refusing non-regular or hardlinked database: {db_path}"
+        )
+    con = sqlite3.connect(
+        f"file:{urllib.parse.quote(os.fspath(db_path), safe='/')}?mode=ro",
+        uri=True,
+        timeout=timeout,
+    )
     try:
         # touch the file, so an unreadable database fails here and not at the first query
         con.execute("PRAGMA user_version").fetchone()
@@ -81,7 +100,11 @@ def ephemeral_port_start() -> int:
 
 def sanitize_log_line(line: str) -> str:
     """Remove control characters from a log line to prevent terminal-escape / log injection."""
-    return "".join(c for c in line if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs"))
+    return "".join(
+        c
+        for c in line
+        if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs")
+    )
 
 
 def log_error(message: str) -> None:

@@ -95,7 +95,9 @@ class QueryClient:
             except (ConnectionError, BrokenPipeError) as e:
                 self.close()
                 if attempt:
-                    raise QueryError(f"the query server closed the connection ({e})") from e
+                    raise QueryError(
+                        f"the query server closed the connection ({e})"
+                    ) from e
                 continue
             except (OSError, ValueError) as e:
                 self.close()

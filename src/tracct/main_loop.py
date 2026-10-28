@@ -23,7 +23,11 @@ WRITER_QUEUE_EVENTS = 262144
 FEED_QUEUE_EVENTS = 131072
 
 
-def run_feed(live_feed: LiveFeedPublisher, batches: DropOldestQueue[BpfEvent], stop: threading.Event) -> None:
+def run_feed(
+    live_feed: LiveFeedPublisher,
+    batches: DropOldestQueue[BpfEvent],
+    stop: threading.Event,
+) -> None:
     """the live feed thread: serializes batches for the viewers, off the reader's path"""
     reported = 0
     while not stop.is_set():
@@ -33,7 +37,9 @@ def run_feed(live_feed: LiveFeedPublisher, batches: DropOldestQueue[BpfEvent], s
             except Exception:
                 pass
         if live_feed.dropped > reported:
-            log_error(f"live feed: dropped {live_feed.dropped - reported} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind")
+            log_error(
+                f"live feed: dropped {live_feed.dropped - reported} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind"
+            )
             reported = live_feed.dropped
 
 
@@ -51,11 +57,27 @@ def run_main_loop(config: Config) -> int:
         if live_feed.has_subscribers():
             to_feed.put(batch)
 
-    reader_stop, writer_stop, feed_stop = threading.Event(), threading.Event(), threading.Event()
+    reader_stop, writer_stop, feed_stop = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
     reattach, ready = threading.Event(), threading.Event()
-    reader = threading.Thread(target=run_monitor, args=(config, publish, reader_stop, reattach, ready), name="reader", daemon=True)
-    writer = threading.Thread(target=run_writer, args=(config, to_writer, writer_stop), name="writer", daemon=True)
-    feed = threading.Thread(target=run_feed, args=(live_feed, to_feed, feed_stop), name="feed", daemon=True)
+    reader = threading.Thread(
+        target=run_monitor,
+        args=(config, publish, reader_stop, reattach, ready),
+        name="reader",
+        daemon=True,
+    )
+    writer = threading.Thread(
+        target=run_writer,
+        args=(config, to_writer, writer_stop),
+        name="writer",
+        daemon=True,
+    )
+    feed = threading.Thread(
+        target=run_feed, args=(live_feed, to_feed, feed_stop), name="feed", daemon=True
+    )
     threads = [reader, writer, feed]
     for thread in threads:
         thread.start()
@@ -73,7 +95,12 @@ def run_main_loop(config: Config) -> int:
     signal.signal(signal.SIGUSR1, lambda signum, frame: resume_event.set())
     # the reader sets ready once its probes are attached; bounded so a stall cannot hang startup
     deadline = time.monotonic() + 30
-    while not ready.wait(timeout=0.5) and reader.is_alive() and time.monotonic() < deadline and not shutdown_event.is_set():
+    while (
+        not ready.wait(timeout=0.5)
+        and reader.is_alive()
+        and time.monotonic() < deadline
+        and not shutdown_event.is_set()
+    ):
         pass
     if reader.is_alive():
         sd_notify("READY=1")
@@ -86,14 +113,18 @@ def run_main_loop(config: Config) -> int:
     while not shutdown_event.is_set():
         if not all(thread.is_alive() for thread in threads):
             dead = " ".join(thread.name for thread in threads if not thread.is_alive())
-            logging.error(f"tracct thread died, exiting for the service manager to restart ({dead})")
+            logging.error(
+                f"tracct thread died, exiting for the service manager to restart ({dead})"
+            )
             break
         resume_event.wait(timeout=5)
         if shutdown_event.is_set():
             break
         for name, hand_off in (("writer", to_writer), ("live feed", to_feed)):
             if hand_off.dropped > dropped_reported[name]:
-                log_error(f"{name} queue full: dropped {hand_off.dropped - dropped_reported[name]} event(s) (total {hand_off.dropped}), it is not keeping up with the reader")
+                log_error(
+                    f"{name} queue full: dropped {hand_off.dropped - dropped_reported[name]} event(s) (total {hand_off.dropped}), it is not keeping up with the reader"
+                )
                 dropped_reported[name] = hand_off.dropped
         mono_now = time.monotonic()
         boot_now = time.clock_gettime(time.CLOCK_BOOTTIME)

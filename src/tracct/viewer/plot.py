@@ -85,11 +85,30 @@ class TrafficPlot(Plot):
         """how many buckets the lines have room for: braille has two dots across a cell"""
         return 2 * max(10, self.data_size.width)
 
-    def show(self, start: int, end: int, origin: int, step: int, peak: int, split: int, buckets: list, heading: str, subject: str, labels: tuple[str, str]) -> None:
+    def show(
+        self,
+        start: int,
+        end: int,
+        origin: int,
+        step: int,
+        peak: int,
+        split: int,
+        buckets: list,
+        heading: str,
+        subject: str,
+        labels: tuple[str, str],
+    ) -> None:
         """the range start to end, named heading, of the row named subject, in buckets of step
         seconds counted from origin, each with its sums and the highest rate of a stretch of peak
         seconds in it"""
-        self.start, self.end, self.origin, self.step, self.peak, self.split = start, end, origin, step, peak, split
+        self.start, self.end, self.origin, self.step, self.peak, self.split = (
+            start,
+            end,
+            origin,
+            step,
+            peak,
+            split,
+        )
         self.heading, self.subject, self.labels = heading, subject, labels
         # the lines show the peaks: averaged over a wide bucket, a short spike would flatten into
         # the traffic around it
@@ -135,11 +154,20 @@ class TrafficPlot(Plot):
         the title does not fit"""
         out_label, in_label = self.labels
         head = Content(f"{self.heading} · " if self.heading else "")
-        key = Content.assemble(("━━", SENT_STYLE), f" {out_label} ", ("━━", RECEIVED_STYLE), f" {in_label}")
-        rate = Content(f" · peak {duration(self.peak)} rate" if self.end and self.peak != PEAK_SECONDS else "")
+        key = Content.assemble(
+            ("━━", SENT_STYLE), f" {out_label} ", ("━━", RECEIVED_STYLE), f" {in_label}"
+        )
+        rate = Content(
+            f" · peak {duration(self.peak)} rate"
+            if self.end and self.peak != PEAK_SECONDS
+            else ""
+        )
         busy = Content(f" · {BUSY}" if self.busy else "")
         # the corners and a border cell either side
-        if head.cell_length + key.cell_length + rate.cell_length + busy.cell_length > self.size.width - 4:
+        if (
+            head.cell_length + key.cell_length + rate.cell_length + busy.cell_length
+            > self.size.width - 4
+        ):
             rate = Content("")
         self.border_title = Content.assemble(head, key, rate, busy)
 

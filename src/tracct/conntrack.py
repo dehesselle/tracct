@@ -33,7 +33,13 @@ IPCTNL_MSG_CT_GET, IPCTNL_MSG_CT_DELETE = 1, 2
 NFNLGRP_CONNTRACK_DESTROY = 3
 NLMSG_ERROR, NLMSG_DONE = 2, 3
 NLM_F_REQUEST, NLM_F_DUMP = 0x1, 0x300
-CTA_TUPLE_ORIG, CTA_TUPLE_REPLY, CTA_COUNTERS_ORIG, CTA_COUNTERS_REPLY, CTA_ID = 1, 2, 9, 10, 12
+CTA_TUPLE_ORIG, CTA_TUPLE_REPLY, CTA_COUNTERS_ORIG, CTA_COUNTERS_REPLY, CTA_ID = (
+    1,
+    2,
+    9,
+    10,
+    12,
+)
 CTA_TUPLE_IP, CTA_TUPLE_PROTO = 1, 2
 CTA_IP_V4_SRC, CTA_IP_V4_DST, CTA_IP_V6_SRC, CTA_IP_V6_DST = 1, 2, 3, 4
 CTA_PROTO_NUM, CTA_PROTO_SRC_PORT, CTA_PROTO_DST_PORT = 1, 2, 3
@@ -88,7 +94,9 @@ def _align(n: int) -> int:
     return (n + 3) & ~3
 
 
-def _attributes(data: bytes, offset: int = 0, end: int | None = None) -> dict[int, bytes]:
+def _attributes(
+    data: bytes, offset: int = 0, end: int | None = None
+) -> dict[int, bytes]:
     attrs = {}
     end = len(data) if end is None else end
     while offset + _RTATTR.size <= end:
@@ -108,9 +116,23 @@ def _tuple(data: bytes) -> tuple[str, str, int, int, int]:
     src = ip.get(CTA_IP_V4_SRC) or ip.get(CTA_IP_V6_SRC)
     dst = ip.get(CTA_IP_V4_DST) or ip.get(CTA_IP_V6_DST)
     protocol = proto[CTA_PROTO_NUM][0] if CTA_PROTO_NUM in proto else 0
-    sport = struct.unpack(">H", proto[CTA_PROTO_SRC_PORT])[0] if CTA_PROTO_SRC_PORT in proto else 0
-    dport = struct.unpack(">H", proto[CTA_PROTO_DST_PORT])[0] if CTA_PROTO_DST_PORT in proto else 0
-    return (str(ipaddress.ip_address(src)) if src else "", str(ipaddress.ip_address(dst)) if dst else "", protocol, sport, dport)
+    sport = (
+        struct.unpack(">H", proto[CTA_PROTO_SRC_PORT])[0]
+        if CTA_PROTO_SRC_PORT in proto
+        else 0
+    )
+    dport = (
+        struct.unpack(">H", proto[CTA_PROTO_DST_PORT])[0]
+        if CTA_PROTO_DST_PORT in proto
+        else 0
+    )
+    return (
+        str(ipaddress.ip_address(src)) if src else "",
+        str(ipaddress.ip_address(dst)) if dst else "",
+        protocol,
+        sport,
+        dport,
+    )
 
 
 def _counters(data: bytes | None) -> tuple[int, int] | None:
@@ -120,7 +142,9 @@ def _counters(data: bytes | None) -> tuple[int, int] | None:
     attrs = _attributes(data)
     if CTA_COUNTERS_BYTES not in attrs or CTA_COUNTERS_PACKETS not in attrs:
         return None
-    return struct.unpack(">Q", attrs[CTA_COUNTERS_BYTES])[0], struct.unpack(">Q", attrs[CTA_COUNTERS_PACKETS])[0]
+    return struct.unpack(">Q", attrs[CTA_COUNTERS_BYTES])[0], struct.unpack(
+        ">Q", attrs[CTA_COUNTERS_PACKETS]
+    )[0]
 
 
 def _first_source(payload: bytes, offset: int) -> bytes:
@@ -128,7 +152,10 @@ def _first_source(payload: bytes, offset: int) -> bytes:
     the first attribute of its first attribute"""
     _ip_length, ip_kind = _RTATTR.unpack_from(payload, offset + _RTATTR.size)
     length, kind = _RTATTR.unpack_from(payload, offset + 2 * _RTATTR.size)
-    if ip_kind & NLA_TYPE_MASK != CTA_TUPLE_IP or kind not in (CTA_IP_V4_SRC, CTA_IP_V6_SRC):
+    if ip_kind & NLA_TYPE_MASK != CTA_TUPLE_IP or kind not in (
+        CTA_IP_V4_SRC,
+        CTA_IP_V6_SRC,
+    ):
         raise ValueError("unexpected tuple layout")
     start = offset + 3 * _RTATTR.size
     return payload[start : start + length - _RTATTR.size]
@@ -161,7 +188,9 @@ def is_local(payload: bytes, local: frozenset[bytes]) -> bool:
         return False
     answering = sources[1]
     # IPv4 224/4 multicast and everything above (255.255.255.255 among it), IPv6 ff00::/8
-    if (len(answering) == 4 and answering[0] >= 224) or (len(answering) == 16 and answering[0] == 0xFF):
+    if (len(answering) == 4 and answering[0] >= 224) or (
+        len(answering) == 16 and answering[0] == 0xFF
+    ):
         return True
     return sources[0] in local or answering in local
 
@@ -169,14 +198,28 @@ def is_local(payload: bytes, local: frozenset[bytes]) -> bool:
 def parse_entry(payload: bytes) -> tuple[int, Entry] | None:
     """(conntrack id, entry) from a ctnetlink message's payload"""
     attrs = _attributes(payload, _NFGENMSG.size)
-    if CTA_ID not in attrs or CTA_TUPLE_ORIG not in attrs or CTA_TUPLE_REPLY not in attrs:
+    if (
+        CTA_ID not in attrs
+        or CTA_TUPLE_ORIG not in attrs
+        or CTA_TUPLE_REPLY not in attrs
+    ):
         return None
     orig = _counters(attrs.get(CTA_COUNTERS_ORIG))
     reply = _counters(attrs.get(CTA_COUNTERS_REPLY))
-    counters = None if orig is None or reply is None else (orig[0], reply[0], orig[1], reply[1])
-    orig_src, _orig_dst, protocol, orig_sport, _orig_dport = _tuple(attrs[CTA_TUPLE_ORIG])
-    reply_src, _reply_dst, _protocol, reply_sport, _reply_dport = _tuple(attrs[CTA_TUPLE_REPLY])
-    return struct.unpack(">I", attrs[CTA_ID])[0], Entry(protocol, orig_src, orig_sport, reply_src, reply_sport, counters)
+    counters = (
+        None
+        if orig is None or reply is None
+        else (orig[0], reply[0], orig[1], reply[1])
+    )
+    orig_src, _orig_dst, protocol, orig_sport, _orig_dport = _tuple(
+        attrs[CTA_TUPLE_ORIG]
+    )
+    reply_src, _reply_dst, _protocol, reply_sport, _reply_dport = _tuple(
+        attrs[CTA_TUPLE_REPLY]
+    )
+    return struct.unpack(">I", attrs[CTA_ID])[0], Entry(
+        protocol, orig_src, orig_sport, reply_src, reply_sport, counters
+    )
 
 
 def _messages(data: bytes) -> Iterator[tuple[int, bytes]]:
@@ -190,7 +233,9 @@ def _messages(data: bytes) -> Iterator[tuple[int, bytes]]:
 
 
 def _socket(groups: int = 0) -> socket.socket:
-    sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW | socket.SOCK_CLOEXEC, NETLINK_NETFILTER)
+    sock = socket.socket(
+        socket.AF_NETLINK, socket.SOCK_RAW | socket.SOCK_CLOEXEC, NETLINK_NETFILTER
+    )
     try:
         # past the default limit, which only CAP_NET_ADMIN may do; the dump of a busy table and
         # a burst of ended flows both need the room
@@ -209,7 +254,12 @@ def dump(local: frozenset[bytes]) -> dict[int, Entry]:
         sock.settimeout(10)
         body = _NFGENMSG.pack(socket.AF_UNSPEC, 0, 0)
         msg_type = (NFNL_SUBSYS_CTNETLINK << 8) | IPCTNL_MSG_CT_GET
-        sock.send(_NLMSGHDR.pack(_NLMSGHDR.size + len(body), msg_type, NLM_F_REQUEST | NLM_F_DUMP, 1, 0) + body)
+        sock.send(
+            _NLMSGHDR.pack(
+                _NLMSGHDR.size + len(body), msg_type, NLM_F_REQUEST | NLM_F_DUMP, 1, 0
+            )
+            + body
+        )
         while True:
             for kind, payload in _messages(sock.recv(RECEIVE_BUFFER)):
                 if kind == NLMSG_DONE:
@@ -217,7 +267,9 @@ def dump(local: frozenset[bytes]) -> dict[int, Entry]:
                 if kind == NLMSG_ERROR:
                     code = -struct.unpack_from("=i", payload)[0]
                     if code:
-                        raise OSError(code, f"conntrack dump failed: {os.strerror(code)}")
+                        raise OSError(
+                            code, f"conntrack dump failed: {os.strerror(code)}"
+                        )
                     continue
                 if is_local(payload, local):
                     continue
@@ -302,7 +354,9 @@ class Conntrack:
                         self.lost += 1
                     continue
                 if not self.closed.is_set():
-                    self.report(f"conntrack: listener stopped in network namespace {self.label} ({e}); flows that end there go uncounted for their last window")
+                    self.report(
+                        f"conntrack: listener stopped in network namespace {self.label} ({e}); flows that end there go uncounted for their last window"
+                    )
                 return False
             local = self.local
             for kind, payload in _messages(data):
@@ -332,10 +386,26 @@ class Conntrack:
             if entry.counters is None:
                 uncounted += 1
                 return
-            delta = entry.counters if before is None or before.counters is None else tuple(now - then for now, then in zip(entry.counters, before.counters))
+            delta = (
+                entry.counters
+                if before is None or before.counters is None
+                else tuple(
+                    now - then for now, then in zip(entry.counters, before.counters)
+                )
+            )
             # a negative delta is an id reused by another flow
             if any(delta) and min(delta) >= 0:
-                flows.append(Flow(self.netns, entry.protocol, entry.orig_src, entry.orig_sport, entry.reply_src, entry.reply_sport, *delta))
+                flows.append(
+                    Flow(
+                        self.netns,
+                        entry.protocol,
+                        entry.orig_src,
+                        entry.orig_sport,
+                        entry.reply_src,
+                        entry.reply_sport,
+                        *delta,
+                    )
+                )
 
         for flow_id, entry in current.items():
             add(entry, self.seen.get(flow_id))
@@ -344,7 +414,9 @@ class Conntrack:
             add(entry, current.pop(flow_id, None) or self.seen.get(flow_id))
         self.seen = current
         if lost:
-            self.report(f"conntrack: {lost} ended flow event(s) lost in network namespace {self.label}; the last bytes of those flows are missing")
+            self.report(
+                f"conntrack: {lost} ended flow event(s) lost in network namespace {self.label}; the last bytes of those flows are missing"
+            )
         if uncounted and not self.uncounted_reported:
             self.uncounted_reported = True
             self.report(
@@ -410,7 +482,12 @@ class Trackers:
     seen for the first time only sets its baseline; the tracker of one that has gone is closed,
     so its listener socket holds the namespace until the next collect at most"""
 
-    def __init__(self, report: Callable[[str], object], dumper: Callable[[frozenset[bytes]], dict[int, Entry]] = dump, listen: bool = True) -> None:
+    def __init__(
+        self,
+        report: Callable[[str], object],
+        dumper: Callable[[frozenset[bytes]], dict[int, Entry]] = dump,
+        listen: bool = True,
+    ) -> None:
         self.report = report
         self.dumper = dumper
         self.listener = Listener() if listen else None
@@ -418,7 +495,9 @@ class Trackers:
         # namespaces whose table could not be read, reported once until it can
         self.failed: set[int] = set()
 
-    def collect(self, namespaces: Mapping[int, tuple[str, str | None, set[str]]]) -> list[Flow]:
+    def collect(
+        self, namespaces: Mapping[int, tuple[str, str | None, set[str]]]
+    ) -> list[Flow]:
         """the forwarded flows of every namespace since the last collect; namespaces maps an
         inode to (label, the path to join or None for the daemon's own, its local addresses)"""
         for inode in [inode for inode in self.trackers if inode not in namespaces]:
@@ -429,7 +508,15 @@ class Trackers:
             try:
                 tracker = self.trackers.get(inode)
                 if tracker is None:
-                    tracker = Conntrack(self.report, local, inode, label, path, self.dumper, listener_socket if self.listener is not None else None)
+                    tracker = Conntrack(
+                        self.report,
+                        local,
+                        inode,
+                        label,
+                        path,
+                        self.dumper,
+                        listener_socket if self.listener is not None else None,
+                    )
                     self.trackers[inode] = tracker
                     if self.listener is not None:
                         self.listener.add(tracker)
@@ -441,7 +528,9 @@ class Trackers:
             except Exception as e:
                 if inode not in self.failed:
                     self.failed.add(inode)
-                    self.report(f"conntrack: cannot read the table of network namespace {label} ({e}); its forwarded traffic goes unrecorded")
+                    self.report(
+                        f"conntrack: cannot read the table of network namespace {label} ({e}); its forwarded traffic goes unrecorded"
+                    )
         return flows
 
     def close(self) -> None:

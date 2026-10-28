@@ -77,8 +77,12 @@ def test_full_queue_skips_and_cache_is_bounded(monkeypatch):
 
 
 def test_resolve_reverses_names(monkeypatch):
-    monkeypatch.setattr(reverse_dns.socket, "getnameinfo", lambda addr, flags: ("www.example.com", "0"))
+    monkeypatch.setattr(
+        reverse_dns.socket, "getnameinfo", lambda addr, flags: ("www.example.com", "0")
+    )
     assert reverse_dns.resolve("192.0.2.1") == "com.example.www"
     # getnameinfo answers with the address itself when there is no PTR record
-    monkeypatch.setattr(reverse_dns.socket, "getnameinfo", lambda addr, flags: (addr[0], "0"))
+    monkeypatch.setattr(
+        reverse_dns.socket, "getnameinfo", lambda addr, flags: (addr[0], "0")
+    )
     assert reverse_dns.resolve("192.0.2.1") == "192.0.2.1"

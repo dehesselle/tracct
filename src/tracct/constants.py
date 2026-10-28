@@ -23,7 +23,10 @@ def _systemd_directory(variable: str, default: str) -> Path:
 
 # paths come from the environment so a unit (or a test) can place them; the variables are the
 # ones systemd sets for ConfigurationDirectory=, StateDirectory= and RuntimeDirectory=
-CONFIG_PATH: typing.Final[Path] = Path(os.getenv("TRACCT_CONFIG") or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/tracct") / "config.toml")
+CONFIG_PATH: typing.Final[Path] = Path(
+    os.getenv("TRACCT_CONFIG")
+    or _systemd_directory("CONFIGURATION_DIRECTORY", "/etc/opt/tracct") / "config.toml"
+)
 STATE_DIR: typing.Final[Path] = _systemd_directory("STATE_DIRECTORY", "/var/lib/tracct")
 RUN_DIR: typing.Final[Path] = _systemd_directory("RUNTIME_DIRECTORY", "/run/tracct")
 DB_PATH: typing.Final[Path] = STATE_DIR / "tracct.db"
@@ -43,7 +46,11 @@ try:
                 break
     with open(CONFIG_PATH, "rb") as toml_file:
         set_mask = tomllib.load(toml_file).get("monitoring", {}).get("st_dev_mask")
-    if isinstance(set_mask, int) and not isinstance(set_mask, bool) and 0 <= set_mask <= 0xFFFFFFFF:
+    if (
+        isinstance(set_mask, int)
+        and not isinstance(set_mask, bool)
+        and 0 <= set_mask <= 0xFFFFFFFF
+    ):
         st_dev_mask = set_mask
 except Exception:
     pass

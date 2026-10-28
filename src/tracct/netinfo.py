@@ -42,7 +42,9 @@ def _query() -> Snapshot:
     return Snapshot(rtnetlink.links(), rtnetlink.addresses())
 
 
-def run_in_netns[T](path: str, function: Callable[[], T], timeout: float = NETNS_QUERY_TIMEOUT) -> T:
+def run_in_netns[T](
+    path: str, function: Callable[[], T], timeout: float = NETNS_QUERY_TIMEOUT
+) -> T:
     """run function inside the network namespace that path (an nsfs file) refers to; a socket it
     opens stays in that namespace"""
     result: list[T] = []
@@ -66,7 +68,9 @@ def run_in_netns[T](path: str, function: Callable[[], T], timeout: float = NETNS
     if errors:
         raise errors[0]
     if not result:
-        raise TimeoutError(f"querying the network namespace of {path} took longer than {timeout} s")
+        raise TimeoutError(
+            f"querying the network namespace of {path} took longer than {timeout} s"
+        )
     return result[0]
 
 
@@ -115,15 +119,23 @@ def tun_devices(pid: int) -> list[str]:
 class NetInfo:
     """refreshed once per write window by the writer; its lookups answer from the last refresh"""
 
-    def __init__(self, report: Callable[[str], object], query: Callable[[str | None], Snapshot] | None = None) -> None:
+    def __init__(
+        self,
+        report: Callable[[str], object],
+        query: Callable[[str | None], Snapshot] | None = None,
+    ) -> None:
         self.report = report
         # query(None) answers for the daemon's own namespace, query(path) for another one
-        self.query = query or (lambda path: _query() if path is None else query_netns(path))
+        self.query = query or (
+            lambda path: _query() if path is None else query_netns(path)
+        )
         self.host = os.stat("/proc/self/ns/net").st_ino
         # inode -> name of every namespace with a name, the daemon's own included
         self.names: dict[int, str] = {self.host: HOST_NETNS_NAME}
         # unnamed namespace inode -> (pid seen in it, when), oldest first
-        self.unnamed: collections.OrderedDict[int, tuple[int, float]] = collections.OrderedDict()
+        self.unnamed: collections.OrderedDict[int, tuple[int, float]] = (
+            collections.OrderedDict()
+        )
         # (netns, address) -> (interface name, kind); exact addresses, then loopback networks
         self.owners: dict[tuple[int, str], tuple[str, str]] = {}
         self.loopback: dict[int, tuple[str, str]] = {}
@@ -163,7 +175,9 @@ class NetInfo:
         """the addresses of a namespace (by default the daemon's own) and the broadcast
         addresses of its IPv4 networks, as of the last refresh"""
         netns = self.host if netns is None else netns
-        return {address for inode, address in self.owners if inode == netns} | self.broadcasts.get(netns, set())
+        return {
+            address for inode, address in self.owners if inode == netns
+        } | self.broadcasts.get(netns, set())
 
     def label(self, netns: int) -> str:
         """a namespace's name, or its inode when it has none"""
@@ -183,7 +197,9 @@ class NetInfo:
         named = named_namespaces()
         self.names = {inode: name for inode, (name, _) in named.items()}
         self.names.setdefault(self.host, HOST_NETNS_NAME)
-        targets: dict[int, str | None] = {inode: path for inode, (_, path) in named.items() if inode != self.host}
+        targets: dict[int, str | None] = {
+            inode: path for inode, (_, path) in named.items() if inode != self.host
+        }
         targets[self.host] = None
         expired = time.monotonic() - UNNAMED_NETNS_SECONDS
         for inode, (pid, seen) in list(self.unnamed.items()):
@@ -215,10 +231,24 @@ class NetInfo:
             except Exception as e:
                 if inode not in self.failed:
                     self.failed.add(inode)
-                    self.report(f"netinfo: cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded")
+                    self.report(
+                        f"netinfo: cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded"
+                    )
                 # keep what the last look found, so the next one that works counts from there
-                owners.update({key: value for key, value in self.owners.items() if key[0] == inode})
-                counters.update({key: value for key, value in self.counters.items() if key[0] == inode})
+                owners.update(
+                    {
+                        key: value
+                        for key, value in self.owners.items()
+                        if key[0] == inode
+                    }
+                )
+                counters.update(
+                    {
+                        key: value
+                        for key, value in self.counters.items()
+                        if key[0] == inode
+                    }
+                )
                 if inode in self.loopback:
                     loopback[inode] = self.loopback[inode]
                 if inode in self.broadcasts:
@@ -228,7 +258,13 @@ class NetInfo:
             broadcasts[inode] = {
                 str(network.broadcast_address)
                 for address in snapshot.addresses
-                if (network := ipaddress.ip_network(f"{address.addr}/{address.prefixlen}", strict=False)).version == 4 and network.prefixlen < 31
+                if (
+                    network := ipaddress.ip_network(
+                        f"{address.addr}/{address.prefixlen}", strict=False
+                    )
+                ).version
+                == 4
+                and network.prefixlen < 31
             }
             by_index = {link.index: link for link in snapshot.links}
             for address in snapshot.addresses:
@@ -246,11 +282,24 @@ class NetInfo:
                     # the first look only sets the baseline
                     continue
                 # a counter that went back was reset (device recreated): count from zero
-                rx = link.rx_bytes - previous[0] if link.rx_bytes >= previous[0] else link.rx_bytes
-                tx = link.tx_bytes - previous[1] if link.tx_bytes >= previous[1] else link.tx_bytes
+                rx = (
+                    link.rx_bytes - previous[0]
+                    if link.rx_bytes >= previous[0]
+                    else link.rx_bytes
+                )
+                tx = (
+                    link.tx_bytes - previous[1]
+                    if link.tx_bytes >= previous[1]
+                    else link.tx_bytes
+                )
                 if rx or tx:
                     traffic.append((inode, link.name, link.kind, rx, tx))
-        self.owners, self.loopback, self.counters, self.broadcasts = owners, loopback, counters, broadcasts
+        self.owners, self.loopback, self.counters, self.broadcasts = (
+            owners,
+            loopback,
+            counters,
+            broadcasts,
+        )
         self.paths = targets
         self.tun_cache = {}
         return traffic

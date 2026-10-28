@@ -39,7 +39,13 @@ class ListPicker[T](Dialog[T]):
     """
     KEY: ClassVar[str] = ""
 
-    def __init__(self, title: str, entries: list[tuple[T, str, str]], current: T, again: tuple[T, T] | None) -> None:
+    def __init__(
+        self,
+        title: str,
+        entries: list[tuple[T, str, str]],
+        current: T,
+        again: tuple[T, T] | None,
+    ) -> None:
         """entries are (value, label, note); again is the entry with the hint and the value KEY
         dismisses with, or None, which leaves KEY without effect and the picker open"""
         super().__init__()
@@ -51,11 +57,21 @@ class ListPicker[T](Dialog[T]):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self._title, id="title")
-            yield OptionList(*[Option(self._text(*entry)) for entry in self._entries], id="picker-results")
+            yield OptionList(
+                *[Option(self._text(*entry)) for entry in self._entries],
+                id="picker-results",
+            )
 
     def on_mount(self) -> None:
         options = self.query_one("#picker-results", OptionList)
-        options.highlighted = next((i for i, (value, _, _) in enumerate(self._entries) if value == self._current), 0)
+        options.highlighted = next(
+            (
+                i
+                for i, (value, _, _) in enumerate(self._entries)
+                if value == self._current
+            ),
+            0,
+        )
         options.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -92,12 +108,24 @@ class SpanPicker(ListPicker[int]):
         """covered is how many seconds of history there are, None if not known"""
         entries = []
         # shortest first, the whole history last
-        for index in sorted(range(len(SPANS)), key=lambda i: SPANS[i][1] or float("inf")):
+        for index in sorted(
+            range(len(SPANS)), key=lambda i: SPANS[i][1] or float("inf")
+        ):
             seconds = SPANS[index][1]
             # a span longer than the history shows all of it, as the whole history does
-            entries.append((index, span_label(index), "all of it" if seconds and covered is not None and seconds >= covered else ""))
+            entries.append(
+                (
+                    index,
+                    span_label(index),
+                    "all of it"
+                    if seconds and covered is not None and seconds >= covered
+                    else "",
+                )
+            )
         # without a zoom the span is shown already
-        super().__init__("Span", entries, current, (current, TO_SPAN) if zoomed else None)
+        super().__init__(
+            "Span", entries, current, (current, TO_SPAN) if zoomed else None
+        )
 
 
 class UnitPicker(ListPicker[str]):
@@ -110,5 +138,8 @@ class UnitPicker(ListPicker[str]):
     BINDINGS: ClassVar[list[Binding]] = [Binding("u", "again", "last unit")]
 
     def __init__(self, current: str, last: str | None) -> None:
-        entries = [(unit, unit, "a unit per value" if unit == "auto" else "") for unit in BYTE_UNITS]
+        entries = [
+            (unit, unit, "a unit per value" if unit == "auto" else "")
+            for unit in BYTE_UNITS
+        ]
         super().__init__("Unit", entries, current, (last, last) if last else None)

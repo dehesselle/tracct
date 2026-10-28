@@ -42,7 +42,9 @@ class ReverseDns:
     """answers lookups from its cache and hands unknown addresses to worker threads; an answer
     serves the lookups after it, the ones before it get "" """
 
-    def __init__(self, resolver: Callable[[str], str] = resolve, workers: int = WORKERS) -> None:
+    def __init__(
+        self, resolver: Callable[[str], str] = resolve, workers: int = WORKERS
+    ) -> None:
         self._resolver = resolver
         self._names: collections.OrderedDict[str, str] = collections.OrderedDict()
         # queued or being resolved, so an address is asked for once
@@ -50,7 +52,10 @@ class ReverseDns:
         self._queue: queue.Queue[str] = queue.Queue(PENDING_MAX)
         self._lock = threading.Lock()
         self._closed = threading.Event()
-        self._workers = [threading.Thread(target=self._work, name=f"reverse-dns-{i}", daemon=True) for i in range(workers)]
+        self._workers = [
+            threading.Thread(target=self._work, name=f"reverse-dns-{i}", daemon=True)
+            for i in range(workers)
+        ]
         for worker in self._workers:
             worker.start()
 

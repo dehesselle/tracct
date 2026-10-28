@@ -18,7 +18,19 @@ FIND_PLACEHOLDER = "find in the rows shown (Enter keeps it, Escape clears)"
 # what `u` picks from; auto picks a unit per value
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")
 _FACTORS = {"kB": 10**3, "MB": 10**6, "GB": 10**9}
-PROTOCOLS = {0: "", 1: "icmp", 2: "igmp", 6: "tcp", 17: "udp", 33: "dccp", 47: "gre", 50: "esp", 58: "icmpv6", 132: "sctp", 136: "udplite"}
+PROTOCOLS = {
+    0: "",
+    1: "icmp",
+    2: "igmp",
+    6: "tcp",
+    17: "udp",
+    33: "dccp",
+    47: "gre",
+    50: "esp",
+    58: "icmpv6",
+    132: "sctp",
+    136: "udplite",
+}
 # the history spans `s` picks from, in seconds; 0 is all of it
 SPANS = (
     ("all", 0),
@@ -64,7 +76,13 @@ def user_name(uid: int) -> str:
 
 def clean(value: object) -> str:
     """a value on one line, without control characters (command lines carry tabs and newlines)"""
-    text = str(value).replace("\0", " ").replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    text = (
+        str(value)
+        .replace("\0", " ")
+        .replace("\t", " ")
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
     return sanitize_log_line(text)
 
 

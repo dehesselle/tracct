@@ -42,7 +42,9 @@ def sh(cmd, **kw):
     per-trial / per-tool and recorded as an error. Callers that legitimately
     need longer (apt, git clone, source builds) pass an explicit timeout."""
     kw.setdefault("timeout", 300)
-    return subprocess.run(cmd, shell=isinstance(cmd, str), text=True, capture_output=True, **kw)
+    return subprocess.run(
+        cmd, shell=isinstance(cmd, str), text=True, capture_output=True, **kw
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +91,9 @@ class Observation:
     recv: object = None  # bytes ingress
     note: str = ""
     na: bool = False  # tool genuinely N/A here (uninstallable, or capability absent) -> score N/A, not FAIL
-    invalid: bool = False  # the harness could not extract a measurement (not a tool result)
+    invalid: bool = (
+        False  # the harness could not extract a measurement (not a tool result)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -117,7 +121,9 @@ class Netlab:
     def reset(self):
         r = self._run("reset")
         if r.returncode != 0:
-            raise RuntimeError(f"netlab reset failed (wire reference would be wrong): {r.stderr}")
+            raise RuntimeError(
+                f"netlab reset failed (wire reference would be wrong): {r.stderr}"
+            )
 
     def read(self):
         """Return (egress_bytes, egress_pkts, ingress_bytes, ingress_pkts).
@@ -129,7 +135,9 @@ class Netlab:
             a, b, c, d = r.stdout.split()
             return int(a), int(b), int(c), int(d)
         except Exception as e:
-            raise RuntimeError(f"netlab read failed (wire ground truth unavailable): stdout={r.stdout!r} stderr={r.stderr!r}") from e
+            raise RuntimeError(
+                f"netlab read failed (wire ground truth unavailable): stdout={r.stdout!r} stderr={r.stderr!r}"
+            ) from e
 
     def peer_mac(self):
         r = sh(["ip", "netns", "exec", NS, "cat", "/sys/class/net/vbench1/address"])
@@ -138,12 +146,20 @@ class Netlab:
     def start_servers(self):
         """Peer server (in netns) + a loopback server (host netns) for S16."""
         self.stop_servers()
-        self.peer_srv = subprocess.Popen(["ip", "netns", "exec", NS, str(BIN / "benchserver")], stdout=open("/tmp/benchsrv_peer.log", "w"), stderr=subprocess.STDOUT)
+        self.peer_srv = subprocess.Popen(
+            ["ip", "netns", "exec", NS, str(BIN / "benchserver")],
+            stdout=open("/tmp/benchsrv_peer.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
         # loopback server for S16: a second benchserver in the host netns. Same
         # fixed ports as the peer instance -- no clash, different namespaces.
         # NOTE: binds 0.0.0.0:{9101,9102,9103,443,53} on the host for the whole
         # run (dedicated-machine assumption).
-        self.loop_srv = subprocess.Popen([str(BIN / "benchserver")], stdout=open("/tmp/benchsrv_loop.log", "w"), stderr=subprocess.STDOUT)
+        self.loop_srv = subprocess.Popen(
+            [str(BIN / "benchserver")],
+            stdout=open("/tmp/benchsrv_loop.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
         time.sleep(1.0)
 
     def stop_servers(self):

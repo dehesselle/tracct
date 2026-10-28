@@ -13,7 +13,14 @@ import sys
 import pytest
 
 from tracct.constants import ST_DEV_MASK
-from tracct.monitor import ExeResolver, _classify_inode_fallback, _parse_proc_net_addr, _read_proc_unit, unit_of_cgroup, unmap_ipv4
+from tracct.monitor import (
+    ExeResolver,
+    _classify_inode_fallback,
+    _parse_proc_net_addr,
+    _read_proc_unit,
+    unit_of_cgroup,
+    unmap_ipv4,
+)
 
 
 def _dev_ino(path: str) -> tuple[int, int]:
@@ -65,7 +72,10 @@ def test_inode_mismatch_returns_input_unchanged(tmp_path):
 
 def test_empty_and_sentinel_pass_through():
     assert _classify_inode_fallback(1, 2, "") == ""
-    assert _classify_inode_fallback(1, 2, "<multi-call:dev=1,ino=2>") == "<multi-call:dev=1,ino=2>"
+    assert (
+        _classify_inode_fallback(1, 2, "<multi-call:dev=1,ino=2>")
+        == "<multi-call:dev=1,ino=2>"
+    )
 
 
 @pytest.fixture
@@ -83,13 +93,21 @@ def _resolver() -> ExeResolver:
 
 def test_resolver_returns_live_path(child):
     dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
-    assert _resolver().resolve(dev, ino, child.pid, "python") == (dev, ino, os.readlink(f"/proc/{child.pid}/exe"))
+    assert _resolver().resolve(dev, ino, child.pid, "python") == (
+        dev,
+        ino,
+        os.readlink(f"/proc/{child.pid}/exe"),
+    )
 
 
 def test_resolver_takes_inode_from_live_process(child):
     # an event without an inode gets the live process's (dev, ino)
     dev, ino = _dev_ino(f"/proc/{child.pid}/exe")
-    assert _resolver().resolve(0, 0, child.pid, "python") == (dev, ino, os.readlink(f"/proc/{child.pid}/exe"))
+    assert _resolver().resolve(0, 0, child.pid, "python") == (
+        dev,
+        ino,
+        os.readlink(f"/proc/{child.pid}/exe"),
+    )
 
 
 def test_resolver_rejects_exec_since_event(child):
@@ -124,10 +142,19 @@ def test_resolver_keeps_no_fds(child):
 
 def test_unit_of_cgroup_takes_the_innermost_unit():
     assert unit_of_cgroup("/system.slice/nginx.service") == "nginx.service"
-    assert unit_of_cgroup("/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@1.service") == "app-firefox@1.service"
-    assert unit_of_cgroup("/system.slice/docker-0123abcd.scope") == "docker-0123abcd.scope"
+    assert (
+        unit_of_cgroup(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@1.service"
+        )
+        == "app-firefox@1.service"
+    )
+    assert (
+        unit_of_cgroup("/system.slice/docker-0123abcd.scope") == "docker-0123abcd.scope"
+    )
     # a delegated subtree below the unit
-    assert unit_of_cgroup("/system.slice/tailscaled.service/sub") == "tailscaled.service"
+    assert (
+        unit_of_cgroup("/system.slice/tailscaled.service/sub") == "tailscaled.service"
+    )
     assert unit_of_cgroup("/") == ""
     assert unit_of_cgroup("/user.slice") == ""
 
@@ -145,11 +172,21 @@ def _packed(address: str) -> bytes:
 
 def test_unmap_ipv4_turns_dual_stack_peers_into_ipv4():
     # an IPv4 client of a server listening on [::]
-    assert unmap_ipv4(_packed("::ffff:203.0.113.1"), _packed("::ffff:198.51.100.7")) == (2, "203.0.113.1", "198.51.100.7")
+    assert unmap_ipv4(
+        _packed("::ffff:203.0.113.1"), _packed("::ffff:198.51.100.7")
+    ) == (2, "203.0.113.1", "198.51.100.7")
     # an unbound dual-stack UDP socket sending to an IPv4 peer
-    assert unmap_ipv4(_packed("::"), _packed("::ffff:198.51.100.7")) == (2, "0.0.0.0", "198.51.100.7")
+    assert unmap_ipv4(_packed("::"), _packed("::ffff:198.51.100.7")) == (
+        2,
+        "0.0.0.0",
+        "198.51.100.7",
+    )
     # IPv6 stays IPv6, ::1 and :: included
-    assert unmap_ipv4(_packed("2001:db8::1"), _packed("2001:db8::7")) == (10, "2001:db8::1", "2001:db8::7")
+    assert unmap_ipv4(_packed("2001:db8::1"), _packed("2001:db8::7")) == (
+        10,
+        "2001:db8::1",
+        "2001:db8::7",
+    )
     assert unmap_ipv4(_packed("::1"), _packed("::1")) == (10, "::1", "::1")
     assert unmap_ipv4(_packed("::"), _packed("::")) == (10, "::", "::")
 

@@ -13,10 +13,24 @@ import sys
 from pathlib import Path
 
 from tracct.config import load_config
-from tracct.constants import CONFIG_PATH, DB_PATH, DB_VERSION, INDEXES, RUN_DIR, SENTINELS, STATE_DIR, TABLES, VERSION
+from tracct.constants import (
+    CONFIG_PATH,
+    DB_PATH,
+    DB_VERSION,
+    INDEXES,
+    RUN_DIR,
+    SENTINELS,
+    STATE_DIR,
+    TABLES,
+    VERSION,
+)
 from tracct.main_loop import run_main_loop
 from tracct.query_server import run_query_server
-from tracct.utils import connect_db_readonly, quarantine_database, sqlite_error_means_corrupt
+from tracct.utils import (
+    connect_db_readonly,
+    quarantine_database,
+    sqlite_error_means_corrupt,
+)
 from tracct.viewer import add_arguments as add_viewer_arguments
 from tracct.viewer import run_viewer
 
@@ -56,7 +70,10 @@ def configure_logging() -> None:
     if os.getenv("JOURNAL_STREAM"):
         formatter: logging.Formatter = _JournalFormatter("%(name)s: %(message)s")
     else:
-        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        formatter = logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     for handler in logging.getLogger().handlers:
         handler.setFormatter(formatter)
 
@@ -65,10 +82,16 @@ def check_capabilities() -> int:
     """check the effective capabilities and BPF requirements, return exit code on failure"""
     with open("/proc/self/status", "r") as f:
         proc_status = f.read()
-    capeff = int(proc_status[proc_status.find("CapEff:") + 8 :].splitlines()[0].strip(), base=16)
-    missing = [name for name, bit in REQUIRED_CAPABILITIES.items() if not capeff & (1 << bit)]
+    capeff = int(
+        proc_status[proc_status.find("CapEff:") + 8 :].splitlines()[0].strip(), base=16
+    )
+    missing = [
+        name for name, bit in REQUIRED_CAPABILITIES.items() if not capeff & (1 << bit)
+    ]
     if missing:
-        logging.error(f"Missing capabilities: {' '.join(missing)} (run as root or grant them with AmbientCapabilities=)")
+        logging.error(
+            f"Missing capabilities: {' '.join(missing)} (run as root or grant them with AmbientCapabilities=)"
+        )
         return 1
     from .bpf_wrapper import check_bpf_requirements
 
@@ -101,7 +124,9 @@ def check_database() -> int:
         if con is not None:
             con.close()
     if user_version != DB_VERSION:
-        logging.error(f"Unsupported database version {user_version}, expected {DB_VERSION}")
+        logging.error(
+            f"Unsupported database version {user_version}, expected {DB_VERSION}"
+        )
         return 1
     return 0
 
@@ -121,13 +146,17 @@ def _db_is_corrupt(db_path: Path) -> bool:
             cur = con.cursor()
             if cur.execute("PRAGMA user_version").fetchone()[0] != DB_VERSION:
                 # recreate a 0-byte db a killed writer left behind instead of preserving it
-                has_schema = cur.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'connections'").fetchone()
+                has_schema = cur.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'connections'"
+                ).fetchone()
                 return has_schema is None
             # validate the tables AND the columns the boot purge / inserts need: a db with the
             # right table names but wrong columns (a foreign db sharing the version) passes a
             # name-only check yet crashes the writer. LIMIT 0 validates the
             # columns without reading any rows; a missing table or column raises here.
-            cur.execute("SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0")
+            cur.execute(
+                "SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0"
+            )
             cur.execute("SELECT id, exe, name, cmdline FROM executables LIMIT 0")
             for table, _ in TABLES:
                 cur.execute(f"SELECT * FROM {table} LIMIT 0")
@@ -148,7 +177,9 @@ def init_database() -> None:
     if (db_path.exists() or db_path.is_symlink()) and _db_is_corrupt(db_path):
         # quarantine a corrupt db and recreate it below, so check_database / the writer's first
         # maintenance pass don't crash-loop the daemon (data is kept in tracct.db.bad)
-        logging.error(f"tracct.db is unusable, quarantining to {db_path.name}.bad and recreating")
+        logging.error(
+            f"tracct.db is unusable, quarantining to {db_path.name}.bad and recreating"
+        )
         quarantine_database(db_path)
     if not db_path.exists():
         con = sqlite3.connect(db_path)
@@ -166,10 +197,14 @@ def init_database() -> None:
     try:
         mode = con.execute("PRAGMA journal_mode=WAL").fetchone()[0]
         if mode != "wal":
-            logging.warning(f"tracct.db stays in journal mode {mode}; readers will block writes")
+            logging.warning(
+                f"tracct.db stays in journal mode {mode}; readers will block writes"
+            )
     except sqlite3.OperationalError as e:
         # another connection holds the database; the next start tries again
-        logging.warning(f"could not switch tracct.db to WAL mode ({e}); readers will block writes")
+        logging.warning(
+            f"could not switch tracct.db to WAL mode ({e}); readers will block writes"
+        )
     finally:
         con.close()
 
@@ -180,18 +215,26 @@ def main() -> int:
     # rebind the live feed socket and write the same database. the kernel drops the lock
     # when the process exits, so a crash never leaves a stale lock behind
     RUN_DIR.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(RUN_DIR / "tracct.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    lock_fd = os.open(
+        RUN_DIR / "tracct.lock",
+        os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o644,
+    )
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        logging.error(f"tracct is already running (lock held on {RUN_DIR / 'tracct.lock'})")
+        logging.error(
+            f"tracct is already running (lock held on {RUN_DIR / 'tracct.lock'})"
+        )
         return 1
     init_database()
     if err := check_database():
         return err
     # read once: a change takes a restart
     config = load_config()
-    logging.info(f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}")
+    logging.info(
+        f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}"
+    )
     logging.info(f"state: {STATE_DIR}")
     logging.info(f"run: {RUN_DIR}")
     return run_main_loop(config)
@@ -217,10 +260,18 @@ def start_tracct() -> int:
     )
     parser.add_argument("--version", action="version", version=f"tracct {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("run", help="run the daemon in the foreground (used by tracct.service)")
-    view = commands.add_parser("view", help="live and history viewer (needs tracct[tui])", description="Browse live and recorded traffic.")
+    commands.add_parser(
+        "run", help="run the daemon in the foreground (used by tracct.service)"
+    )
+    view = commands.add_parser(
+        "view",
+        help="live and history viewer (needs tracct[tui])",
+        description="Browse live and recorded traffic.",
+    )
     add_viewer_arguments(view)
-    commands.add_parser("query-server", help="answer history queries (used by tracct-query.service)")
+    commands.add_parser(
+        "query-server", help="answer history queries (used by tracct-query.service)"
+    )
     args = parser.parse_args()
     if args.command == "run":
         if err := check_capabilities():

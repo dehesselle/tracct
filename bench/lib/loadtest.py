@@ -59,7 +59,9 @@ WARNINGS = {
 
 
 def sh(cmd: str) -> str:
-    return subprocess.run(cmd, shell=True, text=True, capture_output=True).stdout.strip()
+    return subprocess.run(
+        cmd, shell=True, text=True, capture_output=True
+    ).stdout.strip()
 
 
 def daemon_pids() -> list[int]:
@@ -69,7 +71,11 @@ def daemon_pids() -> list[int]:
 
 def write_limit() -> int:
     try:
-        return int(tomllib.loads(CONFIG.read_text()).get("database", {}).get("write_limit_seconds", 10))
+        return int(
+            tomllib.loads(CONFIG.read_text())
+            .get("database", {})
+            .get("write_limit_seconds", 10)
+        )
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return 10
 
@@ -93,9 +99,20 @@ def journal_cursor() -> str:
 
 
 def journal_warnings(cursor: str) -> dict:
-    out = sh(f"journalctl -u tracct --after-cursor='{cursor}' -o cat --no-pager") if cursor else ""
-    lines = [line for line in out.splitlines() if "tracct.error" in line or "Traceback" in line]
-    counts = {name: sum(1 for line in lines if rx.search(line)) for name, rx in WARNINGS.items()}
+    out = (
+        sh(f"journalctl -u tracct --after-cursor='{cursor}' -o cat --no-pager")
+        if cursor
+        else ""
+    )
+    lines = [
+        line
+        for line in out.splitlines()
+        if "tracct.error" in line or "Traceback" in line
+    ]
+    counts = {
+        name: sum(1 for line in lines if rx.search(line))
+        for name, rx in WARNINGS.items()
+    }
     counts["other"] = len(lines) - sum(counts.values())
     return {"counts": counts, "samples": lines[:8]}
 
@@ -131,7 +148,9 @@ class Sink(threading.Thread):
             writer.close()
 
         async def main():
-            server = await asyncio.start_server(handle, "127.0.0.1", self.port, backlog=4096)
+            server = await asyncio.start_server(
+                handle, "127.0.0.1", self.port, backlog=4096
+            )
             self.ready.set()
             async with server:
                 await server.serve_forever()
@@ -143,13 +162,42 @@ def phase_steady(tag: str, args) -> dict:
     sink = Sink(SINK_PORT)
     sink.start()
     sink.ready.wait(10)
-    procs = [subprocess.Popen([str(BENCHLOAD), "tcp", str(SINK_PORT), "500", str(args.seconds), f"{tag}-{i}-{PAD}"], stdout=subprocess.PIPE, text=True) for i in range(args.clients)]
+    procs = [
+        subprocess.Popen(
+            [
+                str(BENCHLOAD),
+                "tcp",
+                str(SINK_PORT),
+                "500",
+                str(args.seconds),
+                f"{tag}-{i}-{PAD}",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        for i in range(args.clients)
+    ]
     return {"generated": {"processes": args.clients}, "sent": results_sent(procs)}
 
 
 def phase_churn(tag: str, args) -> dict:
-    p = subprocess.Popen([str(BENCHLOAD), "churn", str(CHURN_PORT), str(args.ports), str(args.rate), str(args.seconds), tag], stdout=subprocess.PIPE, text=True)
-    return {"generated": {"ports": args.ports, "datagrams_per_sec": args.rate}, "sent": results_sent([p])}
+    p = subprocess.Popen(
+        [
+            str(BENCHLOAD),
+            "churn",
+            str(CHURN_PORT),
+            str(args.ports),
+            str(args.rate),
+            str(args.seconds),
+            tag,
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return {
+        "generated": {"ports": args.ports, "datagrams_per_sec": args.rate},
+        "sent": results_sent([p]),
+    }
 
 
 def phase_exec(tag: str, args) -> dict:
@@ -158,14 +206,23 @@ def phase_exec(tag: str, args) -> dict:
     start = time.monotonic()
     while time.monotonic() - start < args.seconds:
         for _ in range(max(1, args.execs // 10)):
-            running.append(subprocess.Popen([str(BENCHLOAD), "once", str(EXEC_PORT + n % EXEC_PORTS), tag], stdout=subprocess.PIPE, text=True))
+            running.append(
+                subprocess.Popen(
+                    [str(BENCHLOAD), "once", str(EXEC_PORT + n % EXEC_PORTS), tag],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+            )
             n += 1
         time.sleep(0.1)
         done = [p for p in running if p.poll() is not None]
         running = [p for p in running if p.poll() is None]
         sent += results_sent(done)
     sent += results_sent(running)
-    return {"generated": {"processes": n, "per_sec": round(n / args.seconds)}, "sent": sent}
+    return {
+        "generated": {"processes": n, "per_sec": round(n / args.seconds)},
+        "sent": sent,
+    }
 
 
 PHASES = {"steady": phase_steady, "churn": phase_churn, "exec": phase_exec}
@@ -211,18 +268,29 @@ def main() -> int:
     ap.add_argument("--phases", default="steady,churn,exec")
     ap.add_argument("--seconds", type=float, default=60)
     ap.add_argument("--clients", type=int, default=300, help="steady: client processes")
-    ap.add_argument("--ports", type=int, default=30000, help="churn: distinct destination ports")
-    ap.add_argument("--rate", type=int, default=30000, help="churn: datagrams per second")
+    ap.add_argument(
+        "--ports", type=int, default=30000, help="churn: distinct destination ports"
+    )
+    ap.add_argument(
+        "--rate", type=int, default=30000, help="churn: datagrams per second"
+    )
     ap.add_argument("--execs", type=int, default=300, help="exec: processes per second")
     ap.add_argument("--out", default=str(BENCH / "results" / "loadtest.json"))
     args = ap.parse_args()
     if not BENCHLOAD.exists():
-        print(f"missing {BENCHLOAD} (compile the helpers first: sudo bash lib/build.sh)", file=sys.stderr)
+        print(
+            f"missing {BENCHLOAD} (compile the helpers first: sudo bash lib/build.sh)",
+            file=sys.stderr,
+        )
         return 2
     if not daemon_pids():
         print("the tracct unit is not running", file=sys.stderr)
         return 2
-    report = {"version": sh("/opt/tracct/bin/tracct --version"), "write_limit_seconds": write_limit(), "phases": {}}
+    report = {
+        "version": sh("/opt/tracct/bin/tracct --version"),
+        "write_limit_seconds": write_limit(),
+        "phases": {},
+    }
     for name in args.phases.split(","):
         print(f"== {name} ({args.seconds:g}s) ...", flush=True)
         res = run_phase(name, args)

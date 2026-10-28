@@ -84,7 +84,10 @@ class ViewerApp(ChordMixin, App):
     """
     BINDINGS = [
         # a tab's first letter, highlighted in its title
-        *(Binding(title[0].lower(), f"tab('{tab}')", show=False) for tab, (title, _) in TABS.items()),
+        *(
+            Binding(title[0].lower(), f"tab('{tab}')", show=False)
+            for tab, (title, _) in TABS.items()
+        ),
         Binding("slash", "find", "find"),
         # the banner says so while a find is kept
         Binding("c", "clear_find", "clear find", show=False),
@@ -93,7 +96,9 @@ class ViewerApp(ChordMixin, App):
         Binding("escape", "close_find", show=False),
     ]
 
-    def __init__(self, events_socket: Path, query_socket: Path, tab: str = "processes") -> None:
+    def __init__(
+        self, events_socket: Path, query_socket: Path, tab: str = "processes"
+    ) -> None:
         super().__init__()
         self.events_socket = events_socket
         self.query_socket = query_socket
@@ -110,7 +115,11 @@ class ViewerApp(ChordMixin, App):
         with TabbedContent(initial=self.initial_tab):
             for tab, (title, source) in TABS.items():
                 with TabPane(f"[$accent bold]{title[0]}[/]{title[1:]}", id=tab):
-                    yield LivePane(self.events_socket) if not source else HistoryPane(source)
+                    yield (
+                        LivePane(self.events_socket)
+                        if not source
+                        else HistoryPane(source)
+                    )
         yield Footer(show_command_palette=False)
         yield ChordViewer()
 
@@ -129,9 +138,13 @@ class ViewerApp(ChordMixin, App):
             try:
                 return self._client.request(op, **params)
             except PermissionError as e:
-                raise QueryError(f"no access to {self.query_socket}: join the viewer group (tracct-viewer) or run as root") from e
+                raise QueryError(
+                    f"no access to {self.query_socket}: join the viewer group (tracct-viewer) or run as root"
+                ) from e
             except OSError as e:
-                raise QueryError(f"query server unavailable at {self.query_socket} ({e.strerror or e}); is tracct-query.socket enabled?") from e
+                raise QueryError(
+                    f"query server unavailable at {self.query_socket} ({e.strerror or e}); is tracct-query.socket enabled?"
+                ) from e
 
     @work(thread=True, exclusive=True, group="describe")
     def describe(self) -> None:
@@ -183,7 +196,9 @@ class ViewerApp(ChordMixin, App):
         if pane is not None:
             pane.query(DataTable).first().focus()
 
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
         self.focus_pane()
         self.reload_active()
 
@@ -205,7 +220,10 @@ class ViewerApp(ChordMixin, App):
         pane = self.active_history()
         oldest = pane.info.get("oldest") if pane is not None else None
         covered = int(time.time()) - oldest if oldest else None
-        self.push_screen(SpanPicker(self.time_range.span, covered, bool(self.time_range.zooms)), self._span_picked)
+        self.push_screen(
+            SpanPicker(self.time_range.span, covered, bool(self.time_range.zooms)),
+            self._span_picked,
+        )
 
     def _span_picked(self, span: int | None) -> None:
         if span == TO_SPAN:
@@ -214,7 +232,9 @@ class ViewerApp(ChordMixin, App):
             self.reload_active()
             return
         # the span picked again still ends a step back or a zoom, as it did when cycled to
-        if span is None or (span == self.time_range.span and self.time_range.ends_now()):
+        if span is None or (
+            span == self.time_range.span and self.time_range.ends_now()
+        ):
             return
         self.time_range.span = span
         self.time_range.back = 0
@@ -223,7 +243,10 @@ class ViewerApp(ChordMixin, App):
 
     def action_earlier(self, delta: int) -> None:
         if SPANS[self.time_range.span][1] == 0:
-            self.notify("pick a span with s first; all history has no earlier or later", timeout=3)
+            self.notify(
+                "pick a span with s first; all history has no earlier or later",
+                timeout=3,
+            )
             return
         self.time_range.zooms.clear()
         self.time_range.back = max(0, self.time_range.back + delta)

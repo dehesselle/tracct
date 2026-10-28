@@ -19,7 +19,19 @@ import subprocess
 import time
 from pathlib import Path
 
-from harness import BIN, GT, HOST4, PEER4, PEER6, PORT_SCTP, PORT_TCP, PORT_UDP, VETH, Scenario, sh
+from harness import (
+    BIN,
+    GT,
+    HOST4,
+    PEER4,
+    PEER6,
+    PORT_SCTP,
+    PORT_TCP,
+    PORT_UDP,
+    VETH,
+    Scenario,
+    sh,
+)
 
 MB = 1 << 20
 RATE = 5 * MB  # 5 MiB/s ~ 40 Mbit/s: a realistic sustained rate that spreads the
@@ -100,7 +112,15 @@ def concurrent(base, gen, argvs, proto, family=2):
         exe = Path(path).name
         ctx.netlab.reset()
         t0 = time.time()
-        procs = [subprocess.Popen(ctx.gen_cmd([path, *a]), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for a in argvs]
+        procs = [
+            subprocess.Popen(
+                ctx.gen_cmd([path, *a]),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            for a in argvs
+        ]
         outs = []
         for p in procs:
             try:
@@ -133,9 +153,25 @@ def loopback(base):
         path = ctx.named_gen("benchgen", base)
         exe = Path(path).name
         t0 = time.time()
-        res = ctx.run_gen([path, "-H", "127.0.0.1", "-t", "tcp", "-d", "down", "-r", str(RATE), "-b", str(24 * MB)])
+        res = ctx.run_gen(
+            [
+                path,
+                "-H",
+                "127.0.0.1",
+                "-t",
+                "tcp",
+                "-d",
+                "down",
+                "-r",
+                str(RATE),
+                "-b",
+                str(24 * MB),
+            ]
+        )
         t1 = time.time()
-        return _finalize(ctx, exe, "tcp", 2, t0, t1, [res], peer="127.0.0.1", wire_from="loop")
+        return _finalize(
+            ctx, exe, "tcp", 2, t0, t1, [res], peer="127.0.0.1", wire_from="loop"
+        )
 
     return run
 
@@ -147,7 +183,9 @@ def afpacket(base):
         mac = ctx.netlab.peer_mac()
         ctx.netlab.reset()
         t0 = time.time()
-        res = ctx.run_gen([path, "-i", VETH, "-S", HOST4, "-D", PEER4, "-M", mac, "-b", str(4 * MB)])
+        res = ctx.run_gen(
+            [path, "-i", VETH, "-S", HOST4, "-D", PEER4, "-M", mac, "-b", str(4 * MB)]
+        )
         t1 = time.time()
         return _finalize(ctx, exe, "afpacket", 2, t0, t1, [res])
 
@@ -162,7 +200,30 @@ def container(base):
         ctx.netlab.reset()
         t0 = time.time()
         sh(["docker", "rm", "-f", "benchctr"])
-        r = sh(["docker", "run", "--rm", "--name", "benchctr", "-v", f"{static}:/{name}:ro", img, f"/{name}", "-H", PEER4, "-t", "tcp", "-d", "up", "-r", str(RATE), "-b", str(24 * MB)], timeout=180)
+        r = sh(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                "benchctr",
+                "-v",
+                f"{static}:/{name}:ro",
+                img,
+                f"/{name}",
+                "-H",
+                PEER4,
+                "-t",
+                "tcp",
+                "-d",
+                "up",
+                "-r",
+                str(RATE),
+                "-b",
+                str(24 * MB),
+            ],
+            timeout=180,
+        )
         t1 = time.time()
         res = _parse_result((r.stdout or "") + (r.stderr or ""), r.returncode)
         return _finalize(ctx, name, "tcp", 2, t0, t1, [res])
@@ -175,7 +236,18 @@ def build_scenarios():
     S = []
 
     def add(sid, name, cat, dirs, proto, run, exe, **kw):
-        S.append(Scenario(sid=sid, name=name, category=cat, directions=dirs, proto=proto, run=run, exe=exe, **kw))
+        S.append(
+            Scenario(
+                sid=sid,
+                name=name,
+                category=cat,
+                directions=dirs,
+                proto=proto,
+                run=run,
+                exe=exe,
+                **kw,
+            )
+        )
 
     rate = ["-r", str(RATE)]
 

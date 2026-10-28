@@ -96,7 +96,11 @@ exec_ring_buffer_pages = 256
         f.write(config_toml)
 
     with open(DAEMON_LOG, "wb") as daemon_log:
-        proc = subprocess.Popen([PYTHON_EXE, "-m", "tracct", "run"], stdout=daemon_log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            [PYTHON_EXE, "-m", "tracct", "run"],
+            stdout=daemon_log,
+            stderr=subprocess.STDOUT,
+        )
 
     # wait for the events socket to appear -- means the daemon is listening
     events_sock = RUN_DIR / "events.sock"
@@ -119,7 +123,9 @@ exec_ring_buffer_pages = 256
     warmup_deadline = time.time() + 60
     warmup_seen = False
     while time.time() < warmup_deadline and not warmup_seen:
-        subprocess.run(["curl", "-s", "-o", "/dev/null", "https://example.com"], timeout=15)
+        subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "https://example.com"], timeout=15
+        )
         # give the writer time to flush
         for _ in range(int((DB_WRITE_LIMIT + 4) * 2)):
             time.sleep(0.5)
@@ -182,7 +188,9 @@ def get_connections_for_process(process_name: str) -> list:
 def tracct_session():
     """Module-scoped fixture that manages tracct lifecycle for all tests."""
     if os.geteuid() != 0:
-        pytest.skip("Tests require root privileges. Run with: sudo uv run pytest tests/test_functional.py -v")
+        pytest.skip(
+            "Tests require root privileges. Run with: sudo uv run pytest tests/test_functional.py -v"
+        )
 
     clean_test_dirs()
 
@@ -206,7 +214,11 @@ class TestShortLivedProcesses:
         if not curl_exe:
             pytest.skip("curl not available")
 
-        subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["curl", "-s", "http://example.com", "-o", "/dev/null"],
+            capture_output=True,
+            timeout=30,
+        )
 
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
@@ -215,7 +227,9 @@ class TestShortLivedProcesses:
 
         for conn in connections:
             name, exe, raddr, rport, send, recv, domain = conn
-            assert exe != "", f"curl exe should be resolved, got empty for raddr={raddr} rport={rport}"
+            assert exe != "", (
+                f"curl exe should be resolved, got empty for raddr={raddr} rport={rport}"
+            )
             assert "curl" in exe, f"curl exe should contain 'curl', got: {exe}"
 
     def test_wget_exe_resolved(self, tracct_session):
@@ -231,7 +245,11 @@ class TestShortLivedProcesses:
         last_wget_err = ""
         connections: list = []
         for attempt in range(5):
-            result = subprocess.run(["wget", "-q", "http://example.com", "-O", "/dev/null"], capture_output=True, timeout=30)
+            result = subprocess.run(
+                ["wget", "-q", "http://example.com", "-O", "/dev/null"],
+                capture_output=True,
+                timeout=30,
+            )
             if result.returncode != 0:
                 last_wget_err = result.stderr.decode(errors="replace").strip()
                 time.sleep(1)
@@ -242,7 +260,9 @@ class TestShortLivedProcesses:
                 break
             time.sleep(1)
 
-        assert connections, f"Should have captured wget connections after retries (last wget stderr: {last_wget_err!r})"
+        assert connections, (
+            f"Should have captured wget connections after retries (last wget stderr: {last_wget_err!r})"
+        )
 
         for conn in connections:
             name, exe, raddr, rport, send, recv, domain = conn
@@ -256,13 +276,19 @@ class TestShortLivedProcesses:
             pytest.skip("curl not available")
 
         for i in range(3):
-            subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
+            subprocess.run(
+                ["curl", "-s", "http://example.com", "-o", "/dev/null"],
+                capture_output=True,
+                timeout=30,
+            )
             time.sleep(0.5)
 
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
         connections = get_connections_for_process("curl")
-        assert len(connections) >= 1, "Should have captured at least one curl connection"
+        assert len(connections) >= 1, (
+            "Should have captured at least one curl connection"
+        )
 
         # All curl connections should have exe resolved
         for conn in connections:
@@ -275,7 +301,11 @@ class TestDatabaseIntegrity:
 
     def test_database_schema(self, tracct_session):
         """Test that database has correct schema."""
-        subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["curl", "-s", "http://example.com", "-o", "/dev/null"],
+            capture_output=True,
+            timeout=30,
+        )
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
         db_path = STATE_DIR / "tracct.db"
@@ -285,12 +315,18 @@ class TestDatabaseIntegrity:
         cur = con.cursor()
         cur.execute("PRAGMA user_version")
         version = cur.fetchone()[0]
-        assert version == DB_VERSION, f"Database version should be {DB_VERSION}, got {version}"
+        assert version == DB_VERSION, (
+            f"Database version should be {DB_VERSION}, got {version}"
+        )
 
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='connections'")
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='connections'"
+        )
         tables = cur.fetchall()
         assert len(tables) == 1, "connections table should exist"
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='executables'")
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='executables'"
+        )
         tables = cur.fetchall()
         assert len(tables) == 1, "executables table should exist"
         # identity is by path: no hash column, and process ancestry stops at the parent
@@ -302,13 +338,19 @@ class TestDatabaseIntegrity:
 
     def test_no_device_mismatch_errors(self, tracct_session):
         """Test no 'Exe inode changed' errors (device encoding bug)."""
-        subprocess.run(["curl", "-s", "http://example.com", "-o", "/dev/null"], capture_output=True, timeout=30)
+        subprocess.run(
+            ["curl", "-s", "http://example.com", "-o", "/dev/null"],
+            capture_output=True,
+            timeout=30,
+        )
         time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
         error_log = DAEMON_LOG
         if error_log.exists():
             content = error_log.read_text()
-            assert content.count("Exe inode changed") == 0, "Should not have inode changed errors"
+            assert content.count("Exe inode changed") == 0, (
+                "Should not have inode changed errors"
+            )
 
 
 class TestSpliceRecvAccounting:
@@ -363,13 +405,17 @@ assert got == total, got
             rows = spliced_recv_rows()
             if sum(recv for _, recv in rows) >= total:
                 break
-        assert rows, "spliced recv connection was not recorded at all (tcp_splice_read hook missing?)"
+        assert rows, (
+            "spliced recv connection was not recorded at all (tcp_splice_read hook missing?)"
+        )
         # wait out one more write cycle so a straddled flush (or double-counted rows still in
         # flight) can't hide bytes from the final tally
         time.sleep(DB_WRITE_LIMIT + 2)
         rows = spliced_recv_rows()
         recv_total = sum(recv for _, recv in rows)
-        assert recv_total == total, f"spliced recv bytes {recv_total} != {total} transferred (2x means double counting), rows: {rows}"
+        assert recv_total == total, (
+            f"spliced recv bytes {recv_total} != {total} transferred (2x means double counting), rows: {rows}"
+        )
 
 
 class TestDualStackServer:
@@ -408,7 +454,9 @@ t.join()
             time.sleep(2)
             rows = server_rows()
         assert rows and sum(row[3] for row in rows) == 300000, rows
-        assert {(family, laddr, raddr, iface) for family, laddr, raddr, _, iface in rows} == {(2, "127.0.0.1", "127.0.0.1", "lo")}
+        assert {
+            (family, laddr, raddr, iface) for family, laddr, raddr, _, iface in rows
+        } == {(2, "127.0.0.1", "127.0.0.1", "lo")}
 
 
 class TestParentTracking:
@@ -454,7 +502,11 @@ class TestParentTracking:
             for _ in range(5):
                 start_time = int(time.time())
                 subprocess.run(
-                    [bash_exe, "-c", f"curl -s http://127.0.0.1:{port}/ -o /dev/null; :"],
+                    [
+                        bash_exe,
+                        "-c",
+                        f"curl -s http://127.0.0.1:{port}/ -o /dev/null; :",
+                    ],
                     capture_output=True,
                     timeout=30,
                 )
@@ -476,9 +528,13 @@ class TestParentTracking:
             server.shutdown()
             server.server_close()
 
-        assert len(results) > 0, f"Should have at least one curl connection with a parent (rport={port})"
+        assert len(results) > 0, (
+            f"Should have at least one curl connection with a parent (rport={port})"
+        )
         pexes = [row[0] for row in results]
-        assert any("bash" in pexe for pexe in pexes), f"Parent should be bash, got: {pexes}"
+        assert any("bash" in pexe for pexe in pexes), (
+            f"Parent should be bash, got: {pexes}"
+        )
 
 
 if __name__ == "__main__":

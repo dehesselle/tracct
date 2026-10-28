@@ -47,7 +47,9 @@ class BPFBuildHook(BuildHookInterface):
         bpf_obj = os.path.join(bpf_src_dir, "tracct.bpf.o")
 
         def register(obj_path):
-            build_data.setdefault("force_include", {})[obj_path] = "tracct/bpf/tracct.bpf.o"
+            build_data.setdefault("force_include", {})[obj_path] = (
+                "tracct/bpf/tracct.bpf.o"
+            )
 
         if not os.path.exists(bpf_src):
             if os.path.exists(bpf_obj):
@@ -56,7 +58,9 @@ class BPFBuildHook(BuildHookInterface):
                 return
             raise RuntimeError(f"BPF source not found: {bpf_src}")
 
-        if os.path.exists(bpf_obj) and os.path.getmtime(bpf_obj) >= os.path.getmtime(bpf_src):
+        if os.path.exists(bpf_obj) and os.path.getmtime(bpf_obj) >= os.path.getmtime(
+            bpf_src
+        ):
             # Object up to date with source; reuse it.
             register(bpf_obj)
             return
@@ -86,7 +90,15 @@ class BPFBuildHook(BuildHookInterface):
                     "on a kernel with CONFIG_DEBUG_INFO_BTF=y"
                 )
             result = subprocess.run(
-                ["bpftool", "btf", "dump", "file", "/sys/kernel/btf/vmlinux", "format", "c"],
+                [
+                    "bpftool",
+                    "btf",
+                    "dump",
+                    "file",
+                    "/sys/kernel/btf/vmlinux",
+                    "format",
+                    "c",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -120,7 +132,9 @@ class BPFBuildHook(BuildHookInterface):
 
         # Strip debug info (optional, non-fatal)
         try:
-            subprocess.run(["llvm-strip", "-g", bpf_obj], capture_output=True, check=True)
+            subprocess.run(
+                ["llvm-strip", "-g", bpf_obj], capture_output=True, check=True
+            )
         except (FileNotFoundError, subprocess.CalledProcessError):
             pass
 

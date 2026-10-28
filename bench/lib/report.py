@@ -13,14 +13,31 @@ from adapters import ADAPTERS
 from harness import REPORTS, RESULTS
 from scenarios import build_scenarios
 
-SYM = {"PASS": "✅ PASS", "PARTIAL": "🟡 PART", "FAIL": "❌ FAIL", "N/A": "⬜ N/A", "ERROR": "⚠️ ERR"}
+SYM = {
+    "PASS": "✅ PASS",
+    "PARTIAL": "🟡 PART",
+    "FAIL": "❌ FAIL",
+    "N/A": "⬜ N/A",
+    "ERROR": "⚠️ ERR",
+}
 LAYER_REF = {
     "socket": "application bytes",
     "frame": "wire bytes (L3 + Ethernet header per packet)",
     "ippayload": "IP payload bytes (L3 minus the IP header per packet)",
 }
 SHORT = {"PASS": "✅", "PARTIAL": "🟡", "FAIL": "❌", "N/A": "⬜", "ERROR": "⚠️"}
-TOOL_ORDER = ["tracct", "nethogs", "bandwhich", "opensnitch", "sniffnet", "littlesnitch", "bcc-baseline", "bcc-tcptop", "bpftrace", "sysdig"]
+TOOL_ORDER = [
+    "tracct",
+    "nethogs",
+    "bandwhich",
+    "opensnitch",
+    "sniffnet",
+    "littlesnitch",
+    "bcc-baseline",
+    "bcc-tcptop",
+    "bpftrace",
+    "sysdig",
+]
 TOOL_LABEL = {
     "tracct": "tracct",
     "nethogs": "NetHogs",
@@ -87,7 +104,10 @@ def _matrix(data, kind, title, tools, subtitle=""):
     lines = [f"## {title}", ""]
     if subtitle:
         lines += [subtitle, ""]
-    lines += ["| # | Scenario | " + " | ".join(TOOL_LABEL[t] for t in tools) + " |", "|---|---|" + "|".join(["---"] * len(tools)) + "|"]
+    lines += [
+        "| # | Scenario | " + " | ".join(TOOL_LABEL[t] for t in tools) + " |",
+        "|---|---|" + "|".join(["---"] * len(tools)) + "|",
+    ]
     broken = {t: _broken(data.get(t, {})) for t in tools}
     for s in scn:
         row = [s.sid, s.name]
@@ -100,7 +120,11 @@ def _matrix(data, kind, title, tools, subtitle=""):
             mark = "*" if flaky else ""
             row.append(sym + mark)
         lines.append("| " + " | ".join(row) + " |")
-    lines += ["", "Legend: ✅ PASS · 🟡 PARTIAL · ❌ FAIL · ⬜ N/A · ⚠️ not measured (setup failed or unresolved trial) · \\* trials disagreed, see the note", ""]
+    lines += [
+        "",
+        "Legend: ✅ PASS · 🟡 PARTIAL · ❌ FAIL · ⬜ N/A · ⚠️ not measured (setup failed or unresolved trial) · \\* trials disagreed, see the note",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -128,16 +152,24 @@ def _footnotes(data, tools):
         sc = d.get("scenarios", {})
         items = []
         if _broken(d):  # setup failed: say so, rather than leaving an empty section
-            items.append("    - **setup failed: this tool was never measured; the cells above are not results**")
+            items.append(
+                "    - **setup failed: this tool was never measured; the cells above are not results**"
+            )
         for sid, rec in sc.items():
             dv, dfl = _resolve(rec, "det", t)
             bv, bfl = _resolve(rec, "bw", t)
-            if dv not in ("PARTIAL", "FAIL") and bv not in ("PARTIAL", "FAIL") and not (dfl or bfl):
+            if (
+                dv not in ("PARTIAL", "FAIL")
+                and bv not in ("PARTIAL", "FAIL")
+                and not (dfl or bfl)
+            ):
                 continue
             tr = [x for x in rec.get("trials", []) if "obs" in x]
             onote = tr[0]["obs"]["note"] if tr and not (dfl or bfl) else ""
             ratio = ""
-            if not (dfl or bfl):  # a first-trial ratio would contradict a combined verdict
+            if not (
+                dfl or bfl
+            ):  # a first-trial ratio would contradict a combined verdict
                 for x in tr:
                     dtl = x.get("bw_detail", {})
                     for dcol in ("egress", "ingress"):
@@ -150,15 +182,24 @@ def _footnotes(data, tools):
             if dfl or bfl:
                 seg += f" (det {[x.get('det') for x in rec.get('trials', [])]}, bw {[x.get('bw') for x in rec.get('trials', [])]})"
             extra = "; ".join(x for x in [onote, ratio] if x)
-            items.append(f"    - **{sid} {scn[sid].name}**: {seg}. {extra}".rstrip().rstrip(".") + ".")
+            items.append(
+                f"    - **{sid} {scn[sid].name}**: {seg}. {extra}".rstrip().rstrip(".")
+                + "."
+            )
         errs = d.get("errors", [])
-        if items or errs:  # errors need the tool header too, or they read as the previous tool's
+        if (
+            items or errs
+        ):  # errors need the tool header too, or they read as the previous tool's
             lines.append(f"- **{TOOL_LABEL[t]}**")
             lines += items
         for e in errs[:5]:
-            lines.append(f"    - _run note:_ {' '.join(e.split())[:300]}")  # flattened: a traceback must stay one bullet
+            lines.append(
+                f"    - _run note:_ {' '.join(e.split())[:300]}"
+            )  # flattened: a traceback must stay one bullet
         if len(errs) > 5:
-            lines.append(f"    - _run note:_ (+{len(errs) - 5} further notes not shown)")
+            lines.append(
+                f"    - _run note:_ (+{len(errs) - 5} further notes not shown)"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -180,16 +221,23 @@ def _per_tool(data, tool):
     lines = [
         f"# {TOOL_LABEL.get(tool, tool)}: detailed results",
         "",
-        f"- scored against: **{LAYER_REF.get(d.get('layer'), d.get('layer'))}**" + (f", {note}" if note else ""),
+        f"- scored against: **{LAYER_REF.get(d.get('layer'), d.get('layer'))}**"
+        + (f", {note}" if note else ""),
         "",
     ]
     if _broken(d):
-        lines += ["> ⚠️ **Setup failed: this tool was never measured.** The harness recorded:"]
-        lines += [f"> - {' '.join(e.split())[:500]}" for e in d.get("errors", [])] or ["> - (no error recorded)"]
+        lines += [
+            "> ⚠️ **Setup failed: this tool was never measured.** The harness recorded:"
+        ]
+        lines += [f"> - {' '.join(e.split())[:500]}" for e in d.get("errors", [])] or [
+            "> - (no error recorded)"
+        ]
         return "\n".join(lines) + "\n"
     ctrl = d.get("control")
     if ctrl:
-        lines.append(f"- **control (separate from the s01 row):** det={ctrl['det']} bw={ctrl['bw']} (reference recv={ctrl['gt']['app_recv']}, reported recv={_fmtb(ctrl['obs']['recv'])})")
+        lines.append(
+            f"- **control (separate from the s01 row):** det={ctrl['det']} bw={ctrl['bw']} (reference recv={ctrl['gt']['app_recv']}, reported recv={_fmtb(ctrl['obs']['recv'])})"
+        )
     lines += [
         "",
         "Rows show the first trial's numbers; verdicts combine all trials. \\* = trials disagreed.",
@@ -206,15 +254,21 @@ def _per_tool(data, tool):
         dtl = tr[0].get("bw_detail") if tr else None
         dtl = dtl if isinstance(dtl, dict) else {}
         # the reference actually scored against, per direction, at this tool's layer
-        ref = "/".join(str(dtl[c]["ref"]) if c in dtl else "-" for c in ("egress", "ingress"))
-        ratio = " ".join(f"{c} {dtl[c]['ratio']}" for c in ("egress", "ingress") if c in dtl)
+        ref = "/".join(
+            str(dtl[c]["ref"]) if c in dtl else "-" for c in ("egress", "ingress")
+        )
+        ratio = " ".join(
+            f"{c} {dtl[c]['ratio']}" for c in ("egress", "ingress") if c in dtl
+        )
         dv, dfl = _resolve(rec, "det", tool)
         bv, bfl = _resolve(rec, "bw", tool)
         det = SYM.get(dv, "?") + ("*" if dfl else "")
         bw = SYM.get(bv, "?") + ("*" if bfl else "")
         rep = f"{_fmtb(obs.get('sent'))}/{_fmtb(obs.get('recv'))}"
         note = (obs.get("note", "") or "")[:80]
-        lines.append(f"| {sid} | {s.name} | {det} | {bw} | {ref} | {rep} | {ratio} | {note} |")
+        lines.append(
+            f"| {sid} | {s.name} | {det} | {bw} | {ref} | {rep} | {ratio} | {note} |"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -251,8 +305,17 @@ def write_findings():
         return
     scn = build_scenarios()
     C = {t: _counts(data[t], t) for t in tools}
-    ntrials = max((len(r.get("trials", [])) for d in data.values() for r in d.get("scenarios", {}).values()), default=0)
-    RUN_DATE = max(d.get("run_date", "") for d in data.values())  # the date the run finished
+    ntrials = max(
+        (
+            len(r.get("trials", []))
+            for d in data.values()
+            for r in d.get("scenarios", {}).values()
+        ),
+        default=0,
+    )
+    RUN_DATE = max(
+        d.get("run_date", "") for d in data.values()
+    )  # the date the run finished
     hosts = sorted({_host(d) for d in data.values()})
     # neutral ordering for the scoreboard: by detection then bandwidth PASS
     order = sorted(tools, key=lambda t: (-C[t]["det_pass"], -C[t]["bw_pass"]))
@@ -285,7 +348,9 @@ def write_findings():
         if _broken(data[t]):
             # never measured: printing 0 / 0 / 0 / 0 here would read as a tool that
             # scored nothing, which is exactly the wrong conclusion.
-            L.append(f"| {TOOL_LABEL[t]} | ⚠️ **not measured (setup failed)** | ⚠️ **not measured (setup failed)** | — |")
+            L.append(
+                f"| {TOOL_LABEL[t]} | ⚠️ **not measured (setup failed)** | ⚠️ **not measured (setup failed)** | — |"
+            )
             continue
         L.append(
             f"| {TOOL_LABEL[t]} | **{c['det_pass']}** / {c['det_part']} / {c['det_fail']} / {c['det_na']}{err(c['det_err'])} "
@@ -296,9 +361,17 @@ def write_findings():
     # while running one, must say so next to the numbers rather than in a log file.
     unhealthy = [t for t in order if _broken(data[t]) or data[t].get("errors")]
     if unhealthy:
-        L += ["", "## Run health\n", "Recorded by the harness during this run. A tool that was never measured has no results in the tables above.\n"]
+        L += [
+            "",
+            "## Run health\n",
+            "Recorded by the harness during this run. A tool that was never measured has no results in the tables above.\n",
+        ]
         for t in unhealthy:
-            state = "**never measured** (setup failed)" if _broken(data[t]) else "ran, with notes"
+            state = (
+                "**never measured** (setup failed)"
+                if _broken(data[t])
+                else "ran, with notes"
+            )
             L.append(f"- **{TOOL_LABEL[t]}**: {state}")
             for e in data[t].get("errors", [])[:3]:
                 L.append(f"    - {' '.join(e.split())[:300]}")
@@ -317,7 +390,9 @@ def write_findings():
             "|---|---|---|",
         ]
         for t in order:
-            L.append(f"| {TOOL_LABEL[t]} | {data[t].get('version') or 'not recorded'} | {data[t].get('version_source') or 'not recorded'} |")
+            L.append(
+                f"| {TOOL_LABEL[t]} | {data[t].get('version') or 'not recorded'} | {data[t].get('version_source') or 'not recorded'} |"
+            )
 
     # resource usage (present only when the run was profiled)
     res_rows = [(t, data[t].get("resources")) for t in order]
@@ -335,7 +410,9 @@ def write_findings():
         for t, r in res_rows:
             if not r or "pss_peak_mb" not in r:
                 continue
-            L.append(f"| {TOOL_LABEL[t]} | {r['cpu_avg_pct']} | {r.get('cpu_p95_pct', '—')} | {r['pss_avg_mb']} | {r['pss_peak_mb']} |")
+            L.append(
+                f"| {TOOL_LABEL[t]} | {r['cpu_avg_pct']} | {r.get('cpu_p95_pct', '—')} | {r['pss_avg_mb']} | {r['pss_peak_mb']} |"
+            )
 
     # end of the overview (intro + scoreboard + resource usage) shown in the docs;
     # the per-scenario notes and ground-truth table below are full-report-only.
@@ -360,13 +437,17 @@ def write_findings():
         for t in tools:
             rec = data[t].get("scenarios", {}).get(s.sid, {})
             for x in rec.get("trials", []):
-                if x.get("gt", {}).get("app_sent", 0) or x.get("gt", {}).get("app_recv", 0):
+                if x.get("gt", {}).get("app_sent", 0) or x.get("gt", {}).get(
+                    "app_recv", 0
+                ):
                     tr = x["gt"]
                     break
             if tr:
                 break
         if tr:
-            L.append(f"| {s.sid} | {s.name} | {tr['app_sent']}/{tr['app_recv']} | {tr['wire_egress']}/{tr['wire_ingress']} |")
+            L.append(
+                f"| {s.sid} | {s.name} | {tr['app_sent']}/{tr['app_recv']} | {tr['wire_egress']}/{tr['wire_ingress']} |"
+            )
     (REPORTS / "findings.md").write_text("\n".join(L) + "\n")
     print(f"wrote findings.md ({len(order)} tools, {len(scn)} scenarios)")
 

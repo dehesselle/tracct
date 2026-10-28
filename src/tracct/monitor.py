@@ -16,7 +16,16 @@ import threading
 import time
 import typing
 
-from tracct.bpf_wrapper import BPF, ConnKey4, ConnKey6, ConnKeyPacket, ConnVal, check_bpf_requirements, find_bpf_object, kernel_symbol_addrs
+from tracct.bpf_wrapper import (
+    BPF,
+    ConnKey4,
+    ConnKey6,
+    ConnKeyPacket,
+    ConnVal,
+    check_bpf_requirements,
+    find_bpf_object,
+    kernel_symbol_addrs,
+)
 from tracct.config import Config
 from tracct.constants import ST_DEV_MASK
 from tracct.types import BpfEvent
@@ -81,7 +90,13 @@ def _read_proc_status_uid(pid: int) -> int:
 
 
 # suffixes of the systemd units processes run in
-UNIT_SUFFIXES: typing.Final[tuple[str, ...]] = (".service", ".scope", ".socket", ".mount", ".swap")
+UNIT_SUFFIXES: typing.Final[tuple[str, ...]] = (
+    ".service",
+    ".scope",
+    ".socket",
+    ".mount",
+    ".swap",
+)
 
 
 def unit_of_cgroup(path: str) -> str:
@@ -149,7 +164,15 @@ def _find_exe_by_inode(comm: str, st_dev: int, st_ino: int) -> str:
         except Exception:
             pass
     # Try common system directories
-    for prefix in ("/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/libexec"):
+    for prefix in (
+        "/usr/bin",
+        "/usr/sbin",
+        "/bin",
+        "/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/libexec",
+    ):
         candidate = os.path.join(prefix, comm)
         try:
             stat = os.stat(candidate)
@@ -173,18 +196,24 @@ class ExeResolver:
         # (e.g. uutils-coreutils) hardlink many symlinks (head, sleep, cat, ...)
         # to a single inode; the kernel distinguishes them per-process via
         # /proc/PID/exe but the inode alone is ambiguous.
-        self.ino_path_cache: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self.ino_path_cache: collections.OrderedDict[str, str] = (
+            collections.OrderedDict()
+        )
         # last-resort fallback keyed only by (dev, ino), used when the live
         # readlink and the (dev, ino, comm) lookup both miss (e.g. BPF reports a
         # worker-thread comm like `tokio-rt-worker` matching no binary). value is
         # classified once by _classify_inode_fallback(): a canonical path, or a
         # '<multi-call:dev,ino>' sentinel for hardlink multi-call binaries.
-        self.dev_ino_fallback: collections.OrderedDict[str, str] = collections.OrderedDict()
+        self.dev_ino_fallback: collections.OrderedDict[str, str] = (
+            collections.OrderedDict()
+        )
         # last exe resolved per (dev, ino), for when the fallback above holds a sentinel
         self.last_exe: collections.OrderedDict[str, str] = collections.OrderedDict()
         self.multi_call_reported: set[str] = set()
 
-    def _record_inode_fallback(self, sig: str, st_dev: int, st_ino: int, exe: str) -> None:
+    def _record_inode_fallback(
+        self, sig: str, st_dev: int, st_ino: int, exe: str
+    ) -> None:
         """classify and memoize the (dev, ino) fallback name the first time an inode
         is resolved (O(1), so multi-call binaries with many names don't trigger
         rescans). reports once per hardlink multi-call inode when first seen."""
@@ -195,9 +224,13 @@ class ExeResolver:
         self.multi_call_reported.discard(evicted)
         if label.startswith("<multi-call:") and sig not in self.multi_call_reported:
             self.multi_call_reported.add(sig)
-            self.report(f"monitor: hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone")
+            self.report(
+                f"monitor: hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone"
+            )
 
-    def _resolve_when_proc_gone(self, sig: str, st_dev: int, st_ino: int, pid: int, comm: str) -> str:
+    def _resolve_when_proc_gone(
+        self, sig: str, st_dev: int, st_ino: int, pid: int, comm: str
+    ) -> str:
         """best-effort exe resolution when the /proc/PID/exe readlink failed.
 
         comm only locates a candidate; _find_exe_by_inode verifies its
@@ -219,7 +252,9 @@ class ExeResolver:
         # inode, trust it; otherwise use the comm-less fallback
         return candidate or _cache_get(self.dev_ino_fallback, sig)
 
-    def resolve(self, st_dev: int, st_ino: int, pid: int, comm: str = "") -> tuple[int, int, str]:
+    def resolve(
+        self, st_dev: int, st_ino: int, pid: int, comm: str = ""
+    ) -> tuple[int, int, str]:
         """return (dev, ino, exe) for pid; dev and ino come from the live process when the
         event had none, exe is '' when it can't be attributed"""
         st_dev = st_dev & ST_DEV_MASK
@@ -246,7 +281,11 @@ class ExeResolver:
             # nothing to verify a cached path against
             return st_dev, st_ino, proc_exe
         sig = f"{st_dev} {st_ino}"
-        exe = proc_exe or self._resolve_when_proc_gone(sig, st_dev, st_ino, pid, comm) or _cache_get(self.last_exe, sig)
+        exe = (
+            proc_exe
+            or self._resolve_when_proc_gone(sig, st_dev, st_ino, pid, comm)
+            or _cache_get(self.last_exe, sig)
+        )
         # only cache non-empty, non-sentinel resolutions; an empty value
         # would poison ino_path_cache for a (dev, ino, comm) tuple whose
         # first event was a dead process, masking later live lookups
@@ -266,9 +305,19 @@ def unmap_ipv4(saddr: bytes, daddr: bytes) -> tuple[int, str, str]:
     """(family, laddr, raddr) of an IPv6 socket's addresses: an IPv4 peer of a dual-stack socket
     shows as ::ffff:a.b.c.d, and is IPv4 traffic, on an interface's IPv4 address"""
     sides = (saddr, daddr)
-    if any(side[:12] == V4_MAPPED_PREFIX for side in sides) and all(side[:12] == V4_MAPPED_PREFIX or side == V6_UNSPECIFIED for side in sides):
-        return int(socket.AF_INET), socket.inet_ntop(socket.AF_INET, saddr[12:]), socket.inet_ntop(socket.AF_INET, daddr[12:])
-    return int(socket.AF_INET6), socket.inet_ntop(socket.AF_INET6, saddr), socket.inet_ntop(socket.AF_INET6, daddr)
+    if any(side[:12] == V4_MAPPED_PREFIX for side in sides) and all(
+        side[:12] == V4_MAPPED_PREFIX or side == V6_UNSPECIFIED for side in sides
+    ):
+        return (
+            int(socket.AF_INET),
+            socket.inet_ntop(socket.AF_INET, saddr[12:]),
+            socket.inet_ntop(socket.AF_INET, daddr[12:]),
+        )
+    return (
+        int(socket.AF_INET6),
+        socket.inet_ntop(socket.AF_INET6, saddr),
+        socket.inet_ntop(socket.AF_INET6, daddr),
+    )
 
 
 def _parse_proc_net_addr(hex_addr: str) -> str:
@@ -280,7 +329,9 @@ def _parse_proc_net_addr(hex_addr: str) -> str:
             return socket.inet_ntop(socket.AF_INET, packed[::-1])
         if len(addr_part) == 32:
             # /proc/net stores IPv6 as 4 little-endian u32 words
-            packed = b"".join(bytes.fromhex(addr_part[i : i + 8])[::-1] for i in range(0, 32, 8))
+            packed = b"".join(
+                bytes.fromhex(addr_part[i : i + 8])[::-1] for i in range(0, 32, 8)
+            )
             if packed[:12] == V4_MAPPED_PREFIX:
                 return socket.inet_ntop(socket.AF_INET, packed[12:])
             return socket.inet_ntop(socket.AF_INET6, packed)
@@ -439,19 +490,31 @@ def initial_poll() -> list:
     return initial_processes
 
 
-def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], object], stop: threading.Event, reattach: threading.Event, ready: threading.Event) -> None:
+def run_monitor(
+    config: Config,
+    publish: typing.Callable[[list[BpfEvent]], object],
+    stop: threading.Event,
+    reattach: threading.Event,
+    ready: threading.Event,
+) -> None:
     """runs a bpf program to monitor the system for new connections and hands each batch of
     attributed events to publish; the reader thread of the daemon, so nothing here may block
     on anything but the kernel"""
     # Required for libbpf to lock the BPF maps and ring buffers past the inherited 8 MiB cap
     try:
-        resource.setrlimit(resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+        resource.setrlimit(
+            resource.RLIMIT_MEMLOCK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY)
+        )
     except (ValueError, OSError):
         pass
     EVERY_EXE: typing.Final[bool] = config.monitoring.every_exe
     # the size of each aggregation map, set at load; the packet map is keyed by process, not
     # connection, so it keeps its own size
-    map_sizes = {"conn_stats4": config.monitoring.conn_map_max_entries, "conn_stats6": config.monitoring.conn_map_max_entries, "conn_stats_packet": PACKET_MAP_MAX}
+    map_sizes = {
+        "conn_stats4": config.monitoring.conn_map_max_entries,
+        "conn_stats6": config.monitoring.conn_map_max_entries,
+        "conn_stats_packet": PACKET_MAP_MAX,
+    }
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
     resolver = ExeResolver(log_error)
 
@@ -478,7 +541,9 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             last_read.popitem(last=False)
         return cmdline, unit
 
-    def read_process_cached(pid: int, cache: dict[int, tuple[str, str]]) -> tuple[str, str]:
+    def read_process_cached(
+        pid: int, cache: dict[int, tuple[str, str]]
+    ) -> tuple[str, str]:
         """read_process once per pid per drain rather than once per drained entry, so a process
         with a huge (crafted) cmdline flooding connections cannot stall the drain. A pid in one
         drain snapshot is a single process, and the cache is rebuilt each drain."""
@@ -494,8 +559,12 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             pstat = os.stat(f"/proc/{proc['ppid']}/exe")
             cmd, unit = read_process(proc["pid"])
             pcmd, _ = read_process(proc["ppid"])
-            st_dev, st_ino, exe = resolver.resolve(stat.st_dev, stat.st_ino, proc["pid"], proc["name"])
-            pst_dev, pst_ino, pexe = resolver.resolve(pstat.st_dev, pstat.st_ino, proc["ppid"], proc["pname"])
+            st_dev, st_ino, exe = resolver.resolve(
+                stat.st_dev, stat.st_ino, proc["pid"], proc["name"]
+            )
+            pst_dev, pst_ino, pexe = resolver.resolve(
+                pstat.st_dev, pstat.st_ino, proc["ppid"], proc["pname"]
+            )
             if EVERY_EXE or proc["rport"] != -1:
                 initial_batch.append(
                     {
@@ -568,7 +637,15 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             # gate on symbol PRESENCE (kptr_restrict=2 zeroes addresses but still lists names).
             # None (kallsyms unreadable) -> assume present and let the load try; a fexit prog
             # whose target symbol is absent would otherwise fail the whole bpf object load
-            disabled_traces = set() if syms is None else {prog for prog, target in optional_trace_targets.items() if target not in syms}
+            disabled_traces = (
+                set()
+                if syms is None
+                else {
+                    prog
+                    for prog, target in optional_trace_targets.items()
+                    if target not in syms
+                }
+            )
             # snapshot before the opt-in gate below, so a disabled hook is not reported as a missing symbol
             missing_symbol = set(disabled_traces)
             # tcp_read_sock_ret is the exception: its actor filter needs the real address, not
@@ -578,13 +655,35 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                 disabled_traces.add("tcp_read_sock_ret")
             # opt-in: these add a per-frame softirq hook the per-connection aggregation avoids
             if not config.monitoring.mmap_ring_rx:
-                disabled_traces.update(("packet_set_ring_ret", "tpacket_rcv_ret", "xsk_bind_ret", "xsk_rcv_ret"))
+                disabled_traces.update(
+                    (
+                        "packet_set_ring_ret",
+                        "tpacket_rcv_ret",
+                        "xsk_bind_ret",
+                        "xsk_rcv_ret",
+                    )
+                )
             # a ringbuf's max_entries is its byte size, so the configured page count sizes it
-            exec_ring_bytes = config.monitoring.exec_ring_buffer_pages * resource.getpagesize()
-            b = BPF(obj_file=bpf_obj_path, map_max_entries={**map_sizes, "exec_events": exec_ring_bytes}, disabled_programs=disabled_traces)
-            b.attach_kretprobe(event=b.get_syscall_fnname("execve"), fn_name="exec_entry")
+            exec_ring_bytes = (
+                config.monitoring.exec_ring_buffer_pages * resource.getpagesize()
+            )
+            b = BPF(
+                obj_file=bpf_obj_path,
+                map_max_entries={**map_sizes, "exec_events": exec_ring_bytes},
+                disabled_programs=disabled_traces,
+            )
+            b.attach_kretprobe(
+                event=b.get_syscall_fnname("execve"), fn_name="exec_entry"
+            )
         except Exception as e:
-            log_error("Init BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+            log_error(
+                "Init BPF %s%s on line %s"
+                % (
+                    type(e).__name__,
+                    str(e.args),
+                    e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                )
+            )
             raise
         use_getaddrinfo_uprobe = False
         try:
@@ -592,7 +691,9 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             b.attach_uretprobe(name="c", sym="getaddrinfo", fn_name="dns_return")
             use_getaddrinfo_uprobe = True
         except Exception as e:
-            log_error(f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup")
+            log_error(
+                f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup"
+            )
         # attach fexit network hooks: inet_sendmsg for send, inet_recvmsg for recv;
         # sock_common_recvmsg covers af_inet6 raw / l2tp / dccp recv (not inet6_recvmsg)
         try:
@@ -614,41 +715,60 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             ("tun_get_user_ret", "tun_get_user", "TUN/TAP raw write bytes"),
             ("tun_do_read_ret", "tun_do_read", "TUN/TAP raw read bytes"),
             ("xsk_build_skb_ret", "xsk_build_skb", "AF_XDP copy-mode tx bytes"),
-            ("packet_set_ring_ret", "packet_set_ring", "AF_PACKET RX_RING owner tracking"),
+            (
+                "packet_set_ring_ret",
+                "packet_set_ring",
+                "AF_PACKET RX_RING owner tracking",
+            ),
             ("tpacket_rcv_ret", "tpacket_rcv", "AF_PACKET RX_RING capture bytes"),
             ("xsk_bind_ret", "xsk_bind", "AF_XDP RX owner tracking"),
             ("xsk_rcv_ret", "__xsk_rcv", "AF_XDP RX capture bytes"),
         ):
             if prog in disabled_traces:
                 if prog in missing_symbol:
-                    log_error(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded")
+                    log_error(
+                        f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded"
+                    )
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
             except Exception as e:
-                log_error(f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded")
+                log_error(
+                    f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded"
+                )
         # tcp/mptcp splice_read: recv via splice()/sendfile() bypasses recvmsg. best-effort,
         # one hook covers v4+v6; a missing hook only drops spliced recv bytes
-        for prog, target in (("tcp_splice_read_ret", "tcp_splice_read"), ("mptcp_splice_read_ret", "mptcp_splice_read")):
+        for prog, target in (
+            ("tcp_splice_read_ret", "tcp_splice_read"),
+            ("mptcp_splice_read_ret", "mptcp_splice_read"),
+        ):
             if prog in disabled_traces:
-                log_error(f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded")
+                log_error(
+                    f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded"
+                )
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
             except Exception as e:
-                log_error(f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded")
+                log_error(
+                    f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded"
+                )
         # tcp_read_sock: recv via io_uring zero-copy (IORING_OP_RECV_ZC). only enabled when
         # io_zcrx_recv_skb is present (see optional_trace_targets); its address must be written
         # before attach so the actor filter never counts other read_sock users. a missing/disabled
         # hook only drops io_uring zcrx recv
         if "tcp_read_sock_ret" in disabled_traces:
-            log_error("BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded")
+            log_error(
+                "BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded"
+            )
         else:
             try:
                 b.bpf_obj.set_global(".data.io_zcrx", struct.pack("<Q", io_zcrx_actor))
                 b.bpf_obj.attach_trace("tcp_read_sock_ret")
             except Exception as e:
-                log_error(f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded")
+                log_error(
+                    f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded"
+                )
         b["exec_events"].open_ring_buffer(queue_exec_event)
         if use_getaddrinfo_uprobe:
             b["dns_events"].open_ring_buffer(queue_dns_event)
@@ -673,7 +793,15 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             try:
                 entries = b.drain_map(map_name, key_type, ConnVal)
             except Exception as e:
-                log_error("BPF drain %s %s%s on line %s" % (map_name, type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                log_error(
+                    "BPF drain %s %s%s on line %s"
+                    % (
+                        map_name,
+                        type(e).__name__,
+                        str(e.args),
+                        e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                    )
+                )
                 continue
             # an lru map evicts oldest entries silently when full, so a drain at
             # near capacity means connections may have been dropped before drain
@@ -681,8 +809,14 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             if len(entries) >= capacity * 9 // 10:
                 if map_name not in near_capacity_maps:
                     near_capacity_maps.add(map_name)
-                    hint = "try increasing [monitoring].conn_map_max_entries" if map_name != "conn_stats_packet" else "too many processes doing raw packet or TUN I/O"
-                    log_error(f"{map_name} near capacity ({len(entries)}/{capacity}), connections may have been evicted, {hint}")
+                    hint = (
+                        "try increasing [monitoring].conn_map_max_entries"
+                        if map_name != "conn_stats_packet"
+                        else "too many processes doing raw packet or TUN I/O"
+                    )
+                    log_error(
+                        f"{map_name} near capacity ({len(entries)}/{capacity}), connections may have been evicted, {hint}"
+                    )
             else:
                 near_capacity_maps.discard(map_name)
             # drain_map already lookup_and_delete'd every entry from the kernel, so a
@@ -693,26 +827,40 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
             # a process's connections share their exe and parent; resolved once per drain
             exe_cache: dict[tuple[int, int, int, bytes], tuple[int, int, str]] = {}
 
-            def resolve_cached(st_dev: int, st_ino: int, pid: int, comm: bytes) -> tuple[int, int, str]:
+            def resolve_cached(
+                st_dev: int, st_ino: int, pid: int, comm: bytes
+            ) -> tuple[int, int, str]:
                 cache_key = (st_dev, st_ino, pid, comm)
                 resolved = exe_cache.get(cache_key)
                 if resolved is None:
-                    resolved = exe_cache[cache_key] = resolver.resolve(st_dev, st_ino, pid, comm.decode(errors="replace"))
+                    resolved = exe_cache[cache_key] = resolver.resolve(
+                        st_dev, st_ino, pid, comm.decode(errors="replace")
+                    )
                 return resolved
 
             for key, val in entries:
                 try:
-                    st_dev, st_ino, exe = resolve_cached(val.dev, val.ino, key.pid, val.comm)
-                    pst_dev, pst_ino, pexe = resolve_cached(val.pdev, val.pino, val.ppid, val.pcomm)
+                    st_dev, st_ino, exe = resolve_cached(
+                        val.dev, val.ino, key.pid, val.comm
+                    )
+                    pst_dev, pst_ino, pexe = resolve_cached(
+                        val.pdev, val.pino, val.ppid, val.pcomm
+                    )
                     cmd, unit = read_process_cached(key.pid, process_cache)
                     pcmd, _ = read_process_cached(val.ppid, process_cache)
                     family = int(map_family)
                     if map_family == socket.AF_INET:
-                        laddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.saddr))
-                        raddr = socket.inet_ntop(socket.AF_INET, struct.pack("I", key.daddr))
+                        laddr = socket.inet_ntop(
+                            socket.AF_INET, struct.pack("I", key.saddr)
+                        )
+                        raddr = socket.inet_ntop(
+                            socket.AF_INET, struct.pack("I", key.daddr)
+                        )
                         lport, rport, protocol = key.lport, key.dport, int(key.protocol)
                     elif map_family == socket.AF_INET6:
-                        family, laddr, raddr = unmap_ipv4(bytes(key.saddr)[:16], bytes(key.daddr)[:16])
+                        family, laddr, raddr = unmap_ipv4(
+                            bytes(key.saddr)[:16], bytes(key.daddr)[:16]
+                        )
                         lport, rport, protocol = key.lport, key.dport, int(key.protocol)
                     else:
                         # the peer, ports and protocol live inside the app-crafted frame, so record them as unknown
@@ -751,7 +899,14 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                         publish(outgoing)
                         outgoing = []
                 except Exception as e:
-                    log_error("BPF drain entry %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                    log_error(
+                        "BPF drain entry %s%s on line %s"
+                        % (
+                            type(e).__name__,
+                            str(e.args),
+                            e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                        )
+                    )
             if outgoing:
                 publish(outgoing)
 
@@ -759,8 +914,12 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
         event = b["exec_events"].event(data)
         # resolve while the process is young even without every_exe: it fills the caches its
         # connections fall back on once a short-lived process has exited
-        st_dev, st_ino, exe = resolver.resolve(event.dev, event.ino, event.pid, event.comm.decode(errors="replace"))
-        pst_dev, pst_ino, pexe = resolver.resolve(event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace"))
+        st_dev, st_ino, exe = resolver.resolve(
+            event.dev, event.ino, event.pid, event.comm.decode(errors="replace")
+        )
+        pst_dev, pst_ino, pexe = resolver.resolve(
+            event.pdev, event.pino, event.ppid, event.pcomm.decode(errors="replace")
+        )
         # what was read under this pid before belongs to the program before the exec, or to an
         # earlier process the pid was reused from; it must not answer once this one has exited
         last_read.pop(event.pid, None)
@@ -822,15 +981,23 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
 
     def report_ring_drops() -> None:
         try:
-            exec_drops = struct.unpack("<Q", b.bpf_obj.get_global(".data.execdrops", 8))[0]
-            dns_drops = struct.unpack("<Q", b.bpf_obj.get_global(".data.dnsdrops", 8))[0]
+            exec_drops = struct.unpack(
+                "<Q", b.bpf_obj.get_global(".data.execdrops", 8)
+            )[0]
+            dns_drops = struct.unpack("<Q", b.bpf_obj.get_global(".data.dnsdrops", 8))[
+                0
+            ]
         except Exception:
             return
         if exec_drops > ring_drop_state[0]:
-            log_error(f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost")
+            log_error(
+                f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost"
+            )
             ring_drop_state[0] = exec_drops
         if dns_drops > ring_drop_state[1]:
-            log_error(f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})")
+            log_error(
+                f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})"
+            )
             ring_drop_state[1] = dns_drops
 
     drain_interval = 1.0
@@ -855,7 +1022,14 @@ def run_monitor(config: Config, publish: typing.Callable[[list[BpfEvent]], objec
                     report_ring_drops()
                     next_drain = now + drain_interval
             except Exception as e:
-                log_error("BPF %s%s on line %s" % (type(e).__name__, str(e.args), e.__traceback__.tb_lineno if e.__traceback__ else "?"))
+                log_error(
+                    "BPF %s%s on line %s"
+                    % (
+                        type(e).__name__,
+                        str(e.args),
+                        e.__traceback__.tb_lineno if e.__traceback__ else "?",
+                    )
+                )
         # hand over what the maps still hold before shutting down
         drain_conn_maps()
     finally:
