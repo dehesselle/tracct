@@ -295,7 +295,8 @@ def start_tracct() -> int:
             return run_viewer(args)
         except ImportError as e:
             logger.error(
-                f"the viewer needs Textual, installed with tracct[viewer] ({e})"
+                f"the viewer needs Textual and tcoda, installed with tracct[viewer] "
+                f"({e})"
             )
             return 1
     else:
