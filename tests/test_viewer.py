@@ -5,7 +5,6 @@
 """Tests for the Textual viewer, driven headless against a query server on a temporary socket
 and a live feed publisher. No root needed; skipped without textual (tracct[tui])."""
 
-import asyncio
 import re
 import threading
 import time
@@ -48,109 +47,97 @@ def test_settings():
     assert config.get(settings.LIVE_EVENTS) == 20 and config.get(settings.LIVE_EXECUTABLES) == 100
 
 
-def test_settings_chord(tmp_path):
-    async def drive():
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("s")
-            assert not isinstance(app.screen, SettingsDialog)
-            await pilot.press("comma", "s")
-            await _until(pilot, lambda: isinstance(app.screen, SettingsDialog))
-
-    asyncio.run(drive())
+async def test_settings_chord(tmp_path):
+    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("s")
+        assert not isinstance(app.screen, SettingsDialog)
+        await pilot.press("comma", "s")
+        await _until(pilot, lambda: isinstance(app.screen, SettingsDialog))
 
 
-def test_tab_keys(tmp_path):
-    async def drive():
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
-        async with app.run_test(size=(120, 40)) as pilot:
-            tabs = app.query_one(TabbedContent)
-            assert [pane.id for pane in tabs.query(TabPane)] == ["live", "forwarded", "interfaces", "processes"]
-            assert not tabs.query_one(Tabs).can_focus
-            # Textual's own ctrl+q quits; no single key does
-            assert "ctrl+q" in app.screen.active_bindings and not {"q", "question_mark"} & set(app.screen.active_bindings)
-            # no daemon: the live tab's banner shows why, as an error
-            banner = app.query_one(LivePane).query_one(".banner")
-            await _until(pilot, lambda: banner.display and banner.has_class("-error"))
-            assert "live feed unavailable" in str(banner.query_one(".banner-text").render())
-            assert not banner.query_one(".banner-hint").display
-            # p means Processes, even with the focus in the live tab
-            await pilot.press("p")
-            assert tabs.active == "processes"
-            # the time range and units belong to the history tabs only
-            await _until(pilot, lambda: {"s", "shift+left", "shift+right", "u"} <= set(app.screen.active_bindings))
-            for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
-                await pilot.press(key)
-                assert tabs.active == tab
-            await _until(pilot, lambda: not {"s", "shift+left", "shift+right", "u"} & set(app.screen.active_bindings))
-            await pilot.press("u")
-            assert app.unit == "auto"
-
-    asyncio.run(drive())
+async def test_tab_keys(tmp_path):
+    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    async with app.run_test(size=(120, 40)) as pilot:
+        tabs = app.query_one(TabbedContent)
+        assert [pane.id for pane in tabs.query(TabPane)] == ["live", "forwarded", "interfaces", "processes"]
+        assert not tabs.query_one(Tabs).can_focus
+        # Textual's own ctrl+q quits; no single key does
+        assert "ctrl+q" in app.screen.active_bindings and not {"q", "question_mark"} & set(app.screen.active_bindings)
+        # no daemon: the live tab's banner shows why, as an error
+        banner = app.query_one(LivePane).query_one(".banner")
+        await _until(pilot, lambda: banner.display and banner.has_class("-error"))
+        assert "live feed unavailable" in str(banner.query_one(".banner-text").render())
+        assert not banner.query_one(".banner-hint").display
+        # p means Processes, even with the focus in the live tab
+        await pilot.press("p")
+        assert tabs.active == "processes"
+        # the time range and units belong to the history tabs only
+        await _until(pilot, lambda: {"s", "shift+left", "shift+right", "u"} <= set(app.screen.active_bindings))
+        for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
+            await pilot.press(key)
+            assert tabs.active == tab
+        await _until(pilot, lambda: not {"s", "shift+left", "shift+right", "u"} & set(app.screen.active_bindings))
+        await pilot.press("u")
+        assert app.unit == "auto"
 
 
-def test_span_picker(tmp_path):
-    async def drive():
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
-        app.time_range.zooms.append((5, 10))
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.press("s")
-            await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
-            picker = app.screen
-            options = picker.query_one("#picker-results")
-            # shortest first, the whole history last, opened on the current span, which s returns
-            # to while zoomed
-            labels = [label for _, label, _ in picker._entries]
-            assert labels[:2] == ["1 minute", "5 minutes"] and labels[-1] == "all history"
-            assert picker._entries[options.highlighted][0] == app.time_range.span
-            assert str(options.get_option_at_index(options.highlighted).prompt).rstrip().endswith("(current)  (press s to select)")
-            # Escape changes nothing
-            await pilot.press("escape")
-            await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
-            assert app.time_range.zooms == [(5, 10)]
-            # Enter takes the highlighted span, which ends the zoom
-            span = app.time_range.span
-            await pilot.press("s", "down", "enter")
-            await _until(pilot, lambda: app.time_range.span != span and not app.time_range.zooms)
-            # without a zoom, s in the picker has nothing to return to: no hint, and it stays open
-            await pilot.press("s")
-            await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
-            options = app.screen.query_one("#picker-results")
-            assert "press s" not in str(options.get_option_at_index(options.highlighted).prompt)
-            await pilot.press("s")
-            await pilot.pause(0.2)
-            assert isinstance(app.screen, SpanPicker)
-
-    asyncio.run(drive())
+async def test_span_picker(tmp_path):
+    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    app.time_range.zooms.append((5, 10))
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("s")
+        await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
+        picker = app.screen
+        options = picker.query_one("#picker-results")
+        # shortest first, the whole history last, opened on the current span, which s returns
+        # to while zoomed
+        labels = [label for _, label, _ in picker._entries]
+        assert labels[:2] == ["1 minute", "5 minutes"] and labels[-1] == "all history"
+        assert picker._entries[options.highlighted][0] == app.time_range.span
+        assert str(options.get_option_at_index(options.highlighted).prompt).rstrip().endswith("(current)  (press s to select)")
+        # Escape changes nothing
+        await pilot.press("escape")
+        await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
+        assert app.time_range.zooms == [(5, 10)]
+        # Enter takes the highlighted span, which ends the zoom
+        span = app.time_range.span
+        await pilot.press("s", "down", "enter")
+        await _until(pilot, lambda: app.time_range.span != span and not app.time_range.zooms)
+        # without a zoom, s in the picker has nothing to return to: no hint, and it stays open
+        await pilot.press("s")
+        await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
+        options = app.screen.query_one("#picker-results")
+        assert "press s" not in str(options.get_option_at_index(options.highlighted).prompt)
+        await pilot.press("s")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, SpanPicker)
 
 
-def test_unit_picker(tmp_path):
-    async def drive():
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
-        async with app.run_test(size=(120, 40)) as pilot:
-            # before any change there is no unit to go back to: no hint, and u leaves it open
-            await pilot.press("u")
-            await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
-            options = app.screen.query_one("#picker-results")
-            assert app.screen._entries[options.highlighted][0] == "auto"
-            assert not any("press u" in str(options.get_option_at_index(i).prompt) for i in range(options.option_count))
-            await pilot.press("u")
-            await pilot.pause(0.2)
-            assert isinstance(app.screen, UnitPicker)
-            # Enter takes the highlighted unit
-            await pilot.press("down", "down", "down", "enter")
-            await _until(pilot, lambda: app.unit == "MB" and not isinstance(app.screen, UnitPicker))
-            # the unit before has the hint, and u u goes back and forth
-            await pilot.press("u")
-            await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
-            options = app.screen.query_one("#picker-results")
-            assert str(options.get_option_at_index(0).prompt).rstrip().endswith("(press u to select)")
-            await pilot.press("u")
-            await _until(pilot, lambda: app.unit == "auto" and app.last_unit == "MB")
-            await pilot.press("u", "u")
-            await _until(pilot, lambda: app.unit == "MB" and app.last_unit == "auto")
-
-    asyncio.run(drive())
+async def test_unit_picker(tmp_path):
+    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    async with app.run_test(size=(120, 40)) as pilot:
+        # before any change there is no unit to go back to: no hint, and u leaves it open
+        await pilot.press("u")
+        await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+        options = app.screen.query_one("#picker-results")
+        assert app.screen._entries[options.highlighted][0] == "auto"
+        assert not any("press u" in str(options.get_option_at_index(i).prompt) for i in range(options.option_count))
+        await pilot.press("u")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, UnitPicker)
+        # Enter takes the highlighted unit
+        await pilot.press("down", "down", "down", "enter")
+        await _until(pilot, lambda: app.unit == "MB" and not isinstance(app.screen, UnitPicker))
+        # the unit before has the hint, and u u goes back and forth
+        await pilot.press("u")
+        await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+        options = app.screen.query_one("#picker-results")
+        assert str(options.get_option_at_index(0).prompt).rstrip().endswith("(press u to select)")
+        await pilot.press("u")
+        await _until(pilot, lambda: app.unit == "auto" and app.last_unit == "MB")
+        await pilot.press("u", "u")
+        await _until(pilot, lambda: app.unit == "MB" and app.last_unit == "auto")
 
 
 def test_format():
@@ -196,7 +183,7 @@ def test_plot_axes():
     assert rates.get_labels(ticks) == ["0", "2.0 kB/s", "4.0 kB/s", "6.0 kB/s"]
 
 
-def test_plot_limits():
+async def test_plot_limits():
     """zooming out stops at ten years, zooming in at a minute, and nothing reaches back before 1970"""
     settled = []
 
@@ -210,20 +197,17 @@ def test_plot_limits():
     def width_is(span):
         return lambda: bool(settled) and abs(settled[-1][1] - settled[-1][0] - span) < 1
 
-    async def drive():
-        app = PlotApp()
-        async with app.run_test(size=(100, 30)) as pilot:
-            plot = app.query_one(TrafficPlot)
-            # the first hour after the epoch, so zooming out runs into 1970
-            plot.show(0, 3600, 0, 60, PEAK_SECONDS, 0, [], "", "", ("sent", "received"))
-            plot.focus()
-            await pilot.press(*["minus"] * 100)
-            await _until(pilot, width_is(MAX_SPAN))
-            assert settled[-1][0] >= 0
-            await pilot.press(*["plus"] * 200)
-            await _until(pilot, width_is(MIN_SPAN))
-
-    asyncio.run(drive())
+    app = PlotApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        plot = app.query_one(TrafficPlot)
+        # the first hour after the epoch, so zooming out runs into 1970
+        plot.show(0, 3600, 0, 60, PEAK_SECONDS, 0, [], "", "", ("sent", "received"))
+        plot.focus()
+        await pilot.press(*["minus"] * 100)
+        await _until(pilot, width_is(MAX_SPAN))
+        assert settled[-1][0] >= 0
+        await pilot.press(*["plus"] * 200)
+        await _until(pilot, width_is(MIN_SPAN))
 
 
 async def _until(pilot, condition, timeout=10.0):
@@ -244,10 +228,10 @@ def _values(pane: HistoryPane) -> list:
     return [row[0] for row in pane.shown]
 
 
-def test_history_drill_down(tmp_path):
+async def test_history_drill_down(tmp_path):
     listener = _server(tmp_path)
 
-    async def drive():
+    try:
         app = ViewerApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
         app.time_range = TimeRange(0)
         async with app.run_test(size=(140, 45)) as pilot:
@@ -357,18 +341,15 @@ def test_history_drill_down(tmp_path):
             await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
             await pilot.press("u", "down", "enter")
             await _until(pilot, lambda: app.unit == "B")
-
-    try:
-        asyncio.run(drive())
     finally:
         listener.close()
 
 
-def test_plot_title_and_busy(tmp_path):
+async def test_plot_title_and_busy(tmp_path):
     listener = _server(tmp_path)
     slow = threading.Event()
 
-    async def drive():
+    try:
         app = ViewerApp(tmp_path / "events.sock", tmp_path / "query.sock", "interfaces")
         app.time_range = TimeRange(0)
         ask = app.ask
@@ -401,34 +382,28 @@ def test_plot_title_and_busy(tmp_path):
             plot.focus()
             await pilot.press("plus")
             await _until(pilot, lambda: bool(app.time_range.zooms) and " – " in _title(plot))
-
-    try:
-        asyncio.run(drive())
     finally:
         listener.close()
 
 
-def test_history_without_query_server(tmp_path):
-    async def drive():
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
-        async with app.run_test(size=(120, 40)) as pilot:
-            pane = app.query_one("#processes HistoryPane", HistoryPane)
-            await _until(pilot, lambda: bool(pane.error))
-            assert "query server unavailable" in pane.error
-            # in the banner, as on the live tab, and with nothing to undo no hint
-            banner = pane.query_one(Banner)
-            assert banner.display and banner.has_class("-error") and _banner(pane) == (pane.error, "")
-
-    asyncio.run(drive())
+async def test_history_without_query_server(tmp_path):
+    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    async with app.run_test(size=(120, 40)) as pilot:
+        pane = app.query_one("#processes HistoryPane", HistoryPane)
+        await _until(pilot, lambda: bool(pane.error))
+        assert "query server unavailable" in pane.error
+        # in the banner, as on the live tab, and with nothing to undo no hint
+        banner = pane.query_one(Banner)
+        assert banner.display and banner.has_class("-error") and _banner(pane) == (pane.error, "")
 
 
-def test_live_tab(tmp_path, monkeypatch):
+async def test_live_tab(tmp_path, monkeypatch):
     socket_path = tmp_path / "events.sock"
     monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)
     publisher = live_feed.LiveFeedPublisher()
     publisher.start()
 
-    async def drive():
+    try:
         app = ViewerApp(socket_path, tmp_path / "missing.sock", "live")
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
@@ -478,9 +453,6 @@ def test_live_tab(tmp_path, monkeypatch):
             await _until(pilot, lambda: recent.border_subtitle == "table is frozen")
             await pilot.press("r")
             await _until(pilot, lambda: pane.events == 0 and not pane.totals)
-
-    try:
-        asyncio.run(drive())
     finally:
         publisher.stop()
 
@@ -501,7 +473,7 @@ def _title(plot: TrafficPlot) -> str:
     return Content.from_markup(plot.border_title).plain
 
 
-def test_live_limits(tmp_path, monkeypatch):
+async def test_live_limits(tmp_path, monkeypatch):
     socket_path = tmp_path / "events.sock"
     monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)
     publisher = live_feed.LiveFeedPublisher()
@@ -509,7 +481,7 @@ def test_live_limits(tmp_path, monkeypatch):
     config.set(settings.LIVE_EXECUTABLES, 10)
     config.set(settings.LIVE_EVENTS, 12)
 
-    async def drive():
+    try:
         app = ViewerApp(socket_path, tmp_path / "missing.sock", "live")
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
@@ -535,8 +507,5 @@ def test_live_limits(tmp_path, monkeypatch):
             await pilot.press("r")
             await _until(pilot, lambda: pane.dropped == 0)
             await _until(pilot, lambda: str(pane.query_one("#totals", DataTable).border_title).startswith("summary · "))
-
-    try:
-        asyncio.run(drive())
     finally:
         publisher.stop()

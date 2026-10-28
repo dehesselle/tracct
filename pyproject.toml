@@ -61,9 +61,16 @@ exclude = ["src/tracct/bpf/vmlinux*.h"]
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The viewer tests are all async; auto mode saves marking every one of them.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "reuse>=6.2.0",
     # the bounds of the tui extra, so the tests run against what users get
     "tcoda>=0.9.0,<0.10",

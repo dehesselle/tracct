@@ -95,7 +95,8 @@ sudo .venv/bin/python -m pytest tests
 ```
 
 Call the venv's Python directly: `uv run` would re-sync the editable install, which has no
-BPF object.
+BPF object. The viewer tests are `async`; pytest-asyncio runs them (`asyncio_mode = "auto"`
+in `pyproject.toml`).
 
 - `test_functional.py` starts a real daemon under `/tmp/tracct` and checks what it
   records for `curl`, `wget` and generated traffic. It needs root and the built BPF object,
