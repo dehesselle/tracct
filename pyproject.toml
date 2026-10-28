@@ -7,7 +7,7 @@
 name = "tracct"
 dynamic = ["version"]
 requires-python = ">=3.12"
-description = "Monitor network traffic per executable using BPF"
+description = "Traffic accounting per process, unit and interface, recorded with BPF and kept in SQLite"
 readme = "README.md"
 # the whole is GPL-3.0-or-later; the BPF program is GPL-2.0-only and new files are 0BSD
 license = "GPL-3.0-or-later AND GPL-2.0-only AND 0BSD"
@@ -28,8 +28,8 @@ viewer = ["textual>=8.2.8,<9", "tcoda>=0.9,<0.10"]
 tracct = "tracct.cli:start_tracct"
 
 [project.urls]
-Homepage = "https://github.com/dehesselle/picosnitch"
-Repository = "https://github.com/dehesselle/picosnitch"
+Homepage = "https://github.com/dehesselle/tracct"
+Repository = "https://github.com/dehesselle/tracct"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
