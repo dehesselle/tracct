@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""`tracct view`: the live feed and the history in one Textual app (tracct[tui]).
+"""`tracct view`: the live feed and the history in one Textual app (tracct[viewer]).
 
 It needs no capabilities, only access to the daemon's events.sock and the query server's
 socket. The package imports without Textual, so the command line can be built without

@@ -34,8 +34,8 @@ Everything runs on Linux only: Python 3.12 or newer, [uv](https://docs.astral.sh
 `clang` and `libbpf-dev` to compile the BPF object, `libbpf1` at runtime. Vendored
 `vmlinux_*.h` headers cover x86_64 and aarch64; elsewhere the build dumps one from the
 running kernel with `bpftool`. The viewer needs Textual and tcoda, whose `tcoda.plot`
-draws the history plot (the `tui` extra); the dev group asks for both within the extra's
-bounds, plus textual-dev. `uv.lock` holds the versions development and CI use; `uv lock
+draws the history plot (the `viewer` extra); the dev group asks for both within the
+extra's bounds, plus textual-dev. `uv.lock` holds the versions development and CI use; `uv lock
 --upgrade` moves them on. `.python-version` pins development to 3.12, the minimum, so
 `uv sync` builds the venv with it.
 

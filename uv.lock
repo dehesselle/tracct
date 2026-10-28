@@ -1020,7 +1020,7 @@ name = "tracct"
 source = { editable = "." }
 
 [package.optional-dependencies]
-tui = [
+viewer = [
     { name = "tcoda" },
     { name = "textual" },
 ]
@@ -1037,10 +1037,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "tcoda", marker = "extra == 'tui'", specifier = ">=0.9,<0.10" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=8.2.8,<9" },
+    { name = "tcoda", marker = "extra == 'viewer'", specifier = ">=0.9,<0.10" },
+    { name = "textual", marker = "extra == 'viewer'", specifier = ">=8.2.8,<9" },
 ]
-provides-extras = ["tui"]
+provides-extras = ["viewer"]
 
 [package.metadata.requires-dev]
 dev = [

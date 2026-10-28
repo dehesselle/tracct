@@ -280,8 +280,9 @@ been partly purged, and only its rollup is complete. A dimension the rollups do 
 the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
 
-`tracct view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
-and a history tab per source with one time range shared between them. A tab's table starts
+`tracct view` (`viewer/`, built on Textual, installed with the `viewer` extra) shows a
+live tab from `events.sock` and a history tab per source with one time range shared
+between them. A tab's table starts
 with the sums over all rows, one row per layer, then the rows themselves, and its plot
 (tcoda.plot) draws the highlighted row, a sum only once the highlight is moved to it, so
 interfaces are not added up unless asked for, and layers never are. It draws peaks, not

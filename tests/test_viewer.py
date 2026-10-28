@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: 0BSD
 
 """Tests for the Textual viewer, driven headless against a query server on a temporary
-socket and a live feed publisher. No root needed; skipped without textual (tracct[tui]).
+socket and a live feed publisher. No root needed; skipped without Textual
+(tracct[viewer]).
 """
 
 import grp

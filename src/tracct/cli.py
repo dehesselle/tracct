@@ -278,7 +278,7 @@ def start_tracct() -> int:
     )
     view = commands.add_parser(
         "view",
-        help="live and history viewer (needs tracct[tui])",
+        help="live and history viewer (needs tracct[viewer])",
         description="Browse live and recorded traffic.",
     )
     add_viewer_arguments(view)
@@ -294,7 +294,9 @@ def start_tracct() -> int:
         try:
             return run_viewer(args)
         except ImportError as e:
-            logger.error(f"the viewer needs Textual, installed with tracct[tui] ({e})")
+            logger.error(
+                f"the viewer needs Textual, installed with tracct[viewer] ({e})"
+            )
             return 1
     else:
         return run_query_server()

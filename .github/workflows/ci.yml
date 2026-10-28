@@ -83,6 +83,6 @@ jobs:
         # the versions in uv.lock
         run: |
           uv venv
-          uv pip install "$(ls dist/*.whl)[tui]" textual==8.2.8 pytest==9.1.1 pytest-asyncio==1.4.1
+          uv pip install "$(ls dist/*.whl)[viewer]" textual==8.2.8 pytest==9.1.1 pytest-asyncio==1.4.1
       - name: Run tests
         run: sudo -E env "PATH=$PATH" .venv/bin/pytest tests/ -v

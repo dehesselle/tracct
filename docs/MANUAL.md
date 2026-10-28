@@ -12,7 +12,7 @@ tracct [-h] [--version] {run,view,query-server}
 | Command | What it does | Needs |
 | --- | --- | --- |
 | `run` | the daemon, in the foreground; this is what the unit starts | the capabilities in [OPERATIONS.md](OPERATIONS.md#capabilities) |
-| `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[tui]`, access to `events.sock` and the query socket |
+| `view` | the viewer: live traffic and the history of processes, interfaces and forwarded flows | `tracct[viewer]`, access to `events.sock` and the query socket |
 | `query-server` | answer the viewer's history queries; this is what `tracct-query.service` starts | read access to the database |
 
 `--version` prints the version. `-h` prints the usage, and on its own also the resolved
@@ -23,7 +23,7 @@ of `tracct-query.socket`). Its footer shows the keys of the tab in view; `Ctrl+Q
 
 ### The viewer
 
-`tracct view` needs the `tui` extra (`uv pip install 'tracct[tui]'`). It has four
+`tracct view` needs the `viewer` extra (`uv pip install 'tracct[viewer]'`). It has four
 tabs, Live first and then the history tabs in alphabetical order, switched with the letter
 highlighted in their title (`l`, `f`, `i`, `p`):
 

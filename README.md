@@ -18,7 +18,7 @@ As root, from a git checkout (the version is taken from its tags):
 
 ```sh
 uv venv /opt/tracct
-VIRTUAL_ENV=/opt/tracct uv pip install '.[tui]'
+VIRTUAL_ENV=/opt/tracct uv pip install '.[viewer]'
 install -m 644 systemd/tracct.service systemd/tracct-query.socket systemd/tracct-query.service /etc/systemd/system/
 install -m 644 systemd/tracct.sysusers /etc/sysusers.d/tracct.conf
 systemd-sysusers
@@ -27,8 +27,8 @@ printf '[viewer]\ngroup = "tracct-viewer"\n' > /etc/opt/tracct/config.toml
 systemctl daemon-reload && systemctl enable --now tracct tracct-query.socket
 ```
 
-The `tui` extra is the viewer; the daemon itself needs only the standard library. Forwarded
-traffic is recorded once `nf_conntrack` is loaded with `acct=1`, see
+The `viewer` extra installs `tracct view`; the daemon itself needs only the standard
+library. Forwarded traffic is recorded once `nf_conntrack` is loaded with `acct=1`, see
 [OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
 
 As root or as a member of `tracct-viewer`:
