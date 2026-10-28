@@ -8,6 +8,7 @@ find, filters; with a hint on the right for the keys that undo them"""
 from __future__ import annotations
 
 from rich.text import Text
+from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Static
 
@@ -21,7 +22,7 @@ class Banner(Horizontal):
     Banner .banner-hint { width: auto; }
     """
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield Static(classes="banner-text")
         yield Static(classes="banner-hint")
 

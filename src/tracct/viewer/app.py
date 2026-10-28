@@ -12,9 +12,10 @@ from pathlib import Path
 
 from tcoda.chords import ChordMixin
 from tcoda.dialogs import SettingsDialog
+from tcoda.terminal_title import TerminalTitleMixin
 from tcoda.widgets import ChordViewer
 from textual import work
-from textual.app import App
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.widgets import Footer, TabbedContent, TabPane
@@ -36,8 +37,9 @@ from tracct.viewer.timerange import TimeRange
 REFRESH_SECONDS = 10.0
 
 
-class TracctApp(ChordMixin, App):
+class TracctApp(TerminalTitleMixin, ChordMixin, App):
     TITLE = "tracct"
+    TERMINAL_TITLE = "tracct"
     # the tab bar takes no focus, so Textual's own would land in the first tab and switch to it;
     # on_mount focuses the tab asked for instead
     AUTO_FOCUS = None
@@ -70,13 +72,13 @@ class TracctApp(ChordMixin, App):
         self.last_byte_unit: str | None = None
         self.client = HistoryClient(query_socket)
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         with TabbedContent(initial=self.initial_tab):
             for tab, (title, source) in TABS.items():
                 with TabPane(f"[$accent bold]{title[0]}[/]{title[1:]}", id=tab):
                     yield (
                         LivePane(self.events_socket)
-                        if not source
+                        if source is None
                         else HistoryPane(source)
                     )
         yield Footer(show_command_palette=False)

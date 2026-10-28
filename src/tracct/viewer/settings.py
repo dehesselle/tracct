@@ -5,14 +5,20 @@
 """The viewer's settings, per user in its config directory.
 
 They live in `~/.config/tracct/settings.json`. The chord `,` `s` in the viewer edits
-them, and only values changed from their default are stored.
+them, and only values changed from their default are stored. Import `config` from
+here or from `tcoda.settings`; it is the same object either way.
+
+Read values at the point of use (`config.get(LIVE_EVENTS)`) rather than caching them,
+so a change in the settings dialog takes effect without a restart.
 """
 
 from __future__ import annotations
 
-from tcoda.settings import Setting, configure
+from tcoda.settings import Setting, config, configure
 
 configure("tracct")
+
+__all__ = ["LIVE_EVENTS", "LIVE_EXECUTABLES", "Setting", "config"]
 
 LIMIT_MIN = 10
 LIMIT_MAX = 100000

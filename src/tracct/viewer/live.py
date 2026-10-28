@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 from rich.text import Text
-from tcoda.settings import config
 from tcoda.widgets import DataTable
 from textual import work
 from textual.app import ComposeResult
@@ -30,12 +29,36 @@ from tracct.viewer.banner import Banner
 from tracct.viewer.client import feed_closed, feed_unavailable
 from tracct.viewer.format import bytes_cell, clean, format_clock
 from tracct.viewer.pane import FindablePane
-from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
+from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES, config
 
 # events waiting between the feed thread and the next redraw; fills only while the UI stalls
 INCOMING_MAX = 10000
 REDRAW_SECONDS = 0.5
 RECONNECT_SECONDS = 3.0
+
+
+def _right(label: str) -> Text:
+    return Text(label, justify="right")
+
+
+def _replace_rows(
+    table: DataTable, rows: list[tuple[str, tuple]], follow: bool
+) -> None:
+    """new rows, in the table's sort order at once rather than on the next idle; the cursor
+    follows its row by key, or keeps its place"""
+    cursor = table.cursor_row
+    followed: RowKey | None = None
+    if follow and 0 <= cursor < table.row_count:
+        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+    table.clear()
+    for row_key, cells in rows:
+        table.add_row(*cells, key=row_key)
+    if table.sort_column is not None:
+        table.sort_by(table.sort_column, reverse=table.sort_reverse)
+    if rows:
+        if followed is not None and followed in table.rows:
+            cursor = table.get_row_index(followed)
+        table.move_cursor(row=min(cursor, len(rows) - 1))
 
 
 def _int(value: object) -> int:
@@ -352,27 +375,3 @@ class LivePane(FindablePane):
     def apply_find(self) -> None:
         # on the next redraw, which comes soon enough for typing
         self._dirty = True
-
-
-def _right(label: str) -> Text:
-    return Text(label, justify="right")
-
-
-def _replace_rows(
-    table: DataTable, rows: list[tuple[str, tuple]], follow: bool
-) -> None:
-    """new rows, in the table's sort order at once rather than on the next idle; the cursor
-    follows its row by key, or keeps its place"""
-    cursor = table.cursor_row
-    followed: RowKey | None = None
-    if follow and 0 <= cursor < table.row_count:
-        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-    table.clear()
-    for row_key, cells in rows:
-        table.add_row(*cells, key=row_key)
-    if table.sort_column is not None:
-        table.sort_by(table.sort_column, reverse=table.sort_reverse)
-    if rows:
-        if followed is not None and followed in table.rows:
-            cursor = table.get_row_index(followed)
-        table.move_cursor(row=min(cursor, len(rows) - 1))

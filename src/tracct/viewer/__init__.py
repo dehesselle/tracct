@@ -14,10 +14,11 @@ from pathlib import Path
 from tracct.live_feed import EVENTS_SOCKET_PATH
 from tracct.query import QUERY_SOCKET_PATH
 
-# tab id -> (title, query source); live first, then the history tabs, which share the plot's
-# time range, in alphabetical order
-TABS = {
-    "live": ("Live", ""),
+# tab id -> (title, query source, or None for the live tab); live first, then the history
+# tabs, which share the plot's time range, in alphabetical order. here rather than in app.py,
+# so the command line can offer the tabs without importing Textual
+TABS: dict[str, tuple[str, str | None]] = {
+    "live": ("Live", None),
     "forwarded": ("Forwarded", "forwarded"),
     "interfaces": ("Interfaces", "interfaces"),
     "processes": ("Processes", "connections"),

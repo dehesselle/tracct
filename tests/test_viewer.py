@@ -400,7 +400,7 @@ async def test_history_drill_down(tmp_path):
             # the filters are in the banner, with the chord that clears them
             assert banner.display and _banner(processes) == (
                 "filter: executable=/usr/sbin/nginx",
-                "press , f c to clear filters",
+                "press ,f c to clear filters",
             )
             await pilot.press("comma", "f", "p")
             await _until(

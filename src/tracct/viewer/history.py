@@ -11,12 +11,13 @@ import time
 from typing import TYPE_CHECKING
 
 from rich.text import Text
+from tcoda.widgets import DataTable
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import DataTable, OptionList
+from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
@@ -43,6 +44,15 @@ TIMELINE_DELAY_SECONDS = 0.25
 # how long a fetch has to take before the plot's title says so; most answer within
 # milliseconds, and the glyph would flicker on every refresh
 BUSY_DELAY_SECONDS = 0.3
+
+
+def _value_cell(dimension: str, value: object) -> Text:
+    """a row of sums dim like a missing value, so it is not taken for a value of the dimension"""
+    return (
+        Text(value.label(), style="dim")
+        if isinstance(value, Total)
+        else value_cell(dimension, value)
+    )
 
 
 class HistoryPane(FindablePane):
@@ -115,6 +125,8 @@ class HistoryPane(FindablePane):
             yield OptionList(id="dimensions")
             with Vertical():
                 yield TrafficPlot()
+                # tcoda's, for the same look as the live tab's; its columns do not sort,
+                # as the query server orders the rows, largest first
                 yield DataTable(cursor_type="row", zebra_stripes=True)
 
     def configure(self, info: SourceInfo) -> None:
@@ -366,7 +378,7 @@ class HistoryPane(FindablePane):
                     for f in self.filters
                 )
             )
-            keys.append(", f c to clear filters")
+            keys.append(",f c to clear filters")
         # while the find input is open, it says it already
         if self.find and not self.find_open():
             notes.append(f"find: {self.find}")
@@ -432,17 +444,10 @@ class HistoryPane(FindablePane):
     def select_dimension(self, dimension: str) -> None:
         index = self.info.dimension_index(dimension) if self.info else None
         if index is not None:
+            # group_by first: the highlight's handler then finds nothing changed and
+            # leaves the reload to the caller, which has the filters to set first
             self.group_by = dimension
             self.query_one(OptionList).highlighted = index
 
     def apply_find(self) -> None:
         self.render_rows()
-
-
-def _value_cell(dimension: str, value: object) -> Text:
-    """a row of sums dim like a missing value, so it is not taken for a value of the dimension"""
-    return (
-        Text(value.label(), style="dim")
-        if isinstance(value, Total)
-        else value_cell(dimension, value)
-    )
