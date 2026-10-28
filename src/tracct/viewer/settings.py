@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""the viewer's settings, per user in its config directory (~/.config/tracct/settings.json);
-`s` in the viewer edits them, and only values changed from the default are stored"""
+"""The viewer's settings, per user in its config directory.
+
+They live in `~/.config/tracct/settings.json`. The chord `,` `s` in the viewer edits
+them, and only values changed from their default are stored.
+"""
 
 from __future__ import annotations
 

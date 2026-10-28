@@ -17,7 +17,8 @@ from tcoda.widgets import ChordViewer
 from textual import work
 from textual.app import App
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane, Tabs
+from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
+from textual.widgets.tabbed_content import ContentTabs
 
 from tracct.query import QueryClient, QueryError
 from tracct.viewer import TABS
@@ -38,8 +39,11 @@ def _aligned(now: int, seconds: int) -> int:
 
 
 class TimeRange:
-    """a span that ends now, a span stepped back into the past, or the range a plot was zoomed or
-    panned to; zooming out returns to the span"""
+    """A span that ends now, a span stepped back into the past, or a zoom.
+
+    A zoom is the range a plot was zoomed or panned to. Zooming out only widens it;
+    `s` `s` returns from it to the span, stepped back as it was.
+    """
 
     def __init__(self, span: int = 4) -> None:
         self.span = span
@@ -109,7 +113,6 @@ class ViewerApp(ChordMixin, App):
         self.last_unit: str | None = None
         self._client = QueryClient(query_socket)
         self._client_lock = threading.Lock()
-        self.sources: dict = {}
 
     def compose(self):
         with TabbedContent(initial=self.initial_tab):
@@ -124,8 +127,9 @@ class ViewerApp(ChordMixin, App):
         yield ChordViewer()
 
     def on_mount(self) -> None:
-        # tabs are switched by their letters or a click; focus stays in the tab's content
-        self.query_one(TabbedContent).query_one(Tabs).can_focus = False
+        # Tabs are switched by their letters or a click, so focus stays in the tab's
+        # content.
+        self.query_one(ContentTabs).can_focus = False
         self.focus_pane()
         self.describe()
         self.set_interval(REFRESH_SECONDS, self.refresh_if_live)
@@ -156,7 +160,6 @@ class ViewerApp(ChordMixin, App):
         self.call_from_thread(self._described, sources)
 
     def _described(self, sources: dict) -> None:
-        self.sources = sources
         for pane in self.query(HistoryPane):
             if pane.source in sources:
                 pane.configure(sources[pane.source])
@@ -231,7 +234,8 @@ class ViewerApp(ChordMixin, App):
             self.time_range.zooms.clear()
             self.reload_active()
             return
-        # the span picked again still ends a step back or a zoom, as it did when cycled to
+        # Picking the current span again still ends a step back or a zoom; only a span
+        # that already ends now has nothing to change.
         if span is None or (
             span == self.time_range.span and self.time_range.ends_now()
         ):

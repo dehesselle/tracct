@@ -18,7 +18,8 @@ from tcoda.settings import config, configure  # noqa: E402
 from test_query_server import VPN, _db  # noqa: E402
 from textual.app import App, ComposeResult  # noqa: E402
 from textual.content import Content  # noqa: E402
-from textual.widgets import DataTable, TabbedContent, TabPane, Tabs  # noqa: E402
+from textual.widgets import DataTable, TabbedContent, TabPane  # noqa: E402
+from textual.widgets.tabbed_content import ContentTabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
@@ -76,7 +77,7 @@ async def test_tab_keys(tmp_path):
             "interfaces",
             "processes",
         ]
-        assert not tabs.query_one(Tabs).can_focus
+        assert not tabs.query_one(ContentTabs).can_focus
         # Textual's own ctrl+q quits; no single key does
         assert "ctrl+q" in app.screen.active_bindings and not {
             "q",
