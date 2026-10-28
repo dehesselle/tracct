@@ -112,7 +112,10 @@ class QueryClient:
                 send_message(self._sock, {"op": op, **params})
                 response = recv_message(self._sock, MAX_RESPONSE_BYTES)
             except (ConnectionError, BrokenPipeError) as e:
+                refusal = self._refusal()
                 self.close()
+                if refusal is not None:
+                    raise QueryError(refusal) from e
                 if attempt:
                     raise QueryError(
                         f"the query server closed the connection ({e})"
@@ -130,6 +133,21 @@ class QueryClient:
                 raise QueryError(str(response.get("error", "unknown error")))
             return response
         raise QueryError("unreachable")
+
+    def _refusal(self) -> str | None:
+        """Return the error a server sent before closing the connection, if any.
+
+        A server serving its most viewers answers a new one at once and closes, so the
+        request can find the connection closed while the answer waits to be read.
+        """
+        assert self._sock is not None
+        try:
+            response = recv_message(self._sock, MAX_RESPONSE_BYTES)
+        except (OSError, ValueError):
+            return None
+        if response is None or response.get("ok"):
+            return None
+        return str(response.get("error", "unknown error"))
 
     def close(self) -> None:
         if self._sock is not None:
