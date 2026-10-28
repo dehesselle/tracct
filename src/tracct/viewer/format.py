@@ -49,12 +49,12 @@ SPANS = (
 )
 
 
-def format_bytes(n: int | float | None, unit: str = "auto") -> str:
+def format_bytes(n: int | float | None, byte_unit: str = "auto") -> str:
     n = n or 0
-    if unit == "B":
+    if byte_unit == "B":
         return f"{int(n):,}"
-    if unit in _FACTORS:
-        return f"{n / _FACTORS[unit]:,.1f} {unit}"
+    if byte_unit in _FACTORS:
+        return f"{n / _FACTORS[byte_unit]:,.1f} {byte_unit}"
     for suffix in ("B", "kB", "MB", "GB", "TB"):
         if abs(n) < 1000 or suffix == "TB":
             return f"{int(n)} B" if suffix == "B" else f"{n:.1f} {suffix}"
@@ -62,8 +62,8 @@ def format_bytes(n: int | float | None, unit: str = "auto") -> str:
     return ""
 
 
-def bytes_cell(n: int | float | None, unit: str = "auto") -> Text:
-    return Text(format_bytes(n, unit), justify="right")
+def bytes_cell(n: int | float | None, byte_unit: str = "auto") -> Text:
+    return Text(format_bytes(n, byte_unit), justify="right")
 
 
 @functools.lru_cache(maxsize=1024)
@@ -86,7 +86,7 @@ def clean(value: object) -> str:
     return sanitize_log_line(text)
 
 
-def display(dimension: str, value: object) -> str:
+def format_value(dimension: str, value: object) -> str:
     """a dimension's value as shown; the value itself is what a filter on it sends back"""
     if value is None or value == "":
         return "(none)"
@@ -101,15 +101,15 @@ def display(dimension: str, value: object) -> str:
 
 def value_cell(dimension: str, value: object) -> Text:
     """a cell that shows text as it is: a plain str in a DataTable would be read as markup"""
-    text = display(dimension, value)
+    text = format_value(dimension, value)
     return Text(text, style="dim" if value is None or value == "" else "")
 
 
-def clock(t: float) -> str:
+def format_clock(t: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(t))
 
 
-def moment(t: float) -> str:
+def format_time(t: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
 
 

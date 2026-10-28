@@ -47,7 +47,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run_viewer(args: argparse.Namespace) -> int:
     """raises ImportError without Textual"""
-    from tracct.viewer.app import ViewerApp
+    from tracct.viewer.app import TracctApp
 
-    ViewerApp(args.events_socket, args.query_socket, args.tab).run()
+    TracctApp(args.events_socket, args.query_socket, args.tab).run()
     return 0

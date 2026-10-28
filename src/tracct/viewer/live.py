@@ -26,7 +26,7 @@ from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
 from tracct.viewer.banner import Banner
-from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, clean, clock
+from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, clean, format_clock
 from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 
 # events waiting between the feed thread and the next redraw; fills only while the UI stalls
@@ -43,8 +43,8 @@ def remote(event: dict) -> str:
 
 class LivePane(Vertical):
     DEFAULT_CSS = """
-    LivePane #totals { height: 2fr; }
-    LivePane #recent { height: 3fr; }
+    LivePane #summary { height: 2fr; }
+    LivePane #events { height: 3fr; }
     """
     BINDINGS = [
         Binding("space", "pause", "pause", key_display="␣"),
@@ -61,8 +61,8 @@ class LivePane(Vertical):
             maxlen=config.get(LIVE_EVENTS)
         )
         # (name, exe) -> [sent, received, events, unit, last seen]
-        self.totals: dict[tuple[str, str], list] = {}
-        # executables dropped from totals for the limit, since the tab started or was reset
+        self.summary: dict[tuple[str, str], list] = {}
+        # executables dropped from the summary for the limit, since the tab started or was reset
         self.dropped = 0
         self.events = 0
         self.since = time.time()
@@ -73,17 +73,17 @@ class LivePane(Vertical):
         # numbers each event, so the events table has a row key and an order by time
         self._seq = 0
         # the rows in the tables by row key, for the columns that sort by the value behind the text
-        self._shown_totals: dict[str, tuple[tuple[str, str], list]] = {}
-        self._shown_recent: dict[str, dict] = {}
+        self._shown_summary: dict[str, tuple[tuple[str, str], list]] = {}
+        self._shown_events: dict[str, dict] = {}
 
     def compose(self):
         yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
         yield Banner()
-        yield DataTable(id="totals", cursor_type="row", zebra_stripes=True)
-        yield DataTable(id="recent", cursor_type="row", zebra_stripes=True)
+        yield DataTable(id="summary", cursor_type="row", zebra_stripes=True)
+        yield DataTable(id="events", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        totals = self.query_one("#totals", DataTable)
+        summary = self.query_one("#summary", DataTable)
         for key, label, by_value in (
             ("exe", "executable", None),
             ("name", "name", None),
@@ -92,14 +92,14 @@ class LivePane(Vertical):
             ("sent", Text("sent", justify="right"), lambda entry: entry[1][0]),
             ("received", Text("received", justify="right"), lambda entry: entry[1][1]),
         ):
-            totals.add_column(
+            summary.add_column(
                 label,
                 key=key,
                 sortable=True,
-                sort_key=self._by_value(self._shown_totals, by_value),
+                sort_key=self._by_value(self._shown_summary, by_value),
             )
-        totals.sort_by("exe")
-        recent = self.query_one("#recent", DataTable)
+        summary.sort_by("exe")
+        events = self.query_one("#events", DataTable)
         for key, label, by_value in (
             ("time", "time", lambda event: event["_seq"]),
             ("name", "name", None),
@@ -122,13 +122,13 @@ class LivePane(Vertical):
                 lambda event: _int(event.get("recv")),
             ),
         ):
-            recent.add_column(
+            events.add_column(
                 label,
                 key=key,
                 sortable=True,
-                sort_key=self._by_value(self._shown_recent, by_value),
+                sort_key=self._by_value(self._shown_events, by_value),
             )
-        recent.sort_by("time", reverse=True)
+        events.sort_by("time", reverse=True)
         self.subscribe()
         self.set_interval(REDRAW_SECONDS, self.redraw)
 
@@ -174,7 +174,7 @@ class LivePane(Vertical):
             self._seq += 1
             event["_seq"] = self._seq
             key = (event.get("name") or "", event.get("exe") or "")
-            row = self.totals.setdefault(key, [0, 0, 0, "", 0.0])
+            row = self.summary.setdefault(key, [0, 0, 0, "", 0.0])
             row[0] += int(event.get("send", 0) or 0)
             row[1] += int(event.get("recv", 0) or 0)
             row[2] += 1
@@ -191,13 +191,13 @@ class LivePane(Vertical):
     def apply_limits(self) -> None:
         """the limits from the settings, read on every redraw so a change applies at once"""
         executables = config.get(LIVE_EXECUTABLES)
-        if len(self.totals) > executables:
+        if len(self.summary) > executables:
             # the executables idle the longest make room
             ranked = sorted(
-                self.totals.items(), key=lambda item: item[1][4], reverse=True
+                self.summary.items(), key=lambda item: item[1][4], reverse=True
             )
             self.dropped += len(ranked) - executables
-            self.totals = dict(ranked[:executables])
+            self.summary = dict(ranked[:executables])
             self._dirty = True
         events = config.get(LIVE_EVENTS)
         if self.recent.maxlen != events:
@@ -219,13 +219,13 @@ class LivePane(Vertical):
         return lambda row_key: by_value(shown[row_key.value])
 
     def render_tables(self, recent: bool = True) -> None:
-        self._shown_totals.clear()
+        self._shown_summary.clear()
         rows = []
-        for (name, exe), entry in self.totals.items():
+        for (name, exe), entry in self.summary.items():
             sent, received, count, unit, _ = entry
             if self.matches(name, exe, unit):
                 row_key = f"{name}\0{exe}"
-                self._shown_totals[row_key] = ((name, exe), entry)
+                self._shown_summary[row_key] = ((name, exe), entry)
                 rows.append(
                     (
                         row_key,
@@ -240,9 +240,9 @@ class LivePane(Vertical):
                     )
                 )
         # the cursor stays on its executable as the rows move with the sort
-        _replace_rows(self.query_one("#totals", DataTable), rows, follow=True)
+        _replace_rows(self.query_one("#summary", DataTable), rows, follow=True)
         if recent:
-            self._shown_recent.clear()
+            self._shown_events.clear()
             rows = []
             for event in self.recent:
                 if not self.matches(
@@ -254,13 +254,13 @@ class LivePane(Vertical):
                 ):
                     continue
                 row_key = str(event["_seq"])
-                self._shown_recent[row_key] = event
+                self._shown_events[row_key] = event
                 lport = event.get("lport", -1)
                 rows.append(
                     (
                         row_key,
                         (
-                            clock(event.get("_t", 0)),
+                            format_clock(event.get("_t", 0)),
                             Text(clean(event.get("name") or "")),
                             Text(clean(event.get("pname") or "")),
                             Text(clean(event.get("unit") or "")),
@@ -277,7 +277,7 @@ class LivePane(Vertical):
                     )
                 )
             # the cursor keeps its place while new events push the rows along
-            _replace_rows(self.query_one("#recent", DataTable), rows, follow=False)
+            _replace_rows(self.query_one("#events", DataTable), rows, follow=False)
 
     def update_status(self) -> None:
         """the banner, shown only while there is something to say, and the tables' titles"""
@@ -293,20 +293,20 @@ class LivePane(Vertical):
         )
         summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
         self.query_one(
-            "#totals", DataTable
+            "#summary", DataTable
         ).border_title = f"{summary} · {int(time.time() - self.since)} s"
-        recent = self.query_one("#recent", DataTable)
-        recent.border_title = (
+        events = self.query_one("#events", DataTable)
+        events.border_title = (
             f"last {config.get(LIVE_EVENTS)} events · {self.events} total"
         )
-        recent.border_subtitle = "table is frozen" if self.paused else ""
+        events.border_subtitle = "table is frozen" if self.paused else ""
 
     def action_pause(self) -> None:
         self.paused = not self.paused
         self._dirty = True
 
     def action_reset(self) -> None:
-        self.totals.clear()
+        self.summary.clear()
         self.recent.clear()
         self.dropped = 0
         self.events = 0

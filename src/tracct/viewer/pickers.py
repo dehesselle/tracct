@@ -128,18 +128,18 @@ class SpanPicker(ListPicker[int]):
         )
 
 
-class UnitPicker(ListPicker[str]):
+class ByteUnitPicker(ListPicker[str]):
     """one of BYTE_UNITS; u again goes back to the unit before"""
 
     DEFAULT_CSS = """
-    UnitPicker > #dialog { width: 52; }
+    ByteUnitPicker > #dialog { width: 52; }
     """
     KEY = "u"
     BINDINGS: ClassVar[list[Binding]] = [Binding("u", "again", "last unit")]
 
     def __init__(self, current: str, last: str | None) -> None:
         entries = [
-            (unit, unit, "a unit per value" if unit == "auto" else "")
-            for unit in BYTE_UNITS
+            (byte_unit, byte_unit, "a unit per value" if byte_unit == "auto" else "")
+            for byte_unit in BYTE_UNITS
         ]
         super().__init__("Unit", entries, current, (last, last) if last else None)

@@ -25,7 +25,7 @@ from tracct.viewer import TABS
 from tracct.viewer.format import BYTE_UNITS, SPANS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
-from tracct.viewer.pickers import TO_SPAN, SpanPicker, UnitPicker
+from tracct.viewer.pickers import TO_SPAN, ByteUnitPicker, SpanPicker
 from tracct.viewer.plot import TrafficPlot
 
 # a range that ends now is asked again this often while its tab is shown
@@ -74,7 +74,7 @@ class TimeRange:
         return "all history" if name == "all" else f"last {name}"
 
 
-class ViewerApp(ChordMixin, App):
+class TracctApp(ChordMixin, App):
     TITLE = "tracct"
     # the tab bar takes no focus, so Textual's own would land in the first tab and switch to it;
     # on_mount focuses the tab asked for instead
@@ -108,9 +108,9 @@ class ViewerApp(ChordMixin, App):
         self.query_socket = query_socket
         self.initial_tab = tab
         self.time_range = TimeRange()
-        self.unit = BYTE_UNITS[0]
-        # the unit before, which u pressed twice goes back to
-        self.last_unit: str | None = None
+        self.byte_unit = BYTE_UNITS[0]
+        #: The byte unit before, which `u` pressed twice goes back to.
+        self.last_byte_unit: str | None = None
         self._client = QueryClient(query_socket)
         self._client_lock = threading.Lock()
 
@@ -205,7 +205,7 @@ class ViewerApp(ChordMixin, App):
         self.focus_pane()
         self.reload_active()
 
-    def view(self, start: int, end: int) -> None:
+    def zoom_to(self, start: int, end: int) -> None:
         """the range a plot came to rest on, which every history tab then shows"""
         if self.time_range.zooms:
             self.time_range.zooms[-1] = (start, end)
@@ -245,7 +245,11 @@ class ViewerApp(ChordMixin, App):
         self.time_range.zooms.clear()
         self.reload_active()
 
-    def action_earlier(self, delta: int) -> None:
+    def action_step_span(self, step: int) -> None:
+        """Step the span back (-1) or forward (+1) by a whole span of local time.
+
+        Stepping forward stops at the span that ends now.
+        """
         if SPANS[self.time_range.span][1] == 0:
             self.notify(
                 "pick a span with s first; all history has no earlier or later",
@@ -253,18 +257,21 @@ class ViewerApp(ChordMixin, App):
             )
             return
         self.time_range.zooms.clear()
-        self.time_range.back = max(0, self.time_range.back + delta)
+        self.time_range.back = max(0, self.time_range.back - step)
         self.reload_active()
 
-    def action_units(self) -> None:
-        self.push_screen(UnitPicker(self.unit, self.last_unit), self._unit_picked)
+    def action_byte_unit(self) -> None:
+        self.push_screen(
+            ByteUnitPicker(self.byte_unit, self.last_byte_unit),
+            self._byte_unit_picked,
+        )
 
-    def _unit_picked(self, unit: str | None) -> None:
-        if unit is None or unit == self.unit:
+    def _byte_unit_picked(self, byte_unit: str | None) -> None:
+        if byte_unit is None or byte_unit == self.byte_unit:
             return
-        self.last_unit, self.unit = self.unit, unit
+        self.last_byte_unit, self.byte_unit = self.byte_unit, byte_unit
         for plot in self.query(TrafficPlot):
-            plot.set_unit(self.unit)
+            plot.set_byte_unit(self.byte_unit)
         for pane in self.query(HistoryPane):
             if pane.result:
                 pane.render_rows()

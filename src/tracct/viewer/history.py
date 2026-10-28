@@ -24,19 +24,19 @@ from tracct.viewer.banner import Banner
 from tracct.viewer.format import (
     FIND_PLACEHOLDER,
     bytes_cell,
-    display,
-    moment,
+    format_time,
+    format_value,
     value_cell,
 )
 from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
 
 if TYPE_CHECKING:
-    from tracct.viewer.app import ViewerApp
+    from tracct.viewer.app import TracctApp
 
 # rows asked for per request; the table's title says when there are more
 ROWS = 1000
 # how long the highlight has to rest on a row before its timeline is asked for
-TIMELINE_DELAY = 0.25
+TIMELINE_DELAY_SECONDS = 0.25
 # timeline bucket lengths; none is shorter than the default write window, whose rows would
 # otherwise leave every other bucket empty
 BUCKET_STEPS = (
@@ -59,7 +59,7 @@ BUCKET_STEPS = (
 )
 # how long a fetch has to take before the plot's title says so; most answer within
 # milliseconds, and the glyph would flicker on every refresh
-BUSY_DELAY = 0.3
+BUSY_DELAY_SECONDS = 0.3
 
 
 def bucket_step(span: int, columns: int) -> int:
@@ -71,13 +71,16 @@ def bucket_step(span: int, columns: int) -> int:
 
 @dataclasses.dataclass(frozen=True)
 class Total:
-    """the value of a row of sums over all rows: one per layer where the source has layers, which
-    are never added up, else one; part is the layer, or None"""
+    """The value of a row of sums over all rows.
 
-    part: str | None
+    There is one per layer where the source has layers, which are never added up, else
+    one, whose layer is None.
+    """
+
+    layer: str | None
 
     def label(self) -> str:
-        return f"(all · {self.part})" if self.part else "(all)"
+        return f"(all · {self.layer})" if self.layer else "(all)"
 
 
 class HistoryPane(Vertical):
@@ -93,19 +96,19 @@ class HistoryPane(Vertical):
         # not only the plot's, whose arrows pan by a few columns
         Binding(
             "shift+left",
-            "app.earlier(1)",
+            "app.step_span(-1)",
             "previous span",
             key_display="⇧←",
             group=Binding.Group("step span"),
         ),
         Binding(
             "shift+right",
-            "app.earlier(-1)",
+            "app.step_span(1)",
             "next span",
             key_display="⇧→",
             group=Binding.Group("step span"),
         ),
-        Binding("u", "app.units", "unit"),
+        Binding("u", "app.byte_unit", "unit"),
         Binding("r", "app.refresh", "refresh"),
         # the drill-down: a filter on the highlighted row's value stays when the dimension on the
         # left changes, which breaks that value down
@@ -132,14 +135,14 @@ class HistoryPane(Vertical):
         self.error = ""
         self._timeline_timer = None
         # the row the plot was last asked for, so refilling the table does not ask again
-        self._plot_subject: tuple[str, object] | None = None
+        self._plot_filter: tuple[str, object] | None = None
         # what is being fetched, "rows" and "plot", and the timer that then marks the plot busy
         self._fetching: set[str] = set()
         self._busy_timer = None
         self._configured = False
 
     @property
-    def viewer(self) -> ViewerApp:
+    def viewer(self) -> TracctApp:
         return self.app
 
     def compose(self):
@@ -192,11 +195,11 @@ class HistoryPane(Vertical):
             else None
         )
 
-    def subject(self) -> tuple[str, object] | None:
+    def plot_filter(self) -> tuple[str, object] | None:
         """the filter that narrows the plot to the highlighted row, or None for all rows"""
         value = self.highlighted()
         if isinstance(value, Total):
-            return (self.result["totals_by"], value.part) if value.part else None
+            return (self.result["totals_by"], value.layer) if value.layer else None
         return None if value is None else (self.group_by, value)
 
     def reload(self) -> None:
@@ -237,17 +240,23 @@ class HistoryPane(Vertical):
         origin = start
         if step <= 86400:
             origin -= (start + time.localtime(start).tm_gmtoff) % step
-        subject = self._plot_subject = self.subject()
+        plot_filter = self._plot_filter = self.plot_filter()
         filters = [list(f) for f in self.filters] + (
-            [[subject[0], subject[1], False]] if subject else []
+            [[plot_filter[0], plot_filter[1], False]] if plot_filter else []
         )
         value = self.highlighted()
-        if isinstance(value, Total) or subject is None:
-            label = value.label() if isinstance(value, Total) else Total(None).label()
+        if isinstance(value, Total) or plot_filter is None:
+            row_label = (
+                value.label() if isinstance(value, Total) else Total(None).label()
+            )
         else:
-            label = f"{self.labels().get(subject[0], subject[0])} = {display(*subject)}"
+            dimension, filtered = plot_filter
+            row_label = (
+                f"{self.labels().get(dimension, dimension)}"
+                f" = {format_value(dimension, filtered)}"
+            )
         self._load_timeline(
-            start, end, origin, step, filters, label, self.heading(start, end)
+            start, end, origin, step, filters, row_label, self.heading(start, end)
         )
 
     @work(thread=True, exclusive=True, group="history-timeline")
@@ -258,7 +267,7 @@ class HistoryPane(Vertical):
         origin: int,
         step: int,
         filters: list,
-        label: str,
+        row_label: str,
         heading: str,
     ) -> None:
         worker = get_current_worker()
@@ -277,7 +286,7 @@ class HistoryPane(Vertical):
                 self.app.call_from_thread(self.show_error, str(e))
             return
         if not worker.is_cancelled:
-            labels = tuple(self.info.get("values", ["sent", "received"]))
+            value_labels = tuple(self.info.get("values", ["sent", "received"]))
             self.app.call_from_thread(
                 self.show_timeline,
                 start,
@@ -286,24 +295,26 @@ class HistoryPane(Vertical):
                 step,
                 result,
                 heading,
-                label,
-                labels,
+                row_label,
+                value_labels,
             )
 
     def schedule_timeline(self) -> None:
         if self._timeline_timer is not None:
             self._timeline_timer.stop()
-        self._timeline_timer = self.set_timer(TIMELINE_DELAY, self.load_timeline)
+        self._timeline_timer = self.set_timer(
+            TIMELINE_DELAY_SECONDS, self.load_timeline
+        )
 
     def fetching(self, what: str, active: bool) -> None:
         """the plot's title says the tab is updating while its rows or its plot are being fetched,
-        from BUSY_DELAY on; until the rows are in, the plot waits to be fetched after them"""
+        from BUSY_DELAY_SECONDS on; until the rows are in, the plot waits to be fetched after them"""
         if active:
             self._fetching.add(what)
         else:
             self._fetching.discard(what)
         if self._fetching and self._busy_timer is None:
-            self._busy_timer = self.set_timer(BUSY_DELAY, self._show_busy)
+            self._busy_timer = self.set_timer(BUSY_DELAY_SECONDS, self._show_busy)
         elif not self._fetching:
             if self._busy_timer is not None:
                 self._busy_timer.stop()
@@ -325,8 +336,8 @@ class HistoryPane(Vertical):
         step: int,
         result: dict,
         heading: str,
-        label: str,
-        labels: tuple[str, str],
+        row_label: str,
+        value_labels: tuple[str, str],
     ) -> None:
         self.fetching("plot", False)
         self.query_one(TrafficPlot).show(
@@ -338,8 +349,8 @@ class HistoryPane(Vertical):
             result["split"],
             result["buckets"],
             heading,
-            label,
-            labels,
+            row_label,
+            value_labels,
         )
 
     def show_error(self, message: str) -> None:
@@ -366,7 +377,7 @@ class HistoryPane(Vertical):
             [
                 row
                 for row in self.rows
-                if needle in display(self.group_by, row[0]).lower()
+                if needle in format_value(self.group_by, row[0]).lower()
             ]
             if needle
             else self.rows
@@ -375,22 +386,25 @@ class HistoryPane(Vertical):
         # the layer, the rows are the sums already
         totals = []
         if not needle and self.result and self.group_by != self.result["totals_by"]:
-            totals = [[Total(part), a, b] for part, a, b in self.result["parts"]]
+            totals = [
+                [Total(layer), out_bytes, in_bytes]
+                for layer, out_bytes, in_bytes in self.result["parts"]
+            ]
         self.table_rows = totals + self.shown
-        unit = self.viewer.unit
+        byte_unit = self.viewer.byte_unit
         out_label, in_label = self.info.get("values", ["sent", "received"])
         table.clear(columns=True)
         table.add_column(self.labels().get(self.group_by, self.group_by), key="value")
-        table.add_column(Text(out_label, justify="right"), key="a")
-        table.add_column(Text(in_label, justify="right"), key="b")
+        table.add_column(Text(out_label, justify="right"), key="out")
+        table.add_column(Text(in_label, justify="right"), key="in")
         table.add_rows(
             [
                 (
                     _value_cell(self.group_by, value),
-                    bytes_cell(a, unit),
-                    bytes_cell(b, unit),
+                    bytes_cell(out_bytes, byte_unit),
+                    bytes_cell(in_bytes, byte_unit),
                 )
-                for value, a, b in self.table_rows
+                for value, out_bytes, in_bytes in self.table_rows
             ]
         )
         # keep the highlight on the same value across refreshes; a sum only if it was on one, as
@@ -414,7 +428,7 @@ class HistoryPane(Vertical):
             notes.append(
                 "filter: "
                 + " > ".join(
-                    f"{'!' if exclude else ''}{labels.get(dimension, dimension)}={display(dimension, value)}"
+                    f"{'!' if exclude else ''}{labels.get(dimension, dimension)}={format_value(dimension, value)}"
                     for dimension, value, exclude in self.filters
                 )
             )
@@ -433,10 +447,12 @@ class HistoryPane(Vertical):
         time_range = self.viewer.time_range
         if not time_range.zooms:
             return time_range.label()
-        clock = "%H:%M" if end - start >= 3600 else "%H:%M:%S"
+        pattern = "%H:%M" if end - start >= 3600 else "%H:%M:%S"
         first, last = time.localtime(start), time.localtime(end)
-        tail = time.strftime(clock if first[:3] == last[:3] else f"%b %d {clock}", last)
-        return f"{time.strftime(f'%b %d {clock}', first)} – {tail}"
+        tail = time.strftime(
+            pattern if first[:3] == last[:3] else f"%b %d {pattern}", last
+        )
+        return f"{time.strftime(f'%b %d {pattern}', first)} – {tail}"
 
     def update_status(self) -> None:
         """the table's borders: its title counts the rows only while some are not shown, its
@@ -448,9 +464,9 @@ class HistoryPane(Vertical):
             if self.find or result["truncated"]:
                 title = f"{len(self.shown)} of {result['groups']} rows"
             if result["clipped"]:
-                subtitle = f"raw rows only: from {moment(result['start'])}"
+                subtitle = f"raw rows only: from {format_time(result['start'])}"
             elif result["start"] < result["split"]:
-                subtitle = f"rollups before {moment(result['split'])}: no addresses, ephemeral ports as 0"
+                subtitle = f"rollups before {format_time(result['split'])}: no addresses, ephemeral ports as 0"
         table.border_title = title
         table.border_subtitle = subtitle
 
@@ -465,13 +481,13 @@ class HistoryPane(Vertical):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # refilling the table highlights the row again; only another row needs another plot
-        if self.subject() != self._plot_subject:
+        if self.plot_filter() != self._plot_filter:
             self.schedule_timeline()
 
     def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
         # exactly what the plot shows, empty time included: the plot keeps its own limits
         start, end = event.x_range
-        self.viewer.view(int(start), int(end))
+        self.viewer.zoom_to(int(start), int(end))
 
     def action_filter(self, exclude: bool) -> None:
         # a row of sums has no value of the dimension to keep or exclude

@@ -23,12 +23,12 @@ from textual.widgets.tabbed_content import ContentTabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
-from tracct.viewer.app import TimeRange, ViewerApp  # noqa: E402
+from tracct.viewer.app import TimeRange, TracctApp  # noqa: E402
 from tracct.viewer.banner import Banner  # noqa: E402
-from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
+from tracct.viewer.format import SPANS, format_bytes, format_value  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
-from tracct.viewer.pickers import SpanPicker, UnitPicker  # noqa: E402
+from tracct.viewer.pickers import ByteUnitPicker, SpanPicker  # noqa: E402
 from tracct.viewer.plot import (
     BUSY,
     MAX_SPAN,
@@ -59,7 +59,7 @@ def test_settings():
 
 
 async def test_settings_chord(tmp_path):
-    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press("s")
         assert not isinstance(app.screen, SettingsDialog)
@@ -68,7 +68,7 @@ async def test_settings_chord(tmp_path):
 
 
 async def test_tab_keys(tmp_path):
-    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
     async with app.run_test(size=(120, 40)) as pilot:
         tabs = app.query_one(TabbedContent)
         assert [pane.id for pane in tabs.query(TabPane)] == [
@@ -110,11 +110,11 @@ async def test_tab_keys(tmp_path):
             ),
         )
         await pilot.press("u")
-        assert app.unit == "auto"
+        assert app.byte_unit == "auto"
 
 
 async def test_span_picker(tmp_path):
-    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     app.time_range.zooms.append((5, 10))
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press("s")
@@ -154,11 +154,11 @@ async def test_span_picker(tmp_path):
 
 
 async def test_unit_picker(tmp_path):
-    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     async with app.run_test(size=(120, 40)) as pilot:
         # before any change there is no unit to go back to: no hint, and u leaves it open
         await pilot.press("u")
-        await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+        await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
         assert app.screen._entries[options.highlighted][0] == "auto"
         assert not any(
@@ -167,15 +167,18 @@ async def test_unit_picker(tmp_path):
         )
         await pilot.press("u")
         await pilot.pause(0.2)
-        assert isinstance(app.screen, UnitPicker)
+        assert isinstance(app.screen, ByteUnitPicker)
         # Enter takes the highlighted unit
         await pilot.press("down", "down", "down", "enter")
         await _until(
-            pilot, lambda: app.unit == "MB" and not isinstance(app.screen, UnitPicker)
+            pilot,
+            lambda: (
+                app.byte_unit == "MB" and not isinstance(app.screen, ByteUnitPicker)
+            ),
         )
         # the unit before has the hint, and u u goes back and forth
         await pilot.press("u")
-        await _until(pilot, lambda: isinstance(app.screen, UnitPicker))
+        await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
         assert (
             str(options.get_option_at_index(0).prompt)
@@ -183,9 +186,13 @@ async def test_unit_picker(tmp_path):
             .endswith("(press u to select)")
         )
         await pilot.press("u")
-        await _until(pilot, lambda: app.unit == "auto" and app.last_unit == "MB")
+        await _until(
+            pilot, lambda: app.byte_unit == "auto" and app.last_byte_unit == "MB"
+        )
         await pilot.press("u", "u")
-        await _until(pilot, lambda: app.unit == "MB" and app.last_unit == "auto")
+        await _until(
+            pilot, lambda: app.byte_unit == "MB" and app.last_byte_unit == "auto"
+        )
 
 
 def test_format():
@@ -193,9 +200,9 @@ def test_format():
     assert format_bytes(1500) == "1.5 kB"
     assert format_bytes(2_500_000, "kB") == "2,500.0 kB"
     assert format_bytes(1234, "B") == "1,234"
-    assert display("protocol", 6) == "tcp"
-    assert display("domain", "") == "(none)"
-    assert display("cmdline", "a\tb\nc\x1b[31m") == "a b c[31m"
+    assert format_value("protocol", 6) == "tcp"
+    assert format_value("domain", "") == "(none)"
+    assert format_value("cmdline", "a\tb\nc\x1b[31m") == "a b c[31m"
     assert (
         remote({"domain": "com.example", "raddr": "93.184.215.14", "rport": 443})
         == "com.example:443"
@@ -291,7 +298,7 @@ async def test_history_drill_down(tmp_path):
     listener = _server(tmp_path)
 
     try:
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
+        app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
         app.time_range = TimeRange(0)
         async with app.run_test(size=(140, 45)) as pilot:
             processes = app.query_one("#processes HistoryPane", HistoryPane)
@@ -311,7 +318,7 @@ async def test_history_drill_down(tmp_path):
             assert processes.table_rows[0][1:] == [6111, 11522]
             # the plot follows the highlighted row, which starts on the largest value, not a sum
             plot = processes.query_one(TrafficPlot)
-            await _until(pilot, lambda: "curl" in plot.subject)
+            await _until(pilot, lambda: "curl" in plot.row_label)
             assert sum(a for a, _ in plot.values.values()) == 1111
             # a sum is a row like any other: its layer's plot
             table.focus()
@@ -319,7 +326,7 @@ async def test_history_drill_down(tmp_path):
             await _until(
                 pilot,
                 lambda: (
-                    plot.subject == "(all · inner)"
+                    plot.row_label == "(all · inner)"
                     and sum(a for a, _ in plot.values.values()) == 300
                 ),
             )
@@ -458,7 +465,7 @@ async def test_history_drill_down(tmp_path):
                 pilot, lambda: not app.time_range.zooms and plot.start == start
             )
             await pilot.press("u", "down", "enter")
-            await _until(pilot, lambda: app.unit == "B")
+            await _until(pilot, lambda: app.byte_unit == "B")
     finally:
         listener.close()
 
@@ -468,7 +475,7 @@ async def test_plot_title_and_busy(tmp_path):
     slow = threading.Event()
 
     try:
-        app = ViewerApp(tmp_path / "events.sock", tmp_path / "query.sock", "interfaces")
+        app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "interfaces")
         app.time_range = TimeRange(0)
         ask = app.ask
 
@@ -509,7 +516,7 @@ async def test_plot_title_and_busy(tmp_path):
 
 
 async def test_history_without_query_server(tmp_path):
-    app = ViewerApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     async with app.run_test(size=(120, 40)) as pilot:
         pane = app.query_one("#processes HistoryPane", HistoryPane)
         await _until(pilot, lambda: bool(pane.error))
@@ -530,7 +537,7 @@ async def test_live_tab(tmp_path, monkeypatch):
     publisher.start()
 
     try:
-        app = ViewerApp(socket_path, tmp_path / "missing.sock", "live")
+        app = TracctApp(socket_path, tmp_path / "missing.sock", "live")
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
             await _until(
@@ -555,21 +562,21 @@ async def test_live_tab(tmp_path, monkeypatch):
                 ]
             )
             await _until(pilot, lambda: pane.events == 3)
-            assert pane.totals[("curl", "/usr/bin/curl")][:3] == [101, 4000, 2]
+            assert pane.summary[("curl", "/usr/bin/curl")][:3] == [101, 4000, 2]
             # nothing to say: no banner; the events title carries the counts
             banner = pane.query_one(".banner")
             assert not banner.display
             await _until(
                 pilot,
                 lambda: (
-                    str(pane.query_one("#recent", DataTable).border_title)
+                    str(pane.query_one("#events", DataTable).border_title)
                     == "last 500 events · 3 total"
                 ),
             )
             # the seconds since the tab started go with the totals they were summed over
             assert re.fullmatch(
                 r"summary · \d+ s",
-                str(pane.query_one("#totals", DataTable).border_title),
+                str(pane.query_one("#summary", DataTable).border_title),
             )
             # typing a find (c types, it does not clear): the input says it; kept with Enter, the
             # banner on the same line does, with a hint that c clears it
@@ -591,39 +598,39 @@ async def test_live_tab(tmp_path, monkeypatch):
             await _until(
                 pilot,
                 lambda: (
-                    pane.query_one("#totals", DataTable).row_count == 2
-                    and pane.query_one("#recent", DataTable).row_count == 3
+                    pane.query_one("#summary", DataTable).row_count == 2
+                    and pane.query_one("#events", DataTable).row_count == 3
                 ),
             )
             # by executable, newest event first
-            totals, recent = (
-                pane.query_one("#totals", DataTable),
-                pane.query_one("#recent", DataTable),
+            summary, events = (
+                pane.query_one("#summary", DataTable),
+                pane.query_one("#events", DataTable),
             )
-            assert _keys(totals) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
-            assert _keys(recent) == ["3", "2", "1"]
+            assert _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
+            assert _keys(events) == ["3", "2", "1"]
             # by the number behind the text: 5 B before 4.0 kB, where the text would rank the other way
-            totals.sort_by("received")
-            assert _keys(totals) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
+            summary.sort_by("received")
+            assert _keys(summary) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
             # a refill keeps the sort, and the cursor stays on its executable as it moves up
-            totals.move_cursor(row=1)
-            pane.totals[("curl", "/usr/bin/curl")][1] = 0
+            summary.move_cursor(row=1)
+            pane.summary[("curl", "/usr/bin/curl")][1] = 0
             pane.render_tables()
             assert (
-                _keys(totals) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
-                and totals.cursor_row == 0
+                _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
+                and summary.cursor_row == 0
             )
-            recent.sort_by("sent")
-            assert _keys(recent)[0] == "2"
-            # paused, recent stops; reset clears
-            pane.query_one("#totals", DataTable).focus()
+            events.sort_by("sent")
+            assert _keys(events)[0] == "2"
+            # paused, the events table stops; reset clears
+            pane.query_one("#summary", DataTable).focus()
             await pilot.press("space")
             publisher.publish(event)
             await _until(pilot, lambda: pane.events == 4)
             assert len(pane.recent) == 3
-            await _until(pilot, lambda: recent.border_subtitle == "table is frozen")
+            await _until(pilot, lambda: events.border_subtitle == "table is frozen")
             await pilot.press("r")
-            await _until(pilot, lambda: pane.events == 0 and not pane.totals)
+            await _until(pilot, lambda: pane.events == 0 and not pane.summary)
     finally:
         publisher.stop()
 
@@ -655,7 +662,7 @@ async def test_live_limits(tmp_path, monkeypatch):
     config.set(settings.LIVE_EVENTS, 12)
 
     try:
-        app = ViewerApp(socket_path, tmp_path / "missing.sock", "live")
+        app = TracctApp(socket_path, tmp_path / "missing.sock", "live")
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
             await _until(
@@ -676,19 +683,19 @@ async def test_live_limits(tmp_path, monkeypatch):
                 ]
             )
             await _until(pilot, lambda: pane.events == 12)
-            assert pane.dropped == 2 and len(pane.totals) == 10
+            assert pane.dropped == 2 and len(pane.summary) == 10
             await _until(
                 pilot,
                 lambda: str(
-                    pane.query_one("#totals", DataTable).border_title
+                    pane.query_one("#summary", DataTable).border_title
                 ).startswith("summary (2 dropped) · "),
             )
             assert (
-                str(pane.query_one("#recent", DataTable).border_title)
+                str(pane.query_one("#events", DataTable).border_title)
                 == "last 12 events · 12 total"
             )
-            assert not any(name.startswith("old") for name, _ in pane.totals)
-            assert pane.query_one("#totals", DataTable).row_count == 10
+            assert not any(name.startswith("old") for name, _ in pane.summary)
+            assert pane.query_one("#summary", DataTable).row_count == 10
             assert len(pane.recent) == 12
             # a lowered limit applies on the next redraw and keeps the newest events
             config.set(settings.LIVE_EVENTS, 10)
@@ -696,22 +703,22 @@ async def test_live_limits(tmp_path, monkeypatch):
             await _until(
                 pilot,
                 lambda: str(
-                    pane.query_one("#recent", DataTable).border_title
+                    pane.query_one("#events", DataTable).border_title
                 ).startswith("last 10 events · "),
             )
             assert [event["name"] for event in pane.recent] == [
                 f"new{i}" for i in range(9, -1, -1)
             ]
             await _until(
-                pilot, lambda: pane.query_one("#recent", DataTable).row_count == 10
+                pilot, lambda: pane.query_one("#events", DataTable).row_count == 10
             )
-            pane.query_one("#totals", DataTable).focus()
+            pane.query_one("#summary", DataTable).focus()
             await pilot.press("r")
             await _until(pilot, lambda: pane.dropped == 0)
             await _until(
                 pilot,
                 lambda: str(
-                    pane.query_one("#totals", DataTable).border_title
+                    pane.query_one("#summary", DataTable).border_title
                 ).startswith("summary · "),
             )
     finally:
