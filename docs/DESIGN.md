@@ -283,7 +283,7 @@ is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on 
 `tracct view` (`viewer/`, Textual, the `tui` extra) shows a live tab from `events.sock`
 and a history tab per source with one time range shared between them. A tab's table starts
 with the sums over all rows, one row per layer, then the rows themselves, and its plot
-(textual-plot) draws the highlighted row, a sum only once the highlight is moved to it, so
+(tcoda.plot) draws the highlighted row, a sum only once the highlight is moved to it, so
 interfaces are not added up unless asked for, and layers never are. It draws peaks, not
 averages. Its time
 axis is the shared range: what it shows after zooming or panning comes to rest is exactly

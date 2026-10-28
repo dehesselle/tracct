@@ -325,9 +325,10 @@ class HistoryPane(Vertical):
         if self.subject() != self._plot_subject:
             self.schedule_timeline()
 
-    def on_traffic_plot_viewed(self, event: TrafficPlot.Viewed) -> None:
+    def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
         # exactly what the plot shows, empty time included: the plot keeps its own limits
-        self.viewer.view(event.start, event.end)
+        start, end = event.x_range
+        self.viewer.view(int(start), int(end))
 
     def action_filter(self, exclude: bool) -> None:
         # a row of sums has no value of the dimension to keep or exclude

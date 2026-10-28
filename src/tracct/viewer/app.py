@@ -237,8 +237,7 @@ class ViewerApp(ChordMixin, App):
             return
         self.last_unit, self.unit = self.unit, unit
         for plot in self.query(TrafficPlot):
-            plot.unit = self.unit
-            plot.redraw()
+            plot.set_unit(self.unit)
         for pane in self.query(HistoryPane):
             if pane.result:
                 pane.render_rows()

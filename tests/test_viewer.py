@@ -17,6 +17,7 @@ pytest.importorskip("textual")
 from tcoda.dialogs import SettingsDialog  # noqa: E402
 from tcoda.settings import config, configure  # noqa: E402
 from test_query_server import VPN, _db  # noqa: E402
+from textual.app import App, ComposeResult  # noqa: E402
 from textual.content import Content  # noqa: E402
 from textual.widgets import DataTable, TabbedContent, TabPane, Tabs  # noqa: E402
 
@@ -28,7 +29,7 @@ from tracct.viewer.format import SPANS, display, format_bytes  # noqa: E402
 from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
 from tracct.viewer.pickers import SpanPicker, UnitPicker  # noqa: E402
-from tracct.viewer.plot import BUSY, RateAxis, TimeAxis, TrafficPlot  # noqa: E402
+from tracct.viewer.plot import BUSY, MAX_SPAN, MIN_SPAN, PEAK_SECONDS, RateAxis, TrafficPlot  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -188,17 +189,41 @@ def test_bucket_step():
 
 
 def test_plot_axes():
-    axis = TimeAxis()
-    axis.columns = 100
-    # a day in round hours, its midnight named by its date
-    ticks = axis.get_ticks(0, 86400)
-    assert ticks == [k * 6 * 3600.0 for k in range(5)]
-    assert axis.get_labels_for_ticks(ticks) == ["Jan 01", "06:00", "12:00", "18:00", "Jan 02"]
+    # the time axis is tcoda's; the rate axis labels round values in bytes per second
     rates = RateAxis()
-    rates.rows = 10
-    ticks = rates.get_ticks(0, 7000)
+    ticks = rates.get_ticks(0, 7000, 5)
     assert ticks == [0.0, 2000.0, 4000.0, 6000.0]
-    assert rates.get_labels_for_ticks(ticks) == ["0", "2.0 kB/s", "4.0 kB/s", "6.0 kB/s"]
+    assert rates.get_labels(ticks) == ["0", "2.0 kB/s", "4.0 kB/s", "6.0 kB/s"]
+
+
+def test_plot_limits():
+    """zooming out stops at ten years, zooming in at a minute, and nothing reaches back before 1970"""
+    settled = []
+
+    class PlotApp(App):
+        def compose(self) -> ComposeResult:
+            yield TrafficPlot()
+
+        def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
+            settled.append(event.x_range)
+
+    def width_is(span):
+        return lambda: bool(settled) and abs(settled[-1][1] - settled[-1][0] - span) < 1
+
+    async def drive():
+        app = PlotApp()
+        async with app.run_test(size=(100, 30)) as pilot:
+            plot = app.query_one(TrafficPlot)
+            # the first hour after the epoch, so zooming out runs into 1970
+            plot.show(0, 3600, 0, 60, PEAK_SECONDS, 0, [], "", "", ("sent", "received"))
+            plot.focus()
+            await pilot.press(*["minus"] * 100)
+            await _until(pilot, width_is(MAX_SPAN))
+            assert settled[-1][0] >= 0
+            await pilot.press(*["plus"] * 200)
+            await _until(pilot, width_is(MIN_SPAN))
+
+    asyncio.run(drive())
 
 
 async def _until(pilot, condition, timeout=10.0):
@@ -318,7 +343,7 @@ def test_history_drill_down(tmp_path):
             # the plot keeps only its time keys; up and down do not move it, r refreshes as anywhere
             await _until(pilot, lambda: {"plus", "minus", "left", "right", "r", "s"} <= set(app.screen.active_bindings))
             assert app.screen.active_bindings["r"][1].action == "app.refresh"
-            assert not {"up", "down", "ctrl+equals_sign", "ctrl+shift+minus"} & set(app.screen.active_bindings)
+            assert not {"up", "down", "ctrl+shift+equals_sign", "ctrl+shift+minus"} & set(app.screen.active_bindings)
             await pilot.press("plus")
             await _until(pilot, lambda: bool(app.time_range.zooms))
             zoomed_start, zoomed_end = app.time_range.zooms[-1]
