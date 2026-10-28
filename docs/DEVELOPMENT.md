@@ -19,6 +19,7 @@ releasing and the benchmark.
 | `src/tracct/netinfo.py`, `rtnetlink.py` | namespaces, interfaces and their counters, via rtnetlink |
 | `src/tracct/conntrack.py` | forwarded flows from connection tracking, via ctnetlink |
 | `src/tracct/utils.py`, `types.py` | the hand-off queue between threads and the event passed through it, logging and SQLite helpers |
+| `src/tracct/messages.py` | the running daemon's messages: their IDs, default levels and `report` |
 | `src/tracct/config.py`, `constants.py` | configuration, paths, schema |
 | `src/tracct/live_feed.py` | `events.sock` publisher and subscriber |
 | `src/tracct/query.py` | the query socket's message framing and client |
@@ -111,7 +112,8 @@ in `pyproject.toml`).
 - `test_monitor.py` covers executable and unit resolution, `test_pipeline.py` the hand-off
   between the threads and the writer, `test_reverse_dns.py` the reverse DNS workers with a
   fake resolver, `test_robustness.py` config, rollups, retention, database and
-  struct-layout robustness, `test_live_feed.py` the socket, `test_query_server.py` the
+  struct-layout robustness, `test_messages.py` the message IDs and their levels,
+  `test_live_feed.py` the socket, `test_query_server.py` the
   routing between raw rows and rollups, the dimensions, request bounds and the socket,
   `test_viewer.py` the Textual viewer headless against both sockets (skipped without
   Textual), `test_install.py` `install` and `uninstall` in a scratch root,

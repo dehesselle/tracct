@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import collections
-import logging
 import os
 import socket
 import sqlite3
@@ -20,7 +19,6 @@ __all__ = [
     "DropOldestQueue",
     "connect_db_readonly",
     "ephemeral_port_start",
-    "log_error",
     "quarantine_database",
     "sanitize_log_line",
     "sd_notify",
@@ -125,14 +123,6 @@ def sanitize_log_line(line: str) -> str:
         for c in line
         if c == "\t" or unicodedata.category(c) not in ("Cc", "Cf", "Cs")
     )
-
-
-def log_error(message: str) -> None:
-    """Log a problem of the capture or write side.
-
-    Messages carry comm, cmdline and domain strings.
-    """
-    logging.getLogger("tracct.error").warning(sanitize_log_line(message))
 
 
 class DropOldestQueue[T]:

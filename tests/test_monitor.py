@@ -88,7 +88,7 @@ def child():
 
 
 def _resolver() -> ExeResolver:
-    return ExeResolver(lambda message: None)
+    return ExeResolver(lambda msgid, message: None)
 
 
 def test_resolver_returns_live_path(child):

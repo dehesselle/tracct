@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import collections
 import ipaddress
+import logging
 import os
 import resource
 import shutil
@@ -28,8 +29,16 @@ from tracct.bpf_wrapper import (
 )
 from tracct.config import Config
 from tracct.constants import ST_DEV_MASK
+from tracct.messages import report
 from tracct.types import BpfEvent
-from tracct.utils import log_error
+
+logger = logging.getLogger(__name__)
+
+
+def _report(msgid: str, message: str) -> None:
+    """report() under this module's logger, as the default report callable."""
+    report(logger, msgid, message)
+
 
 #: Entries per drain handoff: one per event costs a hand-off each, one per drain lands a
 #: burst at once.
@@ -198,7 +207,10 @@ class ExeResolver:
     usual.
     """
 
-    def __init__(self, report: typing.Callable[[str], object]) -> None:
+    def __init__(
+        self,
+        report: typing.Callable[[str, str], object] = _report,
+    ) -> None:
         self.report = report
         #: Cache of resolved (dev, ino, comm) -> exe path, used as a fallback for
         #: when /proc/PID/exe is no longer readable (short-lived processes).
@@ -237,7 +249,8 @@ class ExeResolver:
         if label.startswith("<multi-call:") and sig not in self.multi_call_reported:
             self.multi_call_reported.add(sig)
             self.report(
-                f"monitor: hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone"
+                "multi-call-inode",
+                f"hardlink multi-call inode dev={st_dev} ino={st_ino} (e.g. {exe}), fallback reports {label!r} when /proc is gone",
             )
 
     def _resolve_when_proc_gone(
@@ -542,7 +555,7 @@ def run_monitor(
         "conn_stats_packet": PACKET_MAP_MAX,
     }
     domain_dict: collections.OrderedDict[str, str] = collections.OrderedDict()
-    resolver = ExeResolver(log_error)
+    resolver = ExeResolver()
 
     # The cmdline and unit last read per pid, for the drains after the process has
     # exited: a connection's last bytes are often drained once their process is gone.
@@ -639,7 +652,9 @@ def run_monitor(
         try:
             check_bpf_requirements()
         except (RuntimeError, FileNotFoundError) as e:
-            log_error(f"BPF requirements check failed: {e}")
+            report(
+                logger, "bpf-requirements-failed", f"BPF requirements check failed: {e}"
+            )
             raise
         try:
             bpf_obj_path = find_bpf_object()
@@ -721,12 +736,14 @@ def run_monitor(
                 event=b.get_syscall_fnname("execve"), fn_name="exec_entry"
             )
         except Exception as e:
-            log_error(
+            report(
+                logger,
+                "bpf-init-failed",
                 "Init BPF {}{} on line {}".format(
                     type(e).__name__,
                     str(e.args),
                     e.__traceback__.tb_lineno if e.__traceback__ else "?",
-                )
+                ),
             )
             raise
         use_getaddrinfo_uprobe = False
@@ -736,8 +753,10 @@ def run_monitor(
             use_getaddrinfo_uprobe = True
         except Exception as e:  # noqa: BLE001
             # Best effort: whatever libbpf raises, the log says what goes uncounted.
-            log_error(
-                f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup"
+            report(
+                logger,
+                "dns-uprobe-missing",
+                f"getaddrinfo uprobe not attached ({e}); falling back to only using reverse DNS lookup",
             )
         # Attach fexit network hooks: inet_sendmsg for send, inet_recvmsg for recv;
         # sock_common_recvmsg covers af_inet6 raw / l2tp / dccp recv (not
@@ -747,7 +766,11 @@ def run_monitor(
             b.bpf_obj.attach_trace("inet_recvmsg_ret")
             b.bpf_obj.attach_trace("sock_common_recvmsg_ret")
         except Exception as e:
-            log_error(f"Failed to attach network monitoring programs: {e}")
+            report(
+                logger,
+                "bpf-attach-failed",
+                f"Failed to attach network monitoring programs: {e}",
+            )
             raise
         # inet6_sendmsg and inet6_recvmsg are best-effort: absent on kernels built
         # without IPv6, a missing hook only drops IPv6 send/recv bytes. Attach each
@@ -773,16 +796,20 @@ def run_monitor(
         ):
             if prog in disabled_traces:
                 if prog in missing_symbol:
-                    log_error(
-                        f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded"
+                    report(
+                        logger,
+                        "hook-skipped",
+                        f"BPF.attach_trace() skipped for {target}: kernel symbol not found, {msg} will not be recorded",
                     )
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
             except Exception as e:  # noqa: BLE001
                 # Best effort: whatever libbpf raises, the log says what goes uncounted.
-                log_error(
-                    f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded"
+                report(
+                    logger,
+                    "hook-failed",
+                    f"BPF.attach_trace() failed for {target}: {e}, {msg} will not be recorded",
                 )
         # tcp/mptcp splice_read: recv via splice()/sendfile() bypasses recvmsg.
         # Best-effort, one hook covers v4+v6; a missing hook only drops spliced recv
@@ -792,24 +819,30 @@ def run_monitor(
             ("mptcp_splice_read_ret", "mptcp_splice_read"),
         ):
             if prog in disabled_traces:
-                log_error(
-                    f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded"
+                report(
+                    logger,
+                    "hook-skipped",
+                    f"BPF.attach_trace() skipped for {target}: kernel symbol not found, spliced recv bytes will not be recorded",
                 )
                 continue
             try:
                 b.bpf_obj.attach_trace(prog)
             except Exception as e:  # noqa: BLE001
                 # Best effort: whatever libbpf raises, the log says what goes uncounted.
-                log_error(
-                    f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded"
+                report(
+                    logger,
+                    "hook-failed",
+                    f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded",
                 )
         # tcp_read_sock: recv via io_uring zero-copy (IORING_OP_RECV_ZC). Only enabled
         # when io_zcrx_recv_skb is present (see optional_trace_targets); its address
         # must be written before attach so the actor filter never counts other read_sock
         # users. A missing/disabled hook only drops io_uring zcrx recv.
         if "tcp_read_sock_ret" in disabled_traces:
-            log_error(
-                "BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded"
+            report(
+                logger,
+                "hook-skipped",
+                "BPF.attach_trace() skipped for tcp_read_sock: io_zcrx_recv_skb address unavailable (absent, or kallsyms restricted), io_uring zero-copy recv bytes will not be recorded",
             )
         else:
             try:
@@ -817,8 +850,10 @@ def run_monitor(
                 b.bpf_obj.attach_trace("tcp_read_sock_ret")
             except Exception as e:  # noqa: BLE001
                 # Best effort: whatever libbpf raises, the log says what goes uncounted.
-                log_error(
-                    f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded"
+                report(
+                    logger,
+                    "hook-failed",
+                    f"BPF.attach_trace() failed for tcp_read_sock_ret: {e}, io_uring zero-copy recv bytes will not be recorded",
                 )
         b["exec_events"].open_ring_buffer(queue_exec_event)
         if use_getaddrinfo_uprobe:
@@ -846,13 +881,15 @@ def run_monitor(
                 entries = b.drain_map(map_name, key_type, ConnVal)
             except Exception as e:  # noqa: BLE001
                 # The reader outlives any one drain; the error is logged.
-                log_error(
+                report(
+                    logger,
+                    "drain-failed",
                     "BPF drain {} {}{} on line {}".format(
                         map_name,
                         type(e).__name__,
                         str(e.args),
                         e.__traceback__.tb_lineno if e.__traceback__ else "?",
-                    )
+                    ),
                 )
                 continue
             # An lru map evicts oldest entries silently when full, so a drain at near
@@ -866,8 +903,10 @@ def run_monitor(
                         if map_name != "conn_stats_packet"
                         else "too many processes doing raw packet or TUN I/O"
                     )
-                    log_error(
-                        f"{map_name} near capacity ({len(entries)}/{capacity}), connections may have been evicted, {hint}"
+                    report(
+                        logger,
+                        "map-near-capacity",
+                        f"{map_name} near capacity ({len(entries)}/{capacity}), connections may have been evicted, {hint}",
                     )
             else:
                 near_capacity_maps.discard(map_name)
@@ -960,12 +999,14 @@ def run_monitor(
                         outgoing = []
                 except Exception as e:  # noqa: BLE001
                     # The reader outlives any one drain; the error is logged.
-                    log_error(
+                    report(
+                        logger,
+                        "drain-entry-failed",
                         "BPF drain entry {}{} on line {}".format(
                             type(e).__name__,
                             str(e.args),
                             e.__traceback__.tb_lineno if e.__traceback__ else "?",
-                        )
+                        ),
                     )
             if outgoing:
                 publish(outgoing)
@@ -1052,13 +1093,17 @@ def run_monitor(
             # Counters that cannot be read leave nothing to report this drain.
             return
         if exec_drops > ring_drop_state[0]:
-            log_error(
-                f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost"
+            report(
+                logger,
+                "exec-ring-full",
+                f"exec ring buffer full: dropped {exec_drops - ring_drop_state[0]} exec event(s) (total {exec_drops}); their process attribution is lost",
             )
             ring_drop_state[0] = exec_drops
         if dns_drops > ring_drop_state[1]:
-            log_error(
-                f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})"
+            report(
+                logger,
+                "dns-ring-full",
+                f"dns ring buffer full: dropped {dns_drops - ring_drop_state[1]} dns event(s) (total {dns_drops})",
             )
             ring_drop_state[1] = dns_drops
 
@@ -1086,12 +1131,14 @@ def run_monitor(
                     next_drain = now + drain_interval
             except Exception as e:  # noqa: BLE001
                 # The reader outlives any one drain; the error is logged.
-                log_error(
+                report(
+                    logger,
+                    "monitor-failed",
                     "BPF {}{} on line {}".format(
                         type(e).__name__,
                         str(e.args),
                         e.__traceback__.tb_lineno if e.__traceback__ else "?",
-                    )
+                    ),
                 )
         # Hand over what the maps still hold before shutting down.
         drain_conn_maps()

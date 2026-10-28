@@ -15,12 +15,22 @@ from __future__ import annotations
 import collections
 import dataclasses
 import ipaddress
+import logging
 import os
 import threading
 import time
 from collections.abc import Callable
 
 from tracct import rtnetlink
+from tracct.messages import report
+
+logger = logging.getLogger(__name__)
+
+
+def _report(msgid: str, message: str) -> None:
+    """report() under this module's logger, as the default report callable."""
+    report(logger, msgid, message)
+
 
 #: Where ip netns and docker keep their named namespaces.
 NETNS_DIRS = ("/run/netns", "/run/docker/netns")
@@ -131,7 +141,7 @@ class NetInfo:
 
     def __init__(
         self,
-        report: Callable[[str], object],
+        report: Callable[[str, str], object] = _report,
         query: Callable[[str | None], Snapshot] | None = None,
     ) -> None:
         self.report = report
@@ -254,7 +264,8 @@ class NetInfo:
                 if inode not in self.failed:
                     self.failed.add(inode)
                     self.report(
-                        f"netinfo: cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded"
+                        "netns-unreadable",
+                        f"cannot query network namespace {self.label(inode)} ({e}); its interfaces go unrecorded",
                     )
                 # Keep what the last look found, so the next one that works counts from
                 # there.

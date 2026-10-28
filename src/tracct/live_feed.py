@@ -20,6 +20,7 @@ import threading
 from pathlib import Path
 
 from tracct.constants import RUN_DIR
+from tracct.messages import report
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,10 @@ class LiveFeedPublisher:
                     gid = grp.getgrnam(self._group).gr_gid
                     os.chown(EVENTS_SOCKET_PATH, -1, gid)
                 except (KeyError, PermissionError) as e:
-                    logger.warning(
-                        f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}"
+                    report(
+                        logger,
+                        "live-feed-group",
+                        f"live feed: could not hand {EVENTS_SOCKET_PATH} to group {self._group!r}: {e}",
                     )
             self._sock.listen(8)
             self._wake_r, self._wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)

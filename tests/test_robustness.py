@@ -511,10 +511,12 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
         "INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?)", (ahead + hour,)
     )
     con.commit()
-    errors = []
-    monkeypatch.setattr(writer, "log_error", errors.append)
+    reports = []
+    monkeypatch.setattr(
+        writer, "report", lambda logger, msgid, message: reports.append(msgid)
+    )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
-    assert len(errors) == 1
+    assert reports == ["clock-went-back"]
     assert (
         con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[
             0

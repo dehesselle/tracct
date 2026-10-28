@@ -18,13 +18,13 @@ from collections.abc import Callable
 from tracct.config import Config
 from tracct.conntrack import Flow, Trackers
 from tracct.constants import DB_PATH, RETRY_BUFFER_MAX
+from tracct.messages import report
 from tracct.netinfo import NetInfo
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
 from tracct.utils import (
     DropOldestQueue,
     ephemeral_port_start,
-    log_error,
     quarantine_database,
     sqlite_error_means_corrupt,
 )
@@ -426,8 +426,10 @@ def roll_up(
             con.execute(
                 "UPDATE meta SET value = ? WHERE key = 'rollup_watermark'", (current,)
             )
-        log_error(
-            f"maintenance: the wall clock went back behind the rolled-up periods; rolling up again from {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(current))}"
+        report(
+            logger,
+            "clock-went-back",
+            f"maintenance: the wall clock went back behind the rolled-up periods; rolling up again from {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(current))}",
         )
         watermark = current
     periods = 0
@@ -495,8 +497,10 @@ def purge_database(
     raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
     if newest is not None and shortest > 0 and now - shortest > newest:
-        logger.error(
-            "tracct: skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted"
+        report(
+            logger,
+            "retention-skipped",
+            "skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted",
         )
         return periods, 0
     watermark_row = con.execute(
@@ -582,11 +586,9 @@ def run_writer(
     reverse_dns = (
         ReverseDns() if config.log.addresses and config.log.reverse_dns else None
     )
-    netinfo = NetInfo(log_error) if config.database.enabled else None
+    netinfo = NetInfo() if config.database.enabled else None
     forwarded = (
-        Trackers(log_error)
-        if netinfo is not None and config.monitoring.conntrack
-        else None
+        Trackers() if netinfo is not None and config.monitoring.conntrack else None
     )
 
     def collect_forwarded() -> list[Flow]:
@@ -726,13 +728,15 @@ def run_writer(
                 table.rolled_back()
             if isinstance(e, sqlite3.DatabaseError) and sqlite_error_means_corrupt(e):
                 raise
-            log_error(
+            report(
+                logger,
+                "sqlite-retry",
                 "SQLite execute {}{} on line {}, will retry {} entries".format(
                     type(e).__name__,
                     str(e.args),
                     e.__traceback__.tb_lineno if e.__traceback__ else "?",
                     len(transaction),
-                )
+                ),
             )
         if transaction_success or not config.database.enabled:
             transaction, iface_rows, flow_rows = [], [], []
@@ -751,9 +755,11 @@ def run_writer(
             connections, interface_rows, forwarded_rows = (
                 max(0, count) for count in dropped
             )
-            log_error(
+            report(
+                logger,
+                "retry-buffer-full",
                 f"writer retry buffer full (persistent write outage), dropped the oldest {connections} connection, {interface_rows} interface and {forwarded_rows} forwarded row(s);"
-                f" retrying {len(transaction) + len(iface_rows) + len(flow_rows)}"
+                f" retrying {len(transaction) + len(iface_rows) + len(flow_rows)}",
             )
 
     last_write = 0.0
@@ -802,8 +808,10 @@ def run_writer(
         jump = clock.jump()
         if abs(jump) > CLOCK_JUMP_SECONDS:
             # Rows past their retention by a clock set wrong would be gone for good.
-            log_error(
-                f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it"
+            report(
+                logger,
+                "maintenance-clock-jump",
+                f"maintenance: skipped, the wall clock jumped {jump:+.0f} s since the last pass; the next pass trusts it",
             )
             return
         started = time.monotonic()
@@ -828,8 +836,10 @@ def run_writer(
             cleanup = (
                 "" if orphans is None else f" and {orphans} unreferenced lookup entries"
             )
-            logger.info(
-                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s"
+            report(
+                logger,
+                "maintenance-done",
+                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s",
             )
 
     # The first pass runs at startup.
@@ -857,17 +867,21 @@ def run_writer(
                 ):
                     # The thread ends and the daemon exits, for the service manager to
                     # start it on a new db.
-                    logger.error(
-                        f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart"
+                    report(
+                        logger,
+                        "database-unusable",
+                        f"tracct.db is unusable ({e}); quarantining to {file_path.name}.bad and recreating on restart",
                     )
                     quarantine_database(file_path)
                     raise
-                log_error(
-                    "writer {}{} on line {}".format(
+                report(
+                    logger,
+                    "writer-failed",
+                    "{}{} on line {}".format(
                         type(e).__name__,
                         str(e.args),
                         e.__traceback__.tb_lineno if e.__traceback__ else "?",
-                    )
+                    ),
                 )
     finally:
         if reverse_dns is not None:

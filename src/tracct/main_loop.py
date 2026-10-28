@@ -12,9 +12,10 @@ import time
 
 from tracct.config import Config
 from tracct.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
+from tracct.messages import report
 from tracct.monitor import run_monitor
 from tracct.types import BpfEvent
-from tracct.utils import DropOldestQueue, log_error, sd_notify
+from tracct.utils import DropOldestQueue, sd_notify
 from tracct.writer import run_writer
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,10 @@ def run_feed(
                 # A viewer's trouble must not stop the feed thread.
                 pass
         if live_feed.dropped > reported:
-            log_error(
-                f"live feed: dropped {live_feed.dropped - reported} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind"
+            report(
+                logger,
+                "live-feed-subscribers-dropped",
+                f"live feed: dropped {live_feed.dropped - reported} subscriber(s) that fell more than {MAX_PENDING_BYTES // (1024 * 1024)} MiB behind",
             )
             reported = live_feed.dropped
 
@@ -123,17 +126,24 @@ def run_main_loop(config: Config) -> int:
     while not shutdown_event.is_set():
         if not all(thread.is_alive() for thread in threads):
             dead = " ".join(thread.name for thread in threads if not thread.is_alive())
-            logger.error(
-                f"tracct thread died, exiting for the service manager to restart ({dead})"
+            report(
+                logger,
+                "thread-died",
+                f"tracct thread died, exiting for the service manager to restart ({dead})",
             )
             break
         resume_event.wait(timeout=5)
         if shutdown_event.is_set():
             break
-        for name, hand_off in (("writer", to_writer), ("live feed", to_feed)):
+        for name, msgid, hand_off in (
+            ("writer", "writer-queue-full", to_writer),
+            ("live feed", "live-feed-queue-full", to_feed),
+        ):
             if hand_off.dropped > dropped_reported[name]:
-                log_error(
-                    f"{name} queue full: dropped {hand_off.dropped - dropped_reported[name]} event(s) (total {hand_off.dropped}), it is not keeping up with the reader"
+                report(
+                    logger,
+                    msgid,
+                    f"{name} queue full: dropped {hand_off.dropped - dropped_reported[name]} event(s) (total {hand_off.dropped}), it is not keeping up with the reader",
                 )
                 dropped_reported[name] = hand_off.dropped
         mono_now = time.monotonic()
@@ -141,7 +151,11 @@ def run_main_loop(config: Config) -> int:
         suspended_for = (boot_now - boot_last) - (mono_now - mono_last)
         if resume_event.is_set() or suspended_for > 5:
             resume_event.clear()
-            logger.info("re-attaching the BPF program after resuming from suspend")
+            report(
+                logger,
+                "resumed-from-suspend",
+                "re-attaching the BPF program after resuming from suspend",
+            )
             reattach.set()
         mono_last, boot_last = mono_now, boot_now
     # Stop in pipeline order: the reader hands over what the kernel still holds, the

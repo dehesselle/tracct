@@ -114,47 +114,52 @@ exactly these.
 ## Logs
 
 Everything goes to stderr, which is the journal under the unit; lines carry their syslog
-priority, and the name of what logged them: the module, such as `tracct.cli` or
-`tracct.writer`. Startup logs the resolved config, state and runtime paths. Problems of
-capturing and writing are logged under `tracct.error`, among them:
+priority, and the name of the module that logged them, such as `tracct.cli` or
+`tracct.writer`. Startup logs the resolved config, state and runtime paths. What the
+running daemon reports starts with the message's ID in brackets:
 
-- a skipped or failed BPF hook and which traffic it leaves uncounted
-- `exec ring buffer full: dropped N exec event(s)`: raise
-  `[monitoring] exec_ring_buffer_pages`
-- `dns ring buffer full: dropped N dns event(s)`: those connections get their domain from
-  reverse DNS instead
-- `conn_stats4 near capacity` (or `conn_stats6`): connections may have been evicted before
-  a drain; raise `[monitoring] conn_map_max_entries`
-- `conn_stats_packet near capacity`: more than about 59 000 processes did raw packet or TUN
-  I/O within a second; its size is fixed
-- `writer queue full: dropped N event(s)`: the writer fell behind the reader (slow disk,
-  locked database) and the oldest batches were discarded
-- `live feed queue full: dropped N event(s)`: the same for viewers, which costs no data
-- `live feed: dropped N subscriber(s)`: a viewer fell more than 8 MiB behind
-- `live feed: could not hand … to group …` (warning): `[viewer] group` is not among the
-  unit's `SupplementaryGroups=`
-- `hardlink multi-call inode …`: informational, once per multi-call binary
-- `SQLite execute … will retry N entries`: a failed write, retried on the next window
-- `writer retry buffer full …, dropped the oldest N connection, N interface and N forwarded
-  row(s)`: writes have failed for so long that the oldest rows were given up
-- `maintenance: rolled up N period(s), deleted N row(s) …` (info): a maintenance pass that
-  did something, with how long it took; `… and N unreferenced lookup entries` when it also
-  cleaned the lookup tables
-- `maintenance: skipped, the wall clock jumped N s …`: the clock was set or stepped since
-  the last pass; see [Failure and recovery](#failure-and-recovery)
-- `maintenance: the wall clock went back behind the rolled-up periods …`: the clock had run
-  ahead while periods were rolled up; they are rolled up again
-- `conntrack: cannot read the table of network namespace NAME (…)`: no `nf_conntrack`
-  module, no `CAP_NET_ADMIN`, or the namespace cannot be joined; its forwarded traffic goes
-  unrecorded until the table can be read, while the rest of each window is written
-- `conntrack: forwarded flows in network namespace NAME carry no counters …`: once per
-  namespace; see [Forwarded traffic](#forwarded-traffic)
-- `conntrack: N ended flow event(s) lost in network namespace NAME`: the kernel dropped
-  destroy events under load; those flows miss their last window's bytes
-- `conntrack: listener stopped in network namespace NAME …`: from then on, flows that end
-  there miss their last window's bytes until the daemon restarts
-- `netinfo: cannot query network namespace …`: once per namespace that cannot be joined;
-  its interfaces go unrecorded until it can
+```text
+tracct.monitor: [exec-ring-full] exec ring buffer full: dropped 12 exec event(s) (total 12); …
+```
+
+Among them, warnings unless marked:
+
+- `hook-skipped`, `hook-failed` (error): a BPF hook that was not attached, and which
+  traffic it leaves uncounted
+- `exec-ring-full`: exec events were dropped; raise `[monitoring] exec_ring_buffer_pages`
+- `dns-ring-full`: those connections get their domain from reverse DNS instead
+- `map-near-capacity` for `conn_stats4` or `conn_stats6`: connections may have been
+  evicted before a drain; raise `[monitoring] conn_map_max_entries`. For
+  `conn_stats_packet`: more than about 59 000 processes did raw packet or TUN I/O within
+  a second; its size is fixed
+- `drain-failed`, `drain-entry-failed`, `monitor-failed`, `writer-failed` (error): an
+  unexpected exception, with its line; the thread carries on
+- `writer-queue-full`: the writer fell behind the reader (slow disk, locked database) and
+  the oldest batches were discarded
+- `live-feed-queue-full`: the same for viewers, which costs no data
+- `live-feed-subscribers-dropped`: a viewer fell more than 8 MiB behind
+- `live-feed-group`: `[viewer] group` is not among the unit's `SupplementaryGroups=`
+- `multi-call-inode`: once per hardlinked multi-call binary, such as uutils coreutils; its
+  processes that are gone before they are resolved are recorded as `<multi-call:dev,ino>`
+- `sqlite-retry`: a failed write, retried on the next window
+- `retry-buffer-full`: writes have failed for so long that the oldest rows were given up
+- `maintenance-done` (info): a maintenance pass that did something, with how long it
+  took and how many unreferenced lookup entries it cleaned
+- `maintenance-clock-jump`: the clock was set or stepped since the last pass; see
+  [Failure and recovery](#failure-and-recovery)
+- `clock-went-back`: the clock had run ahead while periods were rolled up; they are rolled
+  up again
+- `retention-skipped` (error): the clock is ahead of the newest row, so nothing is purged
+- `conntrack-unreadable`: no `nf_conntrack` module, no `CAP_NET_ADMIN`, or the namespace
+  cannot be joined; its forwarded traffic goes unrecorded until the table can be read,
+  while the rest of each window is written
+- `conntrack-no-counters`: once per namespace; see [Forwarded traffic](#forwarded-traffic)
+- `conntrack-events-lost`: the kernel dropped destroy events under load; those flows miss
+  their last window's bytes
+- `conntrack-listener-stopped`: from then on, flows that end there miss their last
+  window's bytes until the daemon restarts
+- `netns-unreadable`: once per namespace that cannot be joined; its interfaces go
+  unrecorded until it can
 
 The query service logs to its own unit (`journalctl -u tracct-query`): where it reads
 from at start, and `query server: interrupted …` for a query stopped after 30 seconds.

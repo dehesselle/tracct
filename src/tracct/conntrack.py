@@ -20,6 +20,7 @@ import collections
 import dataclasses
 import errno
 import ipaddress
+import logging
 import os
 import select
 import socket
@@ -27,7 +28,16 @@ import struct
 import threading
 from collections.abc import Callable, Iterator, Mapping
 
+from tracct.messages import report
 from tracct.netinfo import run_in_netns
+
+logger = logging.getLogger(__name__)
+
+
+def _report(msgid: str, message: str) -> None:
+    """report() under this module's logger, as the default report callable."""
+    report(logger, msgid, message)
+
 
 NETLINK_NETFILTER = 12
 NFNL_SUBSYS_CTNETLINK = 1
@@ -314,7 +324,7 @@ class Conntrack:
 
     def __init__(
         self,
-        report: Callable[[str], object],
+        report: Callable[[str, str], object],
         local: set[str],
         netns: int = 0,
         label: str = "host",
@@ -374,7 +384,8 @@ class Conntrack:
                     continue
                 if not self.closed.is_set():
                     self.report(
-                        f"conntrack: listener stopped in network namespace {self.label} ({e}); flows that end there go uncounted for their last window"
+                        "conntrack-listener-stopped",
+                        f"listener stopped in network namespace {self.label} ({e}); flows that end there go uncounted for their last window",
                     )
                 return False
             local = self.local
@@ -437,13 +448,15 @@ class Conntrack:
         self.seen = current
         if lost:
             self.report(
-                f"conntrack: {lost} ended flow event(s) lost in network namespace {self.label}; the last bytes of those flows are missing"
+                "conntrack-events-lost",
+                f"{lost} ended flow event(s) lost in network namespace {self.label}; the last bytes of those flows are missing",
             )
         if uncounted and not self.uncounted_reported:
             self.uncounted_reported = True
             self.report(
-                f"conntrack: forwarded flows in network namespace {self.label} carry no counters and go unrecorded;"
-                " set net.netfilter.nf_conntrack_acct = 1 there, or load nf_conntrack with acct=1 for every namespace"
+                "conntrack-no-counters",
+                f"forwarded flows in network namespace {self.label} carry no counters and go unrecorded;"
+                " set net.netfilter.nf_conntrack_acct = 1 there, or load nf_conntrack with acct=1 for every namespace",
             )
         return flows
 
@@ -515,7 +528,7 @@ class Trackers:
 
     def __init__(
         self,
-        report: Callable[[str], object],
+        report: Callable[[str, str], object] = _report,
         dumper: Callable[[frozenset[bytes]], dict[int, Entry]] = dump,
         listen: bool = True,
     ) -> None:
@@ -565,7 +578,8 @@ class Trackers:
                 if inode not in self.failed:
                     self.failed.add(inode)
                     self.report(
-                        f"conntrack: cannot read the table of network namespace {label} ({e}); its forwarded traffic goes unrecorded"
+                        "conntrack-unreadable",
+                        f"cannot read the table of network namespace {label} ({e}); its forwarded traffic goes unrecorded",
                     )
         return flows
 

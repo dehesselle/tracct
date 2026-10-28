@@ -37,8 +37,10 @@ def _snapshot(eth0_rx: int, eth0_tx: int) -> netinfo.Snapshot:
 def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
     monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
     snapshots = [_snapshot(1000, 500), _snapshot(1500, 500), _snapshot(10, 20)]
-    reports: list[str] = []
-    info = netinfo.NetInfo(reports.append, query=lambda path: snapshots.pop(0))
+    reports: list[tuple[str, ...]] = []
+    info = netinfo.NetInfo(
+        lambda *report: reports.append(report), query=lambda path: snapshots.pop(0)
+    )
     host = info.host
     # The first look is the baseline.
     assert info.refresh() == []
@@ -80,11 +82,12 @@ def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
             raise answer
         return answer
 
-    reports: list[str] = []
-    info = netinfo.NetInfo(reports.append, query=query)
+    reports: list[tuple[str, ...]] = []
+    info = netinfo.NetInfo(lambda *report: reports.append(report), query=query)
     info.refresh()
     assert info.refresh() == [] and info.refresh() == []
-    assert len(reports) == 1 and "busy" in reports[0]
+    [(msgid, message)] = reports
+    assert msgid == "netns-unreadable" and "busy" in message
     assert info.interface_of(info.host, "10.0.0.2") == ("eth0", "")
     assert info.refresh() == [(info.host, "eth0", "", 200, 100)]
 
@@ -108,7 +111,7 @@ def test_real_namespaces_and_tun():
         tun = os.open("/dev/net/tun", os.O_RDWR)
         # TUNSETIFF with IFF_TUN | IFF_NO_PI.
         fcntl.ioctl(tun, 0x400454CA, struct.pack("16sH", b"psnitun0", 0x0001 | 0x1000))
-        info = netinfo.NetInfo(lambda message: None)
+        info = netinfo.NetInfo(lambda msgid, message: None)
         info.refresh()
         inode = os.stat("/run/netns/psni").st_ino
         assert info.names[inode] == "psni"

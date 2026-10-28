@@ -164,7 +164,10 @@ def test_collect_reports_deltas():
         {2: _entry(40, 400)},
     ]
     tracker = conntrack.Conntrack(
-        lambda message: None, set(), dumper=lambda local: dumps.pop(0), opener=None
+        lambda msgid, message: None,
+        set(),
+        dumper=lambda local: dumps.pop(0),
+        opener=None,
     )
     flows = tracker.collect(set())
     assert [(flow.orig_bytes, flow.reply_bytes) for flow in flows] == [
@@ -184,9 +187,9 @@ def test_collect_reports_deltas():
 def test_collect_reports_flows_without_counters_once():
     uncounted = conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, None)
     dumps = [{}, {1: uncounted}, {1: uncounted, 2: _entry(30, 300)}]
-    reports: list[str] = []
+    reports: list[tuple[str, ...]] = []
     tracker = conntrack.Conntrack(
-        reports.append,
+        lambda *report: reports.append(report),
         set(),
         label="vpn1",
         dumper=lambda local: dumps.pop(0),
@@ -196,9 +199,9 @@ def test_collect_reports_flows_without_counters_once():
     assert [(flow.orig_bytes, flow.reply_bytes) for flow in tracker.collect(set())] == [
         (30, 300)
     ]
-    assert (
-        len(reports) == 1 and "vpn1" in reports[0] and "nf_conntrack_acct" in reports[0]
-    )
+    [(msgid, message)] = reports
+    assert msgid == "conntrack-no-counters"
+    assert "vpn1" in message and "nf_conntrack_acct" in message
 
 
 def test_trackers_follow_the_namespaces():
@@ -231,8 +234,10 @@ def test_trackers_follow_the_namespaces():
             raise answer
         return answer
 
-    reports: list[str] = []
-    trackers = conntrack.Trackers(reports.append, dumper=dumper, listen=False)
+    reports: list[tuple[str, ...]] = []
+    trackers = conntrack.Trackers(
+        lambda *report: reports.append(report), dumper=dumper, listen=False
+    )
     namespaces = {1: ("host", None, {"10.0.0.1"}), 2: ("vpn1", None, {"10.0.0.2"})}
     assert trackers.collect(namespaces) == []
     assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [
@@ -241,7 +246,8 @@ def test_trackers_follow_the_namespaces():
     assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [
         (1, 10)
     ]
-    assert len(reports) == 1 and "vpn1" in reports[0] and "busy" in reports[0]
+    [(msgid, message)] = reports
+    assert msgid == "conntrack-unreadable" and "vpn1" in message and "busy" in message
     # Vpn1 can be read again, counting from its baseline; then it goes away and is
     # closed.
     assert sorted(
@@ -293,7 +299,7 @@ def test_collect_sees_routed_traffic():
                 f"ip -n psct{i} addr add 10.97.{i}.2/24 dev psct{i}n && ip -n psct{i} link set psct{i}n up && ip -n psct{i} route add default via 10.97.{i}.1"
             )
         tracker = conntrack.Conntrack(
-            lambda message: None, {"10.97.1.1", "10.97.2.1"}, opener=None
+            lambda msgid, message: None, {"10.97.1.1", "10.97.2.1"}, opener=None
         )
         server = subprocess.Popen(
             [
@@ -401,8 +407,8 @@ def test_trackers_see_forwarding_inside_a_namespace():
         )
         router = os.stat("/run/netns/psfr").st_ino
         namespaces = {router: ("psfr", "/run/netns/psfr", {"10.98.1.1", "10.98.2.1"})}
-        reports: list[str] = []
-        trackers = conntrack.Trackers(reports.append)
+        reports: list[tuple[str, ...]] = []
+        trackers = conntrack.Trackers(lambda *report: reports.append(report))
         assert trackers.collect(namespaces) == []
 
         def transfer(size: int) -> None:

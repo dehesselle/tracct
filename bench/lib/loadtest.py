@@ -100,16 +100,19 @@ def journal_cursor() -> str:
 
 
 def journal_warnings(cursor: str) -> dict:
+    """The daemon's warnings and errors, and tracebacks, which come at its default
+    priority.
+    """
     out = (
-        sh(f"journalctl -u tracct --after-cursor='{cursor}' -o cat --no-pager")
+        sh(f"journalctl -u tracct --after-cursor='{cursor}' -o json --no-pager")
         if cursor
         else ""
     )
-    lines = [
-        line
-        for line in out.splitlines()
-        if "tracct.error" in line or "Traceback" in line
-    ]
+    lines = []
+    for entry in map(json.loads, out.splitlines()):
+        line = str(entry.get("MESSAGE", ""))
+        if int(entry.get("PRIORITY", 6)) <= 4 or "Traceback" in line:
+            lines.append(line)
     counts = {
         name: sum(1 for line in lines if rx.search(line))
         for name, rx in WARNINGS.items()
