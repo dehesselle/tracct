@@ -329,7 +329,7 @@ to picosnitch's for the same reason.
 7. **A schema change bumps `DB_VERSION`.** The daemon refuses any other version; there is
    no migration code.
 8. **The daemon's capabilities are listed twice and must match:**
-   `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `systemd/tracct.service`.
+   `cli.REQUIRED_CAPABILITIES` and `AmbientCapabilities=` in `src/tracct/files/tracct.service`.
    Each one carries the reason it is needed. Nothing that answers viewers runs with them:
    the live feed only sends, and history queries go to the query server, which has none.
 9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,

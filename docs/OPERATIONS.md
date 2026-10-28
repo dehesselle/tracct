@@ -6,7 +6,7 @@ are in the [README](../README.md).
 
 ## The unit
 
-`systemd/tracct.service` runs `/opt/tracct/bin/tracct run` with:
+`src/tracct/files/tracct.service` runs `/opt/tracct/bin/tracct run` with:
 
 - `Type=notify`: the unit is started once the BPF probes are attached, so units ordered
   after it are measured.
@@ -15,7 +15,7 @@ are in the [README](../README.md).
   `/var/lib/tracct`), readable by root only.
 - `SupplementaryGroups=tracct-viewer`: lets the daemon hand `events.sock` to that
   group (the query socket gets it from its socket unit). The group comes from
-  `systemd/tracct.sysusers`; it cannot be called `tracct`, which `DynamicUser=`
+  `src/tracct/files/tracct.sysusers`; it cannot be called `tracct`, which `DynamicUser=`
   takes for itself. Set `[viewer] group` to match and add
   viewers with `usermod -aG tracct-viewer <user>`.
 - `Restart=always`, `RestartSec=5`: the daemon exits non-zero whenever one of its threads
@@ -39,7 +39,7 @@ systemctl restart tracct     # after a config change
 ## The query service
 
 The history tabs of `tracct view` ask `tracct-query.service`, which systemd starts
-from `systemd/tracct-query.socket` on the first connection:
+from `src/tracct/files/tracct-query.socket` on the first connection:
 
 - The socket is `/run/tracct-query.sock`, mode 0660, group `tracct-viewer`, set by
   systemd. It is not in `/run/tracct`, which systemd removes whenever `tracct.service`
@@ -60,7 +60,7 @@ from `systemd/tracct-query.socket` on the first connection:
 Install and enable the socket; the service needs no enabling:
 
 ```sh
-install -m 644 systemd/tracct-query.socket systemd/tracct-query.service /etc/systemd/system/
+install -m 644 src/tracct/files/tracct-query.socket src/tracct/files/tracct-query.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now tracct-query.socket
 ```
 
@@ -275,7 +275,7 @@ with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
 ## Troubleshooting
 
 - **`Missing capabilities: …`**: the unit file in `/etc/systemd/system` is older than the
-  installed version; copy `systemd/tracct.service` again and `systemctl daemon-reload`.
+  installed version; copy `src/tracct/files/tracct.service` again and `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
 - **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that

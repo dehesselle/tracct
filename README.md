@@ -19,8 +19,8 @@ As root, from a git checkout (the version is taken from its tags):
 ```sh
 uv venv /opt/tracct
 VIRTUAL_ENV=/opt/tracct uv pip install '.[viewer]'
-install -m 644 systemd/tracct.service systemd/tracct-query.socket systemd/tracct-query.service /etc/systemd/system/
-install -m 644 systemd/tracct.sysusers /etc/sysusers.d/tracct.conf
+install -m 644 src/tracct/files/tracct.service src/tracct/files/tracct-query.socket src/tracct/files/tracct-query.service /etc/systemd/system/
+install -m 644 src/tracct/files/tracct.sysusers /etc/sysusers.d/tracct.conf
 systemd-sysusers
 install -d /etc/opt/tracct
 printf '[viewer]\ngroup = "tracct-viewer"\n' > /etc/opt/tracct/config.toml

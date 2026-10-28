@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
+# The base configuration from `tracct install`, which `tracct install -f` replaces: put
+# your own settings in a drop-in such as config.d/50-local.toml, which is read after this
+# file and wins per option. Every option is listed here at its default; docs/MANUAL.md
+# explains them. Restart the unit after a change.
+
+[database]
+enabled = true
+raw_retention_days = 30
+rollup_retention_days = 365
+rollup_period_minutes = 60
+write_limit_seconds = 10
+maintenance_interval_minutes = 60
+
+[log]
+addresses = true
+reverse_dns = true
+commands = true
+ports = true
+ignore_ports = []
+ignore_domains = []
+ignore_ips = []
+
+[monitoring]
+every_exe = false
+mmap_ring_rx = false
+exec_ring_buffer_pages = 256
+conn_map_max_entries = 65536
+# st_dev_mask = 0           # auto-detected when unset (0 on btrfs)
+conntrack = true
+
+[viewer]
+# the group from tracct.sysusers, which tracct.service runs in
+group = "tracct-viewer"

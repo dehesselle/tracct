@@ -202,11 +202,11 @@ class Tracct(ToolAdapter):
         if r.returncode != 0:
             raise RuntimeError(f"tracct install failed: {r.stderr}\n{r.stdout}")
         sh(
-            f"install -m 644 {self.SRC}/systemd/tracct.service /etc/systemd/system/tracct.service"
+            f"install -m 644 {self.SRC}/src/tracct/files/tracct.service /etc/systemd/system/tracct.service"
         )
         # -D: a stock install has no /etc/sysusers.d, and without the viewer group the unit cannot start
         sh(
-            f"install -D -m 644 {self.SRC}/systemd/tracct.sysusers /etc/sysusers.d/tracct.conf"
+            f"install -D -m 644 {self.SRC}/src/tracct/files/tracct.sysusers /etc/sysusers.d/tracct.conf"
         )
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")

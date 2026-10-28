@@ -10,18 +10,22 @@ no root/BPF.
 """
 
 import ctypes
+import dataclasses
 import os
 import socket
 import struct
 import subprocess
 import sys
 import time
+import tomllib
+from pathlib import Path
 
 import pytest
 
+import tracct
 from tracct import utils
 from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
-from tracct.config import Config, load_config
+from tracct.config import Config, ViewerConfig, load_config
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -166,6 +170,20 @@ def test_config_drop_ins(tmp_path, caplog):
     assert config.log.ignore_ports == [443]
     assert config.viewer.group == "root"
     assert "40-broken.toml, ignoring it" in caplog.text
+
+
+def test_base_config_lists_the_defaults():
+    """The config.toml that install writes names every option at the code's default,
+    apart from the viewer group it also creates.
+    """
+    base = Path(tracct.__file__).parent / "files" / "config.toml"
+    raw = tomllib.loads(base.read_text())
+    for section in dataclasses.fields(Config):
+        options = {field.name for field in dataclasses.fields(section.type)}
+        assert set(raw[section.name]) == options - {"st_dev_mask"}, section.name
+    assert raw["viewer"]["group"] == "tracct-viewer"
+    config = load_config(base)
+    assert dataclasses.replace(config, viewer=ViewerConfig()) == Config()
 
 
 def test_config_drop_ins_without_config_toml(tmp_path):

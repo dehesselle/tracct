@@ -51,7 +51,6 @@ include = [
     "/LICENSE",
     "/LICENSES/",
     "/REUSE.toml",
-    "/systemd/",
 ]
 
 [tool.hatch.build.targets.wheel]
