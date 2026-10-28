@@ -30,7 +30,7 @@ from tracct.viewer.banner import Banner  # noqa: E402
 from tracct.viewer.client import access_hint  # noqa: E402
 from tracct.viewer.format import format_bytes, format_value  # noqa: E402
 from tracct.viewer.history import HistoryPane  # noqa: E402
-from tracct.viewer.live import LivePane, remote  # noqa: E402
+from tracct.viewer.live import FeedState, LivePane, remote  # noqa: E402
 from tracct.viewer.model import Filter, Timeline  # noqa: E402
 from tracct.viewer.pickers import ByteUnitPicker, SpanPicker  # noqa: E402
 from tracct.viewer.plot import (
@@ -588,7 +588,10 @@ async def test_live_tab(tmp_path, monkeypatch):
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
             await _until(
-                pilot, lambda: pane.state == "connected" and publisher.has_subscribers()
+                pilot,
+                lambda: (
+                    pane.state is FeedState.CONNECTED and publisher.has_subscribers()
+                ),
             )
             event = {
                 "name": "curl",
@@ -608,8 +611,9 @@ async def test_live_tab(tmp_path, monkeypatch):
                     {**event, "name": "wget", "exe": "/usr/bin/wget", "recv": 5},
                 ]
             )
-            await _until(pilot, lambda: pane.events == 3)
-            assert pane.summary[("curl", "/usr/bin/curl")][:3] == [101, 4000, 2]
+            await _until(pilot, lambda: pane.event_count == 3)
+            curl = pane.summary["curl\0/usr/bin/curl"]
+            assert (curl.sent, curl.received, curl.events) == (101, 4000, 2)
             # nothing to say: no banner; the events title carries the counts
             banner = pane.query_one(".banner")
             assert not banner.display
@@ -661,7 +665,7 @@ async def test_live_tab(tmp_path, monkeypatch):
             assert _keys(summary) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
             # a refill keeps the sort, and the cursor stays on its executable as it moves up
             summary.move_cursor(row=1)
-            pane.summary[("curl", "/usr/bin/curl")][1] = 0
+            pane.summary["curl\0/usr/bin/curl"].received = 0
             pane.render_tables()
             assert (
                 _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
@@ -673,11 +677,14 @@ async def test_live_tab(tmp_path, monkeypatch):
             pane.query_one("#summary", DataTable).focus()
             await pilot.press("space")
             publisher.publish(event)
-            await _until(pilot, lambda: pane.events == 4)
-            assert len(pane.recent) == 3
+            await _until(pilot, lambda: pane.event_count == 4)
+            assert len(pane.events) == 3
             await _until(pilot, lambda: events.border_subtitle == "table is frozen")
             await pilot.press("r")
-            await _until(pilot, lambda: pane.events == 0 and not pane.summary)
+            await _until(pilot, lambda: pane.event_count == 0 and not pane.summary)
+            # reset empties the frozen table too, so nothing in it outlives its event
+            assert events.row_count == 0 and summary.row_count == 0
+            events.sort_by("received")
     finally:
         publisher.stop()
 
@@ -713,7 +720,10 @@ async def test_live_limits(tmp_path, monkeypatch):
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one(LivePane)
             await _until(
-                pilot, lambda: pane.state == "connected" and publisher.has_subscribers()
+                pilot,
+                lambda: (
+                    pane.state is FeedState.CONNECTED and publisher.has_subscribers()
+                ),
             )
             # two executables go idle, ten more arrive after them: the idle two make room
             publisher.publish_many(
@@ -722,14 +732,14 @@ async def test_live_limits(tmp_path, monkeypatch):
                     for i in range(2)
                 ]
             )
-            await _until(pilot, lambda: pane.events == 2)
+            await _until(pilot, lambda: pane.event_count == 2)
             publisher.publish_many(
                 [
                     {"name": f"new{i}", "exe": f"/bin/new{i}", "send": 1}
                     for i in range(10)
                 ]
             )
-            await _until(pilot, lambda: pane.events == 12)
+            await _until(pilot, lambda: pane.event_count == 12)
             assert pane.dropped == 2 and len(pane.summary) == 10
             await _until(
                 pilot,
@@ -741,19 +751,19 @@ async def test_live_limits(tmp_path, monkeypatch):
                 str(pane.query_one("#events", DataTable).border_title)
                 == "last 12 events · 12 total"
             )
-            assert not any(name.startswith("old") for name, _ in pane.summary)
+            assert not any(t.name.startswith("old") for t in pane.summary.values())
             assert pane.query_one("#summary", DataTable).row_count == 10
-            assert len(pane.recent) == 12
+            assert len(pane.events) == 12
             # a lowered limit applies on the next redraw and keeps the newest events
             config.set(settings.LIVE_EVENTS, 10)
-            await _until(pilot, lambda: pane.recent.maxlen == 10)
+            await _until(pilot, lambda: len(pane.events) == 10)
             await _until(
                 pilot,
                 lambda: str(
                     pane.query_one("#events", DataTable).border_title
                 ).startswith("last 10 events · "),
             )
-            assert [event["name"] for event in pane.recent] == [
+            assert [event.name for event in reversed(pane.events.values())] == [
                 f"new{i}" for i in range(9, -1, -1)
             ]
             await _until(
