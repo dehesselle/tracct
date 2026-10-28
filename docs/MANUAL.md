@@ -51,11 +51,11 @@ shows a bucket's bytes and peaks in the bottom border.
 
 The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
 dragging or `←` and `→` pan, and a moment after the plot comes to rest the tables follow.
-`r` in the plot or `z` returns to the span. `t` cycles the span (last hour, last day, ...),
-`h` and `H` step back and forward by a whole span, `u` cycles the byte units, `/` finds text
-in the rows shown (on every tab; `c` clears it), `r` refreshes. A range that ends now
-refreshes every 10 seconds. While a tab waits more than a moment for the query server, `↻`
-ends the plot's title.
+`z` returns to the span. `t` cycles the span (last hour, last day, ...), `Shift+←` and
+`Shift+→` step back and forward by a whole span of local time (with "1 day", yesterday from
+midnight to midnight), `u` cycles the byte units, `/` finds text in the rows shown (on every
+tab; `c` clears it), `r` refreshes. A range that ends now refreshes every 10 seconds. While a
+tab waits more than a moment for the query server, `↻` ends the plot's title.
 
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
 opens the viewer's settings, such as the live tab's limits. They are kept per user in

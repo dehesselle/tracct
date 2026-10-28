@@ -76,11 +76,11 @@ def test_tab_keys(tmp_path):
             await pilot.press("p")
             assert tabs.active == "processes"
             # the time range and units belong to the history tabs only
-            await _until(pilot, lambda: {"t", "h", "z", "u"} <= set(app.screen.active_bindings))
+            await _until(pilot, lambda: {"t", "shift+left", "shift+right", "z", "u"} <= set(app.screen.active_bindings))
             for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
                 await pilot.press(key)
                 assert tabs.active == tab
-            await _until(pilot, lambda: not {"t", "h", "z", "u"} & set(app.screen.active_bindings))
+            await _until(pilot, lambda: not {"t", "shift+left", "shift+right", "z", "u"} & set(app.screen.active_bindings))
             await pilot.press("u")
             assert app.unit == "auto"
 
@@ -213,19 +213,25 @@ def test_history_drill_down(tmp_path):
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(interfaces.result))
             assert _values(interfaces) == ["host/eth0", f"{VPN}/tun0"]
-            # zooming the plot narrows every tab to what it shows; r and z return to the span
+            # zooming the plot narrows every tab to what it shows; z returns to the span
             plot = interfaces.query_one(TrafficPlot)
             await _until(pilot, lambda: bool(plot.values))
             start, end = interfaces.bounds()
             plot.focus()
-            for key in ("r", "z"):
-                await pilot.press("plus")
-                await _until(pilot, lambda: bool(app.time_range.zooms))
-                zoomed_start, zoomed_end = app.time_range.zooms[-1]
-                assert start <= zoomed_start < zoomed_end <= end and zoomed_end - zoomed_start < end - start
-                await _until(pilot, lambda: plot.start == zoomed_start)
-                await pilot.press(key)
-                await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
+            # the plot keeps only its time keys; up and down do not move it, r refreshes as anywhere
+            await _until(pilot, lambda: {"plus", "minus", "left", "right", "r", "z"} <= set(app.screen.active_bindings))
+            assert app.screen.active_bindings["r"][1].action == "app.refresh"
+            assert not {"up", "down", "ctrl+equals_sign", "ctrl+shift+minus"} & set(app.screen.active_bindings)
+            await pilot.press("plus")
+            await _until(pilot, lambda: bool(app.time_range.zooms))
+            zoomed_start, zoomed_end = app.time_range.zooms[-1]
+            assert start <= zoomed_start < zoomed_end <= end and zoomed_end - zoomed_start < end - start
+            await _until(pilot, lambda: plot.start == zoomed_start)
+            await pilot.press("r")
+            await pilot.pause(0.3)
+            assert app.time_range.zooms == [(zoomed_start, zoomed_end)]
+            await pilot.press("z")
+            await _until(pilot, lambda: not app.time_range.zooms and plot.start == start)
             await pilot.press("u")
             assert app.unit == "B"
 

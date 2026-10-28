@@ -54,9 +54,11 @@ class HistoryPane(Vertical):
         # the time range and units are the app's, shared by the history tabs
         Binding("t", "app.span(1)", "span"),
         Binding("T", "app.span(-1)", show=False),
-        Binding("h", "app.earlier(1)", "earlier"),
-        Binding("H", "app.earlier(-1)", "later"),
-        Binding("z", "app.zoom_out", "zoom out"),
+        # by a whole span of local time, next to t that picks its length; the range is the tab's,
+        # not only the plot's, whose arrows pan by a few columns
+        Binding("shift+left", "app.earlier(1)", "previous span", key_display="⇧←", group=Binding.Group("step span")),
+        Binding("shift+right", "app.earlier(-1)", "next span", key_display="⇧→", group=Binding.Group("step span")),
+        Binding("z", "app.reset_zoom", "reset zoom"),
         Binding("u", "app.units", "units"),
         Binding("r", "app.refresh", "refresh"),
         Binding("e", "filter(True)", "exclude row"),
@@ -307,9 +309,6 @@ class HistoryPane(Vertical):
     def on_traffic_plot_viewed(self, event: TrafficPlot.Viewed) -> None:
         # exactly what the plot shows, empty time included: the plot keeps its own limits
         self.viewer.view(event.start, event.end)
-
-    def on_traffic_plot_reset(self, event: TrafficPlot.Reset) -> None:
-        self.viewer.reset_view()
 
     def action_filter(self, exclude: bool) -> None:
         subject = self.subject() if not self.all_rows else None

@@ -189,11 +189,6 @@ class ViewerApp(ChordMixin, App):
             self.time_range.zooms.append((start, end))
         self.reload_active()
 
-    def reset_view(self) -> None:
-        if self.time_range.zooms:
-            self.time_range.zooms.clear()
-            self.reload_active()
-
     # ── actions ─────────────────────────────────────────────────────
 
     def action_tab(self, tab: str) -> None:
@@ -213,9 +208,9 @@ class ViewerApp(ChordMixin, App):
         self.time_range.back = max(0, self.time_range.back + delta)
         self.reload_active()
 
-    def action_zoom_out(self) -> None:
+    def action_reset_zoom(self) -> None:
         if self.time_range.zooms:
-            self.time_range.zooms.pop()
+            self.time_range.zooms.clear()
             self.reload_active()
 
     def action_units(self) -> None:

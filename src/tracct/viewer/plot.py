@@ -11,6 +11,7 @@ import time
 from math import ceil, floor, log10
 
 from textual import on
+from textual.binding import Binding
 from textual.content import Content
 from textual.events import Leave, MouseMove
 from textual.message import Message
@@ -26,7 +27,6 @@ VIEW_DELAY = 0.15
 # query server's bucket limit at the longest bucket
 MIN_SPAN = 60
 MAX_SPAN = 10 * 365 * 86400
-HINT = "[dim italic]wheel or +/- zooms · drag or ←/→ pans · r resets[/]"
 # the subject of the plot of all rows, rather than of the highlighted one
 ALL_ROWS = "all rows"
 # in the title while the tab is updating, as snakecam shows it
@@ -97,7 +97,15 @@ class RateAxis(AxisFormatter):
         return [f"{format_bytes(tick, self.unit)}/s" if tick else "0" for tick in ticks]
 
 
-class TrafficPlot(PlotWidget):
+class TrafficPlot(PlotWidget, inherit_bindings=False):
+    # PlotWidget's own keys pan and zoom the rate axis too, which this plot fits to the data,
+    # and its r resets the zoom behind the viewer's back, where r refreshes everywhere else
+    BINDINGS = [
+        Binding("+", "zoom_in", "zoom in", group=Binding.Group("zoom")),
+        Binding("-", "zoom_out", "zoom out", group=Binding.Group("zoom")),
+        Binding("left", "pan_left", "pan earlier", group=Binding.Group("pan")),
+        Binding("right", "pan_right", "pan later", group=Binding.Group("pan")),
+    ]
     COMPONENT_CLASSES = PlotWidget.COMPONENT_CLASSES | {"trafficplot--sent", "trafficplot--received", "trafficplot--split"}
     DEFAULT_CSS = """
     TrafficPlot {
@@ -121,9 +129,6 @@ class TrafficPlot(PlotWidget):
             super().__init__()
             self.start = start
             self.end = end
-
-    class Reset(Message):
-        """the range before any zooming was asked for"""
 
     def __init__(self, *, id: str | None = None) -> None:
         super().__init__(id=id)
@@ -155,7 +160,6 @@ class TrafficPlot(PlotWidget):
         self.margin_left = 12
         self.set_x_formatter(self._time_axis)
         self.set_y_formatter(self._rate_axis)
-        self.border_subtitle = HINT
 
     def on_resize(self) -> None:
         # the ticks follow the size
@@ -273,16 +277,13 @@ class TrafficPlot(PlotWidget):
         self._pending = None
         self.post_message(self.Viewed(_epoch(x_min), _epoch(x_max)))
 
-    def action_reset_scales(self) -> None:
-        self.post_message(self.Reset())
-
     # ── the bucket under the pointer, in the bottom border ──
 
     @on(MouseMove)
     def hover(self, event: MouseMove) -> None:
         canvas = self.query_one("#plot", Canvas)
         if event.button or not canvas.region.contains_point(event.screen_offset) or not self.end:
-            self.border_subtitle = HINT
+            self.border_subtitle = ""
             return
         offset = event.screen_offset - canvas.region.offset
         x, _ = self.get_coordinate_from_pixel(offset.x, offset.y)
@@ -297,4 +298,4 @@ class TrafficPlot(PlotWidget):
         )
 
     def on_leave(self, event: Leave) -> None:
-        self.border_subtitle = HINT
+        self.border_subtitle = ""
