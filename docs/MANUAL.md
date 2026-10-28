@@ -88,10 +88,25 @@ tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [
 
 ## Configuration
 
-The daemon reads `config.toml` once at startup; restart the unit after a change. A missing
-file means all defaults. Unknown sections and keys are reported in the journal and ignored;
-a value of the wrong type is skipped with a warning; an unreadable file falls back to all
-defaults.
+The daemon reads `config.toml` and then every `config.d/*.toml` beside it, in name order,
+once at startup; restart the unit after a change. A later file wins per option, and a list
+in it replaces the earlier list rather than adding to it. Missing files mean all defaults.
+Unknown sections and keys are reported in the journal with their file and ignored; a value
+of the wrong type is skipped with a warning; a file that cannot be read is skipped, and the
+others still apply.
+
+Keep your own settings in a drop-in such as `config.d/50-local.toml`, since `config.toml` is
+the base file that `tracct install -f` replaces:
+
+```toml
+[database]
+raw_retention_days = 14
+
+[log]
+ignore_ports = [22]
+```
+
+The options and their defaults:
 
 ```toml
 [database]
@@ -149,6 +164,7 @@ apply. Viewers use the same rules, so they find the defaults unless the variable
 | What | Variable | Default |
 | --- | --- | --- |
 | configuration file | `TRACCT_CONFIG` (a file), else `$CONFIGURATION_DIRECTORY/config.toml` | `/etc/opt/tracct/config.toml` |
+| configuration drop-ins | `config.d/*.toml` beside the configuration file | `/etc/opt/tracct/config.d/` |
 | state directory with `tracct.db` | `STATE_DIRECTORY` | `/var/lib/tracct` |
 | runtime directory with `events.sock`, `tracct.lock` | `RUNTIME_DIRECTORY` | `/run/tracct` |
 | query socket, from `tracct-query.socket` | `TRACCT_QUERY_SOCKET` | `/run/tracct-query.sock` |

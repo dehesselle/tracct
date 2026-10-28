@@ -69,80 +69,96 @@ class Config:
     viewer: ViewerConfig = dataclasses.field(default_factory=ViewerConfig)
 
 
-def load_config(config_path: Path = CONFIG_PATH) -> Config:
-    """Load config.toml, merging with defaults. A missing file means all defaults."""
-    config = Config()
-    if config_path.exists():
-        try:
-            with open(config_path, "rb") as f:
-                raw = tomllib.load(f)
-        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
-            # Never crash-loop the daemon on a malformed config; fall back to defaults.
-            logger.error(f"failed to read {config_path}, using defaults: {e}")
-            raw = {}
-        section_names = {
-            section_field.name for section_field in dataclasses.fields(config)
-        }
-        for section_name in raw:
-            if section_name not in section_names:
-                logger.warning(f"config.{section_name}: unknown section, ignoring")
-        for section_field in dataclasses.fields(config):
-            section_name = section_field.name
-            if section_name not in raw:
-                continue
-            section_data = raw[section_name]
-            if not isinstance(section_data, dict):
-                # Valid TOML but wrong shape (e.g. `monitoring = 5` instead of
-                # `[monitoring]`); skip so `field.name in section_data` can't raise and
-                # crash-loop the daemon.
+def config_files(config_path: Path = CONFIG_PATH) -> list[Path]:
+    """Return the files a config is read from, in the order they apply.
+
+    config.toml comes first, then the drop-ins in config.d beside it in name order, so
+    local settings outlive a config.toml that `tracct install -f` replaces.
+    """
+    files = [config_path] if config_path.exists() else []
+    drop_ins = config_path.parent / "config.d"
+    if drop_ins.is_dir():
+        files += sorted(path for path in drop_ins.glob("*.toml") if path.is_file())
+    return files
+
+
+def _apply(config: Config, raw: dict, path: Path) -> None:
+    """Set the options of one file on `config`, warning about what doesn't fit."""
+    section_names = {section_field.name for section_field in dataclasses.fields(config)}
+    for section_name in raw:
+        if section_name not in section_names:
+            logger.warning(f"{path}: {section_name}: unknown section, ignoring")
+    for section_field in dataclasses.fields(config):
+        section_name = section_field.name
+        if section_name not in raw:
+            continue
+        section_data = raw[section_name]
+        if not isinstance(section_data, dict):
+            # Valid TOML but wrong shape (e.g. `monitoring = 5` instead of
+            # `[monitoring]`); skip so `field.name in section_data` can't raise and
+            # crash-loop the daemon.
+            logger.warning(
+                f"{path}: {section_name}: expected a table, got {type(section_data).__name__}, ignoring"
+            )
+            continue
+        section_obj = getattr(config, section_name)
+        field_names = {field.name for field in dataclasses.fields(section_obj)}
+        for key in section_data:
+            if key not in field_names:
                 logger.warning(
-                    f"config.{section_name}: expected a table, got {type(section_data).__name__}, ignoring"
+                    f"{path}: {section_name}.{key}: unknown option, ignoring"
                 )
-                continue
-            section_obj = getattr(config, section_name)
-            field_names = {field.name for field in dataclasses.fields(section_obj)}
-            for key in section_data:
-                if key not in field_names:
-                    logger.warning(
-                        f"config.{section_name}.{key}: unknown option, ignoring"
-                    )
-            for field in dataclasses.fields(section_obj):
-                if field.name in section_data:
-                    value = section_data[field.name]
-                    expected_type = field.type
-                    if hasattr(expected_type, "__origin__"):
-                        # Parameterized generics (list[int]): enforce the container
-                        # type, a scalar here would break the writer's filters on every
-                        # batch.
-                        if expected_type.__origin__ is list and not isinstance(
-                            value, list
-                        ):
-                            logger.warning(
-                                f"config.{section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping"
-                            )
-                            continue
-                    elif not isinstance(expected_type, type):
-                        # field.type may be a forward-ref string under `from __future__
-                        # import annotations`.
-                        pass
-                    elif (
-                        expected_type is float
-                        and isinstance(value, int)
-                        and not isinstance(value, bool)
-                    ):
-                        # TOML reads 30 as an integer.
-                        value = float(value)
-                    elif not isinstance(value, expected_type) or (
-                        isinstance(value, bool) and expected_type is not bool
-                    ):
-                        type_name = getattr(
-                            expected_type, "__name__", str(expected_type)
-                        )
+        for field in dataclasses.fields(section_obj):
+            if field.name in section_data:
+                value = section_data[field.name]
+                expected_type = field.type
+                if hasattr(expected_type, "__origin__"):
+                    # Parameterized generics (list[int]): enforce the container type, a
+                    # scalar here would break the writer's filters on every batch.
+                    if expected_type.__origin__ is list and not isinstance(value, list):
                         logger.warning(
-                            f"config.{section_name}.{field.name}: expected {type_name}, got {type(value).__name__}, skipping"
+                            f"{path}: {section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping"
                         )
                         continue
-                    setattr(section_obj, field.name, value)
+                elif not isinstance(expected_type, type):
+                    # field.type may be a forward-ref string under `from __future__
+                    # import annotations`.
+                    pass
+                elif (
+                    expected_type is float
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                ):
+                    # TOML reads 30 as an integer.
+                    value = float(value)
+                elif not isinstance(value, expected_type) or (
+                    isinstance(value, bool) and expected_type is not bool
+                ):
+                    type_name = getattr(expected_type, "__name__", str(expected_type))
+                    logger.warning(
+                        f"{path}: {section_name}.{field.name}: expected {type_name}, got {type(value).__name__}, skipping"
+                    )
+                    continue
+                setattr(section_obj, field.name, value)
+
+
+def load_config(config_path: Path = CONFIG_PATH) -> Config:
+    """Load config.toml and its drop-ins over the defaults.
+
+    A later file wins per option, and a list replaces the one before. Missing files mean
+    all defaults.
+    """
+    config = Config()
+    for path in config_files(config_path):
+        try:
+            with open(path, "rb") as f:
+                raw = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+            # Never crash-loop the daemon on a malformed config; the other files still
+            # apply.
+            logger.error(f"failed to read {path}, ignoring it: {e}")
+            continue
+        _apply(config, raw, path)
     # Clamp values that would otherwise fail the BPF load and restart-loop the daemon.
     pages = config.monitoring.exec_ring_buffer_pages
     if pages < 1 or pages > 16384 or (pages & (pages - 1)) != 0:

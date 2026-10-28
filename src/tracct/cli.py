@@ -12,7 +12,7 @@ import stat
 import sys
 from pathlib import Path
 
-from tracct.config import load_config
+from tracct.config import config_files, load_config
 from tracct.constants import (
     CONFIG_PATH,
     DB_PATH,
@@ -248,8 +248,9 @@ def main() -> int:
         return err
     # Read once: a change takes a restart.
     config = load_config()
+    files = config_files()
     logger.info(
-        f"config: {CONFIG_PATH}{'' if CONFIG_PATH.exists() else ' (not found, using defaults)'}"
+        f"config: {', '.join(map(str, files)) if files else f'{CONFIG_PATH} (not found, using defaults)'}"
     )
     logger.info(f"state: {STATE_DIR}")
     logger.info(f"run: {RUN_DIR}")

@@ -136,12 +136,44 @@ def test_config_unknown_options_warn(tmp_path, caplog):
     )
     config = load_config(tmp_path / "config.toml")
     assert config.database.raw_retention_days == 30
-    assert "config.no_such_section: unknown section" in caplog.text
-    assert "config.database.retention_dayz: unknown option" in caplog.text
+    assert f"{tmp_path}/config.toml: no_such_section: unknown section" in caplog.text
+    assert "config.toml: database.retention_dayz: unknown option" in caplog.text
 
 
 def test_missing_config_uses_defaults(tmp_path):
     assert load_config(tmp_path / "config.toml") == Config()
+
+
+def test_config_drop_ins(tmp_path, caplog):
+    """Drop-ins apply after config.toml in name order; a later one wins per option and
+    replaces lists, and one that can't be read leaves the others in force.
+    """
+    (tmp_path / "config.toml").write_text(
+        "[database]\nraw_retention_days = 7\nrollup_retention_days = 100\n"
+        '[log]\nignore_ports = [22, 53]\n[viewer]\ngroup = "root"\n'
+    )
+    drop_ins = tmp_path / "config.d"
+    drop_ins.mkdir()
+    (drop_ins / "50-local.toml").write_text(
+        "[database]\nraw_retention_days = 14\n[log]\nignore_ports = [443]\n"
+    )
+    (drop_ins / "60-later.toml").write_text("[database]\nraw_retention_days = 21\n")
+    (drop_ins / "40-broken.toml").write_text("this is [not valid")
+    (drop_ins / "README").write_text("[database]\nraw_retention_days = 99\n")
+    config = load_config(tmp_path / "config.toml")
+    assert config.database.raw_retention_days == 21
+    assert config.database.rollup_retention_days == 100
+    assert config.log.ignore_ports == [443]
+    assert config.viewer.group == "root"
+    assert "40-broken.toml, ignoring it" in caplog.text
+
+
+def test_config_drop_ins_without_config_toml(tmp_path):
+    (tmp_path / "config.d").mkdir()
+    (tmp_path / "config.d" / "local.toml").write_text("[log]\ncommands = false\n")
+    config = load_config(tmp_path / "config.toml")
+    assert config.log.commands is False
+    assert config.database == Config().database
 
 
 def test_paths_follow_systemd_directories(tmp_path):

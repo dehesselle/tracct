@@ -47,8 +47,8 @@ from `systemd/tracct-query.socket` on the first connection:
 - The service runs `tracct query-server` as the daemon's dynamic user (`User=tracct`)
   with the same `StateDirectory=`, so it can read the database and share its WAL index. It
   opens the database read-only and has no capabilities and no network. It reads the
-  daemon's `config.toml` for the write window and rollup period, which a plot's peaks are
-  reckoned with.
+  daemon's configuration (`config.toml` and its drop-ins) for the write window and rollup
+  period, which a plot's peaks are reckoned with.
 - It exits after ten minutes without a connected viewer; the next one starts it again.
 - `MemoryMax=512M`, `Nice=10` and `IOSchedulingClass=idle`: a heavy query slows or kills the
   query service, not the daemon.
