@@ -108,7 +108,7 @@ class ListPicker[T](Dialog[T]):
             self.dismiss(self._again_value)
 
     def _text(self, value: T, label: str, note: str) -> Text:
-        # the notes in a column after the longest label
+        # The notes in a column after the longest label.
         column = max(len(entry[1]) for entry in self._entries) + 3
         text = Text(label + " " * (column - len(label)))
         notes = [note] if note else []
@@ -137,12 +137,12 @@ class SpanPicker(ListPicker[int | Unzoom]):
             zoomed: Whether a zoom is shown, which `s` pressed again returns from.
         """
         entries: list[tuple[int | Unzoom, str, str]] = []
-        # shortest first, the whole history last
+        # Shortest first, the whole history last.
         for index in sorted(
             range(len(SPANS)), key=lambda i: SPANS[i][1] or float("inf")
         ):
             seconds = SPANS[index][1]
-            # a span longer than the history shows all of it, as the whole history does
+            # A span longer than the history shows all of it, as the whole history does.
             entries.append(
                 (
                     index,
@@ -152,7 +152,7 @@ class SpanPicker(ListPicker[int | Unzoom]):
                     else "",
                 )
             )
-        # without a zoom the span is shown already
+        # Without a zoom the span is shown already.
         super().__init__(
             "Span",
             entries,

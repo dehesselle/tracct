@@ -25,8 +25,8 @@ FIND_PLACEHOLDER = "find in the rows shown (Enter keeps it, Escape clears)"
 class FindablePane(Vertical):
     """A tab's content, below a find input and a banner that share its top line.
 
-    Subclasses compose the rest in `compose_content`, narrow their rows in
-    `apply_find`, and say what they have to say in `update_banner`.
+    Subclasses compose the rest in `compose_content`, narrow their rows in `apply_find`,
+    and say what they have to say in `update_banner`.
     """
 
     DEFAULT_CSS = """
@@ -35,7 +35,7 @@ class FindablePane(Vertical):
     """
     BINDINGS = [
         Binding("slash", "find", "find"),
-        # the banner says so while a find is kept
+        # The banner says so while a find is kept.
         Binding("c", "clear_find", "clear find", show=False),
         Binding("escape", "close_find", show=False),
     ]
@@ -108,6 +108,6 @@ class FindablePane(Vertical):
         if event.input is self.find_input:
             event.stop()
             event.input.remove_class("shown")
-            # a kept find goes to the banner, on the line the input leaves
+            # A kept find goes to the banner, on the line the input leaves.
             self.update_banner()
             self.focus_content()

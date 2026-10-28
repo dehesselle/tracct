@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""`tracct view`: the live feed and the history in one Textual app (tracct[tui]). it needs
-no capabilities, only access to the daemon's events.sock and the query server's socket.
-the package imports without Textual, so the command line can be built without it"""
+"""`tracct view`: the live feed and the history in one Textual app (tracct[tui]).
+
+It needs no capabilities, only access to the daemon's events.sock and the query server's
+socket. The package imports without Textual, so the command line can be built without
+it.
+"""
 
 from __future__ import annotations
 
@@ -14,9 +17,9 @@ from pathlib import Path
 from tracct.live_feed import EVENTS_SOCKET_PATH
 from tracct.query import QUERY_SOCKET_PATH
 
-# tab id -> (title, query source, or None for the live tab); live first, then the history
-# tabs, which share the plot's time range, in alphabetical order. here rather than in app.py,
-# so the command line can offer the tabs without importing Textual
+#: Tab id -> (title, query source, or None for the live tab). Live comes first, then the
+#: history tabs, which share the plot's time range, in alphabetical order. They are here
+#: rather than in app.py, so the command line can offer them without importing Textual.
 TABS: dict[str, tuple[str, str | None]] = {
     "live": ("Live", None),
     "forwarded": ("Forwarded", "forwarded"),
@@ -47,7 +50,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run_viewer(args: argparse.Namespace) -> int:
-    """raises ImportError without Textual"""
+    """Raises ImportError without Textual."""
     from tracct.viewer.app import TracctApp
 
     TracctApp(args.events_socket, args.query_socket, args.tab).run()

@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""the viewer app: a live tab from events.sock and a history tab per source of the query
-server, sharing one time range so a spike found in one tab can be taken apart in the next"""
+"""The viewer app.
+
+A live tab from events.sock and a history tab per source of the query server, sharing
+one time range so a spike found in one tab can be taken apart in the next.
+"""
 
 from __future__ import annotations
 
@@ -33,24 +36,25 @@ from tracct.viewer.pickers import UNZOOM, ByteUnitPicker, SpanPicker, Unzoom
 from tracct.viewer.plot import TrafficPlot
 from tracct.viewer.timerange import TimeRange
 
-# a range that ends now is asked again this often while its tab is shown
+#: A range that ends now is asked again this often while its tab is shown.
 REFRESH_SECONDS = 10.0
 
 
 class TracctApp(TerminalTitleMixin, ChordMixin, App):
     TITLE = "tracct"
     TERMINAL_TITLE = "tracct"
-    # the tab bar takes no focus, so Textual's own would land in the first tab and switch to it;
-    # on_mount focuses the tab asked for instead
+    #: The tab bar takes no focus, so Textual's own would land in the first tab and
+    #: switch to it; on_mount focuses the tab asked for instead.
     AUTO_FOCUS = None
     CSS_PATH = "app.tcss"
     BINDINGS = [
-        # a tab's first letter, highlighted in its title
+        # A tab's first letter, highlighted in its title.
         *(
             Binding(title[0].lower(), f"tab('{tab}')", show=False)
             for tab, (title, _) in TABS.items()
         ),
-        # chords start with a comma; the ChordViewer lists them when the next key is slow to come
+        # Chords start with a comma; the ChordViewer lists them when the next key is
+        # slow to come.
         Binding("comma s", "settings", "settings", show=False),
     ]
 
@@ -92,7 +96,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         self.describe()
         self.set_interval(REFRESH_SECONDS, self.refresh_if_live)
 
-    # ── the query server ────────────────────────────────────────────
+    # ── the query server ──
 
     @work(thread=True, exclusive=True, group="describe")
     def describe(self) -> None:
@@ -113,7 +117,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         for pane in self.query(HistoryPane):
             pane.show_error(message)
 
-    # ── panes ───────────────────────────────────────────────────────
+    # ── panes ──
 
     def active_pane(self) -> FindablePane | None:
         tab = self.query_one(TabbedContent).active_pane
@@ -151,23 +155,27 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         self.mutate_reactive(TracctApp.time_range)
 
     def watch_time_range(self) -> None:
-        # set before the app runs, there is no tab to reload yet
+        # Set before the app runs, there is no tab to reload yet.
         if self.is_running:
             self.reload_active()
 
     def on_plot_range_settled(self, event: TrafficPlot.RangeSettled) -> None:
-        # exactly what the plot shows, empty time included: the plot keeps its own limits
+        # Exactly what the plot shows, empty time included: the plot keeps its own
+        # limits.
         start, end = event.x_range
         self.time_range.zoom_to(int(start), int(end))
         self.range_changed()
 
-    # ── actions ─────────────────────────────────────────────────────
+    # ── actions ──
 
     def action_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
     def action_span(self) -> None:
-        """pick the span from a list: one reload for the choice, none for the spans between"""
+        """Pick the span from a list.
+
+        One reload for the choice, none for the spans between.
+        """
         pane = self.active_history()
         oldest = pane.info.oldest if pane is not None and pane.info else None
         covered = int(time.time()) - oldest if oldest else None

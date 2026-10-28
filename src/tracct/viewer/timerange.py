@@ -4,8 +4,8 @@
 
 """The time range the history tabs share, and the local-time math behind it.
 
-Spans and buckets fall on whole periods of local time, so their times read well: an
-hour starts on the hour, a day at midnight.
+Spans and buckets fall on whole periods of local time, so their times read well: an hour
+starts on the hour, a day at midnight.
 """
 
 from __future__ import annotations
@@ -81,8 +81,8 @@ def bucket_grid(start: int, end: int, columns: int) -> tuple[int, int]:
 class TimeRange:
     """A span that ends now, a span stepped back into the past, or a zoom.
 
-    A zoom is the range a plot was zoomed or panned to. Zooming out only widens it;
-    `s` `s` returns from it to the span, stepped back as it was.
+    A zoom is the range a plot was zoomed or panned to. Zooming out only widens it; `s`
+    `s` returns from it to the span, stepped back as it was.
     """
 
     def __init__(self, span: int = 4) -> None:
@@ -109,7 +109,7 @@ class TimeRange:
             return (oldest or 0), now + 1
         if self.back == 0:
             return now - seconds, now + 1
-        # back 1 is the last whole period, back 2 the one before
+        # Back 1 is the last whole period, back 2 the one before.
         end = align(now, min(seconds, DAY)) - (self.back - 1) * seconds
         return end - seconds, end
 
@@ -134,7 +134,10 @@ class TimeRange:
         return True
 
     def step(self, step: int) -> None:
-        """Step the span back (-1) or forward (+1); forward stops at the span ending now."""
+        """Step the span back (-1) or forward (+1).
+
+        Forward stops at the span ending now.
+        """
         self.zoom = None
         self.back = max(0, self.back - step)
 

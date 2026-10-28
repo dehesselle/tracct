@@ -2,8 +2,10 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""the line above a tab's tables, shown only while there is something to say: a problem, a kept
-find, filters; with a hint on the right for the keys that undo them"""
+"""The line above a tab's tables, shown only while there is something to say.
+
+A problem, a kept find, filters; with a hint on the right for the keys that undo them.
+"""
 
 from __future__ import annotations
 
@@ -27,7 +29,10 @@ class Banner(Horizontal):
         yield Static(classes="banner-hint")
 
     def say(self, notes: list[str], hint: str = "", error: bool = False) -> None:
-        """the notes joined with " · ", and no banner without any; the hint dim on the right"""
+        """The notes joined with " · ", and no banner without any.
+
+        The hint dim on the right.
+        """
         self.display = bool(notes)
         self.set_class(error, "-error")
         self.query_one(".banner-text", Static).update(Text(" · ".join(notes)))

@@ -3,8 +3,11 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""the live tab: connections as the daemon drains them, from events.sock, with totals per
-executable since the tab started (or was reset)"""
+"""The live tab.
+
+Connections as the daemon drains them, from events.sock, with totals per executable
+since the tab started (or was reset).
+"""
 
 from __future__ import annotations
 
@@ -31,7 +34,8 @@ from tracct.viewer.format import bytes_cell, clean, format_clock
 from tracct.viewer.pane import FindablePane
 from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES, config
 
-# events waiting between the feed thread and the next redraw; fills only while the UI stalls
+#: Events waiting between the feed thread and the next redraw; fills only while the UI
+#: stalls.
 INCOMING_MAX = 10000
 REDRAW_SECONDS = 0.5
 RECONNECT_SECONDS = 3.0
@@ -44,8 +48,10 @@ def _right(label: str) -> Text:
 def _replace_rows(
     table: DataTable, rows: list[tuple[str, tuple]], follow: bool
 ) -> None:
-    """new rows, in the table's sort order at once rather than on the next idle; the cursor
-    follows its row by key, or keeps its place"""
+    """New rows, in the table's sort order at once rather than on the next idle.
+
+    The cursor follows its row by key, or keeps its place.
+    """
     cursor = table.cursor_row
     followed: RowKey | None = None
     if follow and 0 <= cursor < table.row_count:
@@ -181,8 +187,8 @@ class LivePane(FindablePane):
         yield DataTable(id="events", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        # the columns of numbers sort by the number, not by its text; the tables only
-        # ever show rows that are in the models, so every key is there to look up
+        # The columns of numbers sort by the number, not by its text; the tables only
+        # ever show rows that are in the models, so every key is there to look up.
         summary = self.query_one("#summary", DataTable)
         for key, label, sort_key in (
             ("exe", "executable", None),
@@ -212,7 +218,7 @@ class LivePane(FindablePane):
 
     @work(thread=True, group="live-feed")
     def subscribe(self) -> None:
-        """reads the feed until the app ends, reconnecting while the daemon is away"""
+        """Reads the feed until the app ends, reconnecting while the daemon is away."""
         worker = get_current_worker()
         while not worker.is_cancelled:
             sub = LiveFeedSubscriber(timeout=1.0, path=self.events_socket)
@@ -241,7 +247,7 @@ class LivePane(FindablePane):
                 time.sleep(0.2)
 
     def _set_state(self, state: FeedState, message: str = "") -> None:
-        # the message first: the redraw reads the state, then the message
+        # The message first: the redraw reads the state, then the message.
         self.state_message = message
         self.state = state
 
@@ -267,17 +273,20 @@ class LivePane(FindablePane):
         self.update_titles()
 
     def apply_limits(self) -> None:
-        """the limits from the settings, read on every redraw so a change applies at once"""
+        """Trim the models to the limits in the settings.
+
+        They are read on every redraw, so a change applies at once.
+        """
         executables = config.get(LIVE_EXECUTABLES)
         if len(self.summary) > executables:
-            # the executables idle the longest make room
+            # The executables idle the longest make room.
             ranked = sorted(
                 self.summary.items(), key=lambda item: item[1].last_seen, reverse=True
             )
             self.dropped += len(ranked) - executables
             self.summary = dict(ranked[:executables])
             self._dirty = True
-        # paused, the events table keeps what it shows
+        # Paused, the events table keeps what it shows.
         excess = len(self.events) - config.get(LIVE_EVENTS)
         if excess > 0 and not self.paused:
             for key in list(itertools.islice(self.events, excess)):
@@ -304,7 +313,7 @@ class LivePane(FindablePane):
             for key, total in self.summary.items()
             if self.matches(total.name, total.exe, total.unit)
         ]
-        # the cursor stays on its executable as the rows move with the sort
+        # The cursor stays on its executable as the rows move with the sort.
         _replace_rows(self.query_one("#summary", DataTable), rows, follow=True)
         if not events:
             return
@@ -327,7 +336,7 @@ class LivePane(FindablePane):
                 event.name, event.exe, event.unit, event.domain, event.raddr
             )
         ]
-        # the cursor keeps its place while new events push the rows along
+        # The cursor keeps its place while new events push the rows along.
         _replace_rows(self.query_one("#events", DataTable), rows, follow=False)
 
     def update_banner(self) -> None:
@@ -336,7 +345,7 @@ class LivePane(FindablePane):
         down = self.state is not FeedState.CONNECTED
         if down:
             notes.append(self.state_message or self.state.value)
-        # while the find input is open, it says it already
+        # While the find input is open, it says it already.
         kept = bool(self.find) and not self.find_open()
         if kept:
             notes.append(f"find: {self.find}")
@@ -367,11 +376,11 @@ class LivePane(FindablePane):
         self.dropped = 0
         self.event_count = 0
         self.since = time.time()
-        # paused too: the frozen events would be gone from the model behind them
+        # Paused too: the frozen events would be gone from the model behind them.
         self.query_one("#events", DataTable).clear()
         self._dirty = True
         self.redraw()
 
     def apply_find(self) -> None:
-        # on the next redraw, which comes soon enough for typing
+        # On the next redraw, which comes soon enough for typing.
         self._dirty = True

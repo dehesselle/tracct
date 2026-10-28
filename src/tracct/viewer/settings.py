@@ -5,11 +5,11 @@
 """The viewer's settings, per user in its config directory.
 
 They live in `~/.config/tracct/settings.json`. The chord `,` `s` in the viewer edits
-them, and only values changed from their default are stored. Import `config` from
-here or from `tcoda.settings`; it is the same object either way.
+them, and only values changed from their default are stored. Import `config` from here
+or from `tcoda.settings`; it is the same object either way.
 
-Read values at the point of use (`config.get(LIVE_EVENTS)`) rather than caching them,
-so a change in the settings dialog takes effect without a restart.
+Read values at the point of use (`config.get(LIVE_EVENTS)`) rather than caching them, so
+a change in the settings dialog takes effect without a restart.
 """
 
 from __future__ import annotations
@@ -34,7 +34,10 @@ def _limit(text: str) -> int:
 LIVE_EXECUTABLES = Setting(
     key="live_executables",
     label="executables kept",
-    description=f"Rows of the summary table. Past this, the executables idle the longest are dropped. {LIMIT_MIN} to {LIMIT_MAX}.",
+    description=(
+        "Rows of the summary table. Past this, the executables idle the longest are"
+        f" dropped. {LIMIT_MIN} to {LIMIT_MAX}."
+    ),
     group="Live",
     default=100,
     parse=_limit,
@@ -43,7 +46,9 @@ LIVE_EXECUTABLES = Setting(
 LIVE_EVENTS = Setting(
     key="live_events",
     label="events kept",
-    description=f"Rows of the events table, the newest ones. {LIMIT_MIN} to {LIMIT_MAX}.",
+    description=(
+        f"Rows of the events table, the newest ones. {LIMIT_MIN} to {LIMIT_MAX}."
+    ),
     group="Live",
     default=500,
     parse=_limit,

@@ -2,8 +2,11 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""a history tab: one source of the query server, grouped by one dimension, narrowed by a stack
-of filters, over the viewer's time range, with the plot of the highlighted row"""
+"""A history tab.
+
+One source of the query server, grouped by one dimension, narrowed by a stack of
+filters, over the viewer's time range, with the plot of the highlighted row.
+"""
 
 from __future__ import annotations
 
@@ -37,17 +40,20 @@ from tracct.viewer.timerange import bucket_grid
 if TYPE_CHECKING:
     from tracct.viewer.app import TracctApp
 
-# rows asked for per request; the table's title says when there are more
+#: Rows asked for per request; the table's title says when there are more.
 ROWS = 1000
-# how long the highlight has to rest on a row before its timeline is asked for
+#: How long the highlight has to rest on a row before its timeline is asked for.
 TIMELINE_DELAY_SECONDS = 0.25
-# how long a fetch has to take before the plot's title says so; most answer within
-# milliseconds, and the glyph would flicker on every refresh
+#: How long a fetch has to take before the plot's title says so; most answer within
+#: milliseconds, and the glyph would flicker on every refresh.
 BUSY_DELAY_SECONDS = 0.3
 
 
 def _value_cell(dimension: str, value: object) -> Text:
-    """a row of sums dim like a missing value, so it is not taken for a value of the dimension"""
+    """Return a cell of the value column; a row of sums dim like a missing value.
+
+    So a row of sums is not taken for a value of the dimension.
+    """
     return (
         Text(value.label(), style="dim")
         if isinstance(value, Total)
@@ -57,11 +63,11 @@ def _value_cell(dimension: str, value: object) -> Text:
 
 class HistoryPane(FindablePane):
     BINDINGS = [
-        # the time range and units are the app's, shared by the history tabs
-        # the picker's s again returns from a zoom to the span
+        # The time range and the byte unit are the app's, shared by the history tabs.
+        # In the span picker, s pressed again returns from a zoom to the span.
         Binding("s", "app.span", "span"),
-        # by a whole span of local time, next to s that picks its length; the range is the tab's,
-        # not only the plot's, whose arrows pan by a few columns
+        # By a whole span of local time, next to s that picks its length; the range is
+        # the tab's, not only the plot's, whose arrows pan by a few columns.
         Binding(
             "shift+left",
             "app.step_span(-1)",
@@ -78,8 +84,8 @@ class HistoryPane(FindablePane):
         ),
         Binding("u", "app.byte_unit", "unit"),
         Binding("r", "app.refresh", "refresh"),
-        # the drill-down: a filter on the highlighted row's value stays when the dimension on the
-        # left changes, which breaks that value down
+        # The drill-down: a filter on the highlighted row's value stays when the
+        # dimension on the left changes, which breaks that value down.
         Binding("comma f i", "filter(False)", "include row", show=False),
         Binding("comma f e", "filter(True)", "exclude row", show=False),
         Binding("comma f p", "pop_filter", "pop last", show=False),
@@ -104,9 +110,10 @@ class HistoryPane(FindablePane):
         self.table_rows: list[Row] = []
         self.error = ""
         self._timeline_timer = None
-        # the row the plot was last asked for, so refilling the table does not ask again
+        #: The row the plot was last asked for, so refilling the table does not ask
+        #: again.
         self._plot_filter: Filter | None = None
-        # marks the plot busy once a fetch has taken a moment
+        #: Marks the plot busy once a fetch has taken a moment.
         self._busy_timer = None
 
     def on_mount(self) -> None:
@@ -126,7 +133,7 @@ class HistoryPane(FindablePane):
             with Vertical():
                 yield TrafficPlot()
                 # tcoda's, for the same look as the live tab's; its columns do not sort,
-                # as the query server orders the rows, largest first
+                # as the query server orders the rows, largest first.
                 yield DataTable(cursor_type="row", zebra_stripes=True)
 
     def configure(self, info: SourceInfo) -> None:
@@ -150,14 +157,17 @@ class HistoryPane(FindablePane):
         """The rows of values in the table, without the sums."""
         return [row for row in self.table_rows if not isinstance(row.value, Total)]
 
-    # ── requests ─────────────────────────────────────────────────────
+    # ── requests ──
 
     def bounds(self) -> tuple[int, int]:
         oldest = self.info.oldest if self.info is not None else None
         return self.viewer.time_range.bounds(int(time.time()), oldest)
 
     def highlighted(self) -> object:
-        """the value of the highlighted row, a Total for a row of sums, or None without rows"""
+        """Return the highlighted row's value: a Total for a row of sums, else None.
+
+        None also when the table has no rows.
+        """
         table = self.query_one(DataTable)
         return (
             self.table_rows[table.cursor_row].value
@@ -166,7 +176,10 @@ class HistoryPane(FindablePane):
         )
 
     def plot_filter(self) -> Filter | None:
-        """the filter that narrows the plot to the highlighted row, or None for all rows"""
+        """Return the filter that narrows the plot to the highlighted row.
+
+        None draws all rows.
+        """
         value = self.highlighted()
         if isinstance(value, Total):
             if value.layer is None or self.result is None:
@@ -256,7 +269,7 @@ class HistoryPane(FindablePane):
             TIMELINE_DELAY_SECONDS, self.load_timeline
         )
 
-    # ── whether the tab is updating ─────────────────────────────────
+    # ── whether the tab is updating ──
 
     def loading(self) -> bool:
         return self.rows_loading or self.plot_loading
@@ -273,8 +286,8 @@ class HistoryPane(FindablePane):
             if self._busy_timer is None:
                 self._busy_timer = self.set_timer(BUSY_DELAY_SECONDS, self._show_busy)
         else:
-            # once the current message is handled: rows that just came in ask for
-            # their plot right after, and the glyph stays on through both
+            # Once the current message is handled: rows that just came in ask for their
+            # plot right after, and the glyph stays on through both.
             self.call_later(self._settle_busy)
 
     def _show_busy(self) -> None:
@@ -290,7 +303,7 @@ class HistoryPane(FindablePane):
             self._busy_timer = None
         self.query_one(TrafficPlot).set_busy(False)
 
-    # ── showing results ─────────────────────────────────────────────
+    # ── showing results ──
 
     def show_timeline(self, timeline: Timeline, heading: str, row_label: str) -> None:
         self.plot_loading = False
@@ -313,9 +326,10 @@ class HistoryPane(FindablePane):
         self.error = ""
         self.result = result
         self.render_rows()
-        # at once: the rows that came in are the plot's too, and the highlight has not moved
+        # At once: the rows that came in are the plot's too, and the highlight has not
+        # moved.
         self.load_timeline()
-        # after the plot is asked for, so the title does not drop the glyph in between
+        # After the plot is asked for, so the title does not drop the glyph in between.
         self.rows_loading = False
 
     def render_rows(self) -> None:
@@ -329,8 +343,8 @@ class HistoryPane(FindablePane):
             for row in self.result.rows
             if needle in format_value(self.group_by, row.value).lower()
         ]
-        # the sums come from all rows, so a find, which hides some, hides them too; grouped by
-        # the layer, the rows are the sums already
+        # The sums come from all rows, so a find, which hides some, hides them too;
+        # grouped by the layer, the rows are the sums already.
         totals = (
             list(self.result.totals)
             if not needle and self.group_by != self.result.layers_by
@@ -353,8 +367,8 @@ class HistoryPane(FindablePane):
                 for row in self.table_rows
             ]
         )
-        # keep the highlight on the same value across refreshes; a sum only if it was on one, as
-        # sums add up what is otherwise kept apart
+        # Keep the highlight on the same value across refreshes; a sum only if it was on
+        # one, as sums add up what is otherwise kept apart.
         index = next(
             (i for i, row in enumerate(self.table_rows) if row.value == previous),
             len(totals) if shown else 0,
@@ -365,7 +379,10 @@ class HistoryPane(FindablePane):
         self.update_status()
 
     def update_banner(self) -> None:
-        """a problem, the filters and a kept find, as on the live tab; nothing to say, no banner"""
+        """A problem, the filters and a kept find, as on the live tab.
+
+        Nothing to say, no banner.
+        """
         notes, keys = [], []
         if self.error:
             notes.append(self.error)
@@ -379,7 +396,7 @@ class HistoryPane(FindablePane):
                 )
             )
             keys.append(",f c to clear filters")
-        # while the find input is open, it says it already
+        # While the find input is open, it says it already.
         if self.find and not self.find_open():
             notes.append(f"find: {self.find}")
             keys.insert(0, "c to clear")
@@ -388,8 +405,11 @@ class HistoryPane(FindablePane):
         )
 
     def update_status(self) -> None:
-        """the table's borders: its title counts the rows only while some are not shown, its
-        bottom border says where the range meets the rollups"""
+        """The table's borders.
+
+        Its title counts the rows only while some are not shown, its bottom border says
+        where the range meets the rollups.
+        """
         table = self.query_one(DataTable)
         result = self.result
         title = subtitle = ""
@@ -406,7 +426,7 @@ class HistoryPane(FindablePane):
         table.border_title = title
         table.border_subtitle = subtitle
 
-    # ── events and keys ──────────────────────────────────────────────
+    # ── events and keys ──
 
     def on_option_list_option_highlighted(
         self, event: OptionList.OptionHighlighted
@@ -416,12 +436,13 @@ class HistoryPane(FindablePane):
             self.reload()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        # refilling the table highlights the row again; only another row needs another plot
+        # Refilling the table highlights the row again; only another row needs another
+        # plot.
         if self.plot_filter() != self._plot_filter:
             self.schedule_timeline()
 
     def action_filter(self, exclude: bool) -> None:
-        # a row of sums has no value of the dimension to keep or exclude
+        # A row of sums has no value of the dimension to keep or exclude.
         value = self.highlighted()
         if value is None or isinstance(value, Total):
             return
@@ -434,7 +455,7 @@ class HistoryPane(FindablePane):
             self.reload()
 
     def action_clear_filters(self) -> None:
-        # back to where the drill-down started
+        # Back to where the drill-down started.
         if self.filters:
             dimension = self.filters[0].dimension
             self.filters.clear()
@@ -445,7 +466,7 @@ class HistoryPane(FindablePane):
         index = self.info.dimension_index(dimension) if self.info else None
         if index is not None:
             # group_by first: the highlight's handler then finds nothing changed and
-            # leaves the reload to the caller, which has the filters to set first
+            # leaves the reload to the caller, which has the filters to set first.
             self.group_by = dimension
             self.query_one(OptionList).highlighted = index
 

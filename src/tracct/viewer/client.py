@@ -115,7 +115,7 @@ class HistoryClient:
         step: int,
         peak: int,
     ) -> Timeline:
-        """Return the byte sums from `start` to `end` in buckets laid out from `origin`."""
+        """Return the byte sums from `start` to `end`, in buckets from `origin`."""
         raw = self.ask(
             "timeline",
             source=source,

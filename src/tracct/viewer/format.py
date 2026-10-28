@@ -14,7 +14,7 @@ from rich.text import Text
 
 from tracct.utils import sanitize_log_line
 
-# what `u` picks from; auto picks a unit per value
+#: What `u` picks from; auto picks a unit per value.
 BYTE_UNITS = ("auto", "B", "kB", "MB", "GB")
 _FACTORS = {"kB": 10**3, "MB": 10**6, "GB": 10**9}
 PROTOCOLS = {
@@ -58,7 +58,10 @@ def user_name(uid: int) -> str:
 
 
 def clean(value: object) -> str:
-    """a value on one line, without control characters (command lines carry tabs and newlines)"""
+    """Return `value` on one line, without control characters.
+
+    Command lines carry tabs and newlines.
+    """
     text = (
         str(value)
         .replace("\0", " ")
@@ -70,7 +73,7 @@ def clean(value: object) -> str:
 
 
 def format_value(dimension: str, value: object) -> str:
-    """a dimension's value as shown; the value itself is what a filter on it sends back"""
+    """Return a dimension's value as shown; a filter on it sends the value itself."""
     if value is None or value == "":
         return "(none)"
     if dimension == "uid" and isinstance(value, int):
@@ -83,7 +86,10 @@ def format_value(dimension: str, value: object) -> str:
 
 
 def value_cell(dimension: str, value: object) -> Text:
-    """a cell that shows text as it is: a plain str in a DataTable would be read as markup"""
+    """A cell that shows text as it is.
+
+    A plain str in a DataTable would be read as markup.
+    """
     text = format_value(dimension, value)
     return Text(text, style="dim" if value is None or value == "" else "")
 

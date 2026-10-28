@@ -64,7 +64,7 @@ class SourceInfo:
 
 @dataclasses.dataclass(frozen=True)
 class Filter:
-    """Keep only the rows whose `dimension` is `value`, or with `exclude`, all others."""
+    """Keep the rows whose `dimension` is `value`; with `exclude`, all others."""
 
     dimension: str
     value: object
