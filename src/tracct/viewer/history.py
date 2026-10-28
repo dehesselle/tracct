@@ -29,6 +29,7 @@ from tracct.viewer.format import (
     value_cell,
 )
 from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
+from tracct.viewer.timerange import bucket_grid
 
 if TYPE_CHECKING:
     from tracct.viewer.app import TracctApp
@@ -37,36 +38,9 @@ if TYPE_CHECKING:
 ROWS = 1000
 # how long the highlight has to rest on a row before its timeline is asked for
 TIMELINE_DELAY_SECONDS = 0.25
-# timeline bucket lengths; none is shorter than the default write window, whose rows would
-# otherwise leave every other bucket empty
-BUCKET_STEPS = (
-    10,
-    30,
-    60,
-    120,
-    300,
-    600,
-    900,
-    1800,
-    3600,
-    3 * 3600,
-    6 * 3600,
-    12 * 3600,
-    86400,
-    7 * 86400,
-    30 * 86400,
-    365 * 86400,
-)
 # how long a fetch has to take before the plot's title says so; most answer within
 # milliseconds, and the glyph would flicker on every refresh
 BUSY_DELAY_SECONDS = 0.3
-
-
-def bucket_step(span: int, columns: int) -> int:
-    """the shortest bucket length that fits span into columns"""
-    return next(
-        (step for step in BUCKET_STEPS if span <= step * columns), BUCKET_STEPS[-1]
-    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -235,11 +209,7 @@ class HistoryPane(Vertical):
             return
         self.fetching("plot", True)
         start, end = self.bounds()
-        step = bucket_step(end - start, self.query_one(TrafficPlot).points())
-        # buckets on whole steps of local time, so their times read well
-        origin = start
-        if step <= 86400:
-            origin -= (start + time.localtime(start).tm_gmtoff) % step
+        origin, step = bucket_grid(start, end, self.query_one(TrafficPlot).points())
         plot_filter = self._plot_filter = self.plot_filter()
         filters = [list(f) for f in self.filters] + (
             [[plot_filter[0], plot_filter[1], False]] if plot_filter else []
@@ -256,7 +226,13 @@ class HistoryPane(Vertical):
                 f" = {format_value(dimension, filtered)}"
             )
         self._load_timeline(
-            start, end, origin, step, filters, row_label, self.heading(start, end)
+            start,
+            end,
+            origin,
+            step,
+            filters,
+            row_label,
+            self.viewer.time_range.heading(start, end),
         )
 
     @work(thread=True, exclusive=True, group="history-timeline")
@@ -440,19 +416,6 @@ class HistoryPane(Vertical):
         self.query_one(Banner).say(
             notes, f"press {' · '.join(keys)}" if keys else "", error=bool(self.error)
         )
-
-    def heading(self, start: int, end: int) -> str:
-        """the range as the plot's title begins: a span by its name, a zoom by its ends, which
-        name the day once if both fall on it"""
-        time_range = self.viewer.time_range
-        if not time_range.zooms:
-            return time_range.label()
-        pattern = "%H:%M" if end - start >= 3600 else "%H:%M:%S"
-        first, last = time.localtime(start), time.localtime(end)
-        tail = time.strftime(
-            pattern if first[:3] == last[:3] else f"%b %d {pattern}", last
-        )
-        return f"{time.strftime(f'%b %d {pattern}', first)} – {tail}"
 
     def update_status(self) -> None:
         """the table's borders: its title counts the rows only while some are not shown, its

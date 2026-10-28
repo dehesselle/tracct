@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""text for the viewer's cells: byte counts, users, protocols, times and spans"""
+"""Text for the viewer's cells: byte counts, users, protocols, times and durations."""
 
 from __future__ import annotations
 
@@ -31,22 +31,6 @@ PROTOCOLS = {
     132: "sctp",
     136: "udplite",
 }
-# the history spans `s` picks from, in seconds; 0 is all of it
-SPANS = (
-    ("all", 0),
-    ("1 minute", 60),
-    ("5 minutes", 300),
-    ("15 minutes", 900),
-    ("1 hour", 3600),
-    ("3 hours", 3 * 3600),
-    ("6 hours", 6 * 3600),
-    ("12 hours", 12 * 3600),
-    ("1 day", 86400),
-    ("3 days", 3 * 86400),
-    ("7 days", 7 * 86400),
-    ("30 days", 30 * 86400),
-    ("365 days", 365 * 86400),
-)
 
 
 def format_bytes(n: int | float | None, byte_unit: str = "auto") -> str:

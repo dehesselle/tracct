@@ -23,10 +23,10 @@ from textual.widgets.tabbed_content import ContentTabs  # noqa: E402
 
 from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
-from tracct.viewer.app import TimeRange, TracctApp  # noqa: E402
+from tracct.viewer.app import TracctApp  # noqa: E402
 from tracct.viewer.banner import Banner  # noqa: E402
-from tracct.viewer.format import SPANS, format_bytes, format_value  # noqa: E402
-from tracct.viewer.history import HistoryPane, bucket_step  # noqa: E402
+from tracct.viewer.format import format_bytes, format_value  # noqa: E402
+from tracct.viewer.history import HistoryPane  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
 from tracct.viewer.pickers import ByteUnitPicker, SpanPicker  # noqa: E402
 from tracct.viewer.plot import (
@@ -37,6 +37,12 @@ from tracct.viewer.plot import (
     RateAxis,
     TrafficPlot,
 )  # noqa: E402
+from tracct.viewer.timerange import (  # noqa: E402
+    SPANS,
+    TimeRange,
+    bucket_grid,
+    bucket_step,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +121,7 @@ async def test_tab_keys(tmp_path):
 
 async def test_span_picker(tmp_path):
     app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
-    app.time_range.zooms.append((5, 10))
+    app.time_range.zoom_to(5, 10)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.press("s")
         await _until(pilot, lambda: isinstance(app.screen, SpanPicker))
@@ -134,12 +140,12 @@ async def test_span_picker(tmp_path):
         # Escape changes nothing
         await pilot.press("escape")
         await _until(pilot, lambda: not isinstance(app.screen, SpanPicker))
-        assert app.time_range.zooms == [(5, 10)]
+        assert app.time_range.zoom == (5, 10)
         # Enter takes the highlighted span, which ends the zoom
         span = app.time_range.span
         await pilot.press("s", "down", "enter")
         await _until(
-            pilot, lambda: app.time_range.span != span and not app.time_range.zooms
+            pilot, lambda: app.time_range.span != span and app.time_range.zoom is None
         )
         # without a zoom, s in the picker has nothing to return to: no hint, and it stays open
         await pilot.press("s")
@@ -217,13 +223,28 @@ def test_time_range():
     assert (
         time_range.bounds(now, None) == (now - 3600, now + 1) and time_range.ends_now()
     )
-    time_range.back = 1
+    assert time_range.heading(*time_range.bounds(now, None)) == "last 1 hour"
+    time_range.step(-1)
     start, end = time_range.bounds(now, None)
     # the last whole hour of local time before now
     assert end - start == 3600 and end <= now < end + 3600 and not time_range.ends_now()
-    time_range.zooms.append((5, 10))
+    assert time_range.heading(start, end) == "1 hour, 1 back"
+    # a zoom keeps the step back for s s to return to
+    time_range.zoom_to(5, 10)
     assert time_range.bounds(now, None) == (5, 10)
-    assert TimeRange(0).bounds(now, 1234) == (1234, now + 1)
+    time_range.unzoom()
+    assert time_range.bounds(now, None) == (start, end)
+    # forward stops at the span that ends now
+    time_range.step(1)
+    time_range.step(1)
+    assert time_range.ends_now()
+    # picking the span shown, ending now, changes nothing; after a step back it does
+    assert not time_range.pick(hour)
+    time_range.step(-1)
+    assert time_range.pick(hour) and time_range.ends_now()
+    everything = TimeRange(0)
+    assert everything.bounds(now, 1234) == (1234, now + 1)
+    assert not everything.steppable() and everything.heading(0, 1) == "all history"
 
 
 def test_bucket_step():
@@ -233,6 +254,12 @@ def test_bucket_step():
     assert bucket_step(3600, 100) == 60
     assert bucket_step(86400, 120) == 900
     assert bucket_step(10**12, 100) == 365 * 86400
+    # buckets up to a day long start on whole steps of local time, longer ones at the start
+    start = 1_000_000_007
+    origin, step = bucket_grid(start, start + 3600, 100)
+    assert step == 60 and origin <= start < origin + step
+    assert (origin + time.localtime(origin).tm_gmtoff) % step == 0
+    assert bucket_grid(start, start + 10**12, 100) == (start, 365 * 86400)
 
 
 def test_plot_axes():
@@ -449,8 +476,8 @@ async def test_history_drill_down(tmp_path):
                 "ctrl+shift+minus",
             } & set(app.screen.active_bindings)
             await pilot.press("plus")
-            await _until(pilot, lambda: bool(app.time_range.zooms))
-            zoomed_start, zoomed_end = app.time_range.zooms[-1]
+            await _until(pilot, lambda: app.time_range.zoom is not None)
+            zoomed_start, zoomed_end = app.time_range.zoom
             assert (
                 start <= zoomed_start < zoomed_end <= end
                 and zoomed_end - zoomed_start < end - start
@@ -458,11 +485,11 @@ async def test_history_drill_down(tmp_path):
             await _until(pilot, lambda: plot.start == zoomed_start)
             await pilot.press("r")
             await pilot.pause(0.3)
-            assert app.time_range.zooms == [(zoomed_start, zoomed_end)]
+            assert app.time_range.zoom == (zoomed_start, zoomed_end)
             # s twice: the picker, then back from the zoom to the span
             await pilot.press("s", "s")
             await _until(
-                pilot, lambda: not app.time_range.zooms and plot.start == start
+                pilot, lambda: app.time_range.zoom is None and plot.start == start
             )
             await pilot.press("u", "down", "enter")
             await _until(pilot, lambda: app.byte_unit == "B")
@@ -509,7 +536,7 @@ async def test_plot_title_and_busy(tmp_path):
             plot.focus()
             await pilot.press("plus")
             await _until(
-                pilot, lambda: bool(app.time_range.zooms) and " – " in _title(plot)
+                pilot, lambda: app.time_range.zoom is not None and " – " in _title(plot)
             )
     finally:
         listener.close()

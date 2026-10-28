@@ -22,56 +22,15 @@ from textual.widgets.tabbed_content import ContentTabs
 
 from tracct.query import QueryClient, QueryError
 from tracct.viewer import TABS
-from tracct.viewer.format import BYTE_UNITS, SPANS
+from tracct.viewer.format import BYTE_UNITS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
-from tracct.viewer.pickers import TO_SPAN, ByteUnitPicker, SpanPicker
+from tracct.viewer.pickers import UNZOOM, ByteUnitPicker, SpanPicker, Unzoom
 from tracct.viewer.plot import TrafficPlot
+from tracct.viewer.timerange import TimeRange
 
 # a range that ends now is asked again this often while its tab is shown
 REFRESH_SECONDS = 10.0
-
-
-def _aligned(now: int, seconds: int) -> int:
-    """the start of the local-time period of length seconds (up to a day) holding now"""
-    offset = time.localtime(now).tm_gmtoff
-    return now - (now + offset) % min(seconds, 86400)
-
-
-class TimeRange:
-    """A span that ends now, a span stepped back into the past, or a zoom.
-
-    A zoom is the range a plot was zoomed or panned to. Zooming out only widens it;
-    `s` `s` returns from it to the span, stepped back as it was.
-    """
-
-    def __init__(self, span: int = 4) -> None:
-        self.span = span
-        self.back = 0
-        self.zooms: list[tuple[int, int]] = []
-
-    def bounds(self, now: int, oldest: int | None) -> tuple[int, int]:
-        if self.zooms:
-            return self.zooms[-1]
-        seconds = SPANS[self.span][1]
-        if seconds == 0:
-            return (oldest or 0), now + 1
-        if self.back == 0:
-            return now - seconds, now + 1
-        # back 1 is the last whole period, back 2 the one before
-        end = _aligned(now, seconds) - (self.back - 1) * seconds
-        return end - seconds, end
-
-    def ends_now(self) -> bool:
-        return not self.zooms and self.back == 0
-
-    def label(self) -> str:
-        if self.zooms:
-            return "zoomed"
-        name = SPANS[self.span][0]
-        if self.back:
-            return f"{name}, {self.back} back"
-        return "all history" if name == "all" else f"last {name}"
 
 
 class TracctApp(ChordMixin, App):
@@ -206,11 +165,8 @@ class TracctApp(ChordMixin, App):
         self.reload_active()
 
     def zoom_to(self, start: int, end: int) -> None:
-        """the range a plot came to rest on, which every history tab then shows"""
-        if self.time_range.zooms:
-            self.time_range.zooms[-1] = (start, end)
-        else:
-            self.time_range.zooms.append((start, end))
+        """Show the range a plot came to rest on, in every history tab."""
+        self.time_range.zoom_to(start, end)
         self.reload_active()
 
     # ── actions ─────────────────────────────────────────────────────
@@ -224,40 +180,26 @@ class TracctApp(ChordMixin, App):
         oldest = pane.info.get("oldest") if pane is not None else None
         covered = int(time.time()) - oldest if oldest else None
         self.push_screen(
-            SpanPicker(self.time_range.span, covered, bool(self.time_range.zooms)),
+            SpanPicker(self.time_range.span, covered, self.time_range.zoom is not None),
             self._span_picked,
         )
 
-    def _span_picked(self, span: int | None) -> None:
-        if span == TO_SPAN:
-            # back from the zoom to the span, stepped back as it was
-            self.time_range.zooms.clear()
+    def _span_picked(self, span: int | Unzoom | None) -> None:
+        if span is UNZOOM:
+            self.time_range.unzoom()
             self.reload_active()
-            return
-        # Picking the current span again still ends a step back or a zoom; only a span
-        # that already ends now has nothing to change.
-        if span is None or (
-            span == self.time_range.span and self.time_range.ends_now()
-        ):
-            return
-        self.time_range.span = span
-        self.time_range.back = 0
-        self.time_range.zooms.clear()
-        self.reload_active()
+        elif isinstance(span, int) and self.time_range.pick(span):
+            self.reload_active()
 
     def action_step_span(self, step: int) -> None:
-        """Step the span back (-1) or forward (+1) by a whole span of local time.
-
-        Stepping forward stops at the span that ends now.
-        """
-        if SPANS[self.time_range.span][1] == 0:
+        """Step the span back (-1) or forward (+1) by a whole span of local time."""
+        if not self.time_range.steppable():
             self.notify(
                 "pick a span with s first; all history has no earlier or later",
                 timeout=3,
             )
             return
-        self.time_range.zooms.clear()
-        self.time_range.back = max(0, self.time_range.back - step)
+        self.time_range.step(step)
         self.reload_active()
 
     def action_byte_unit(self) -> None:
