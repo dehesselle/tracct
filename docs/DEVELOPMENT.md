@@ -66,7 +66,8 @@ Ruff comes from outside the project: `required-version` in `pyproject.toml` and 
 lint job name the same minor, and are bumped together once its new findings are reviewed.
 Formatting is ruff's default, at 88 columns. The lint rules are still ruff 0.15's defaults
 plus import sorting; 0.16's wider defaults are taken on one part of tracct at a time.
-`bpf_wrapper.py` is left out of formatting, so it stays close to picosnitch's.
+`bpf_wrapper.py` is left out of formatting, so it stays close to picosnitch's. Commits
+that only reformat go into `.git-blame-ignore-revs`.
 
 ## Licensing
 

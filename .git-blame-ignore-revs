@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
+#
+# SPDX-License-Identifier: 0BSD
+
+# Commits that only reformat, left out of git blame. GitHub reads this file by itself;
+# locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format at ruff's default 88 columns
+2111387a6373b1410764b785528d4a5462329c31
