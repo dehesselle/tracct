@@ -187,7 +187,7 @@ class HistoryPane(Vertical):
     def _load(self, start: int, end: int, filters: list, group_by: str) -> None:
         worker = get_current_worker()
         try:
-            result = self.viewer.ask(
+            result = self.viewer.client.ask(
                 "aggregate",
                 source=self.source,
                 group_by=group_by,
@@ -248,7 +248,7 @@ class HistoryPane(Vertical):
     ) -> None:
         worker = get_current_worker()
         try:
-            result = self.viewer.ask(
+            result = self.viewer.client.ask(
                 "timeline",
                 source=self.source,
                 filters=filters,

@@ -7,7 +7,6 @@ server, sharing one time range so a spike found in one tab can be taken apart in
 
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 
@@ -20,8 +19,9 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, TabbedContent, TabPane
 from textual.widgets.tabbed_content import ContentTabs
 
-from tracct.query import QueryClient, QueryError
+from tracct.query import QueryError
 from tracct.viewer import TABS
+from tracct.viewer.client import HistoryClient
 from tracct.viewer.format import BYTE_UNITS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
@@ -64,14 +64,12 @@ class TracctApp(ChordMixin, App):
     ) -> None:
         super().__init__()
         self.events_socket = events_socket
-        self.query_socket = query_socket
         self.initial_tab = tab
         self.time_range = TimeRange()
         self.byte_unit = BYTE_UNITS[0]
         #: The byte unit before, which `u` pressed twice goes back to.
         self.last_byte_unit: str | None = None
-        self._client = QueryClient(query_socket)
-        self._client_lock = threading.Lock()
+        self.client = HistoryClient(query_socket)
 
     def compose(self):
         with TabbedContent(initial=self.initial_tab):
@@ -95,24 +93,10 @@ class TracctApp(ChordMixin, App):
 
     # ── the query server ────────────────────────────────────────────
 
-    def ask(self, op: str, **params: object) -> dict:
-        """a request to the query server, from a worker thread"""
-        with self._client_lock:
-            try:
-                return self._client.request(op, **params)
-            except PermissionError as e:
-                raise QueryError(
-                    f"no access to {self.query_socket}: join the viewer group (tracct-viewer) or run as root"
-                ) from e
-            except OSError as e:
-                raise QueryError(
-                    f"query server unavailable at {self.query_socket} ({e.strerror or e}); is tracct-query.socket enabled?"
-                ) from e
-
     @work(thread=True, exclusive=True, group="describe")
     def describe(self) -> None:
         try:
-            sources = self.ask("describe")["sources"]
+            sources = self.client.ask("describe")["sources"]
         except QueryError as e:
             self.call_from_thread(self._describe_failed, str(e))
             return
@@ -265,4 +249,4 @@ class TracctApp(ChordMixin, App):
             self.focus_pane()
 
     def on_unmount(self) -> None:
-        self._client.close()
+        self.client.close()

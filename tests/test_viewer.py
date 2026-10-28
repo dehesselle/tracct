@@ -5,6 +5,8 @@
 """Tests for the Textual viewer, driven headless against a query server on a temporary socket
 and a live feed publisher. No root needed; skipped without textual (tracct[tui])."""
 
+import grp
+import os
 import re
 import threading
 import time
@@ -25,6 +27,7 @@ from tracct import live_feed, query_server  # noqa: E402
 from tracct.viewer import settings  # noqa: E402
 from tracct.viewer.app import TracctApp  # noqa: E402
 from tracct.viewer.banner import Banner  # noqa: E402
+from tracct.viewer.client import access_hint  # noqa: E402
 from tracct.viewer.format import format_bytes, format_value  # noqa: E402
 from tracct.viewer.history import HistoryPane  # noqa: E402
 from tracct.viewer.live import LivePane, remote  # noqa: E402
@@ -199,6 +202,17 @@ async def test_unit_picker(tmp_path):
         await _until(
             pilot, lambda: app.byte_unit == "MB" and app.last_byte_unit == "auto"
         )
+
+
+def test_access_hint(tmp_path):
+    """The group named is the socket's own, whatever [viewer] group calls it."""
+    path = tmp_path / "query.sock"
+    path.touch()
+    if os.geteuid() == 0:
+        os.chown(path, -1, next(g.gr_gid for g in grp.getgrall() if g.gr_gid))
+    group = grp.getgrgid(os.stat(path).st_gid).gr_name
+    assert access_hint(path) == f"join the viewer group ({group}) or run as root"
+    assert "[viewer] group" in access_hint(tmp_path / "missing.sock")
 
 
 def test_format():
@@ -504,14 +518,14 @@ async def test_plot_title_and_busy(tmp_path):
     try:
         app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "interfaces")
         app.time_range = TimeRange(0)
-        ask = app.ask
+        ask = app.client.ask
 
         def delayed(op, **params):
             if slow.is_set():
                 time.sleep(1.0)
             return ask(op, **params)
 
-        app.ask = delayed
+        app.client.ask = delayed
         async with app.run_test(size=(140, 45)) as pilot:
             pane = app.query_one("#interfaces HistoryPane", HistoryPane)
             plot = pane.query_one(TrafficPlot)

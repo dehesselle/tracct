@@ -24,8 +24,9 @@ from textual.widgets import Input
 from textual.widgets.data_table import RowKey
 from textual.worker import get_current_worker
 
-from tracct.live_feed import LiveFeedSubscriber, feed_closed_reason
+from tracct.live_feed import LiveFeedSubscriber
 from tracct.viewer.banner import Banner
+from tracct.viewer.client import feed_closed, feed_unavailable
 from tracct.viewer.format import FIND_PLACEHOLDER, bytes_cell, clean, format_clock
 from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES
 
@@ -140,10 +141,8 @@ class LivePane(Vertical):
             sub = LiveFeedSubscriber(timeout=1.0, path=self.events_socket)
             try:
                 sub.connect()
-            except PermissionError:
-                self.state = f"no access to {self.events_socket}: join the viewer group (tracct-viewer) or run as root"
             except OSError as e:
-                self.state = f"live feed unavailable ({e.strerror or e}); is the tracct service running?"
+                self.state = feed_unavailable(self.events_socket, e)
             else:
                 self.state = "connected"
                 while not worker.is_cancelled:
@@ -152,7 +151,7 @@ class LivePane(Vertical):
                     except TimeoutError:
                         continue
                     except (StopIteration, OSError):
-                        self.state = f"feed closed: {feed_closed_reason(self.events_socket)}; reconnecting"
+                        self.state = feed_closed(self.events_socket)
                         break
                     if isinstance(event, dict) and event:
                         event["_t"] = time.time()
