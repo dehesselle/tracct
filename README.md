@@ -26,11 +26,12 @@ systemctl daemon-reload && systemctl enable --now tracct tracct-query.socket
 
 `tracct install` writes the systemd units, the sysusers file and the base configuration,
 after saying what it will write and asking; it replaces nothing without `-f` (see
-[MANUAL.md](docs/MANUAL.md#install)). The `viewer` extra installs `tracct view`; the
-daemon itself needs only the standard library.
+[MANUAL.md](https://github.com/dehesselle/tracct/blob/master/docs/MANUAL.md#install)).
+The `viewer` extra installs `tracct view`; the daemon itself needs only the standard
+library.
 Forwarded traffic is recorded once `nf_conntrack` is loaded with `acct=1`, which
 `tracct install --conntrack` sets up, see
-[OPERATIONS.md](docs/OPERATIONS.md#forwarded-traffic).
+[OPERATIONS.md](https://github.com/dehesselle/tracct/blob/master/docs/OPERATIONS.md#forwarded-traffic).
 
 As root or as a member of `tracct-viewer`:
 
@@ -43,16 +44,21 @@ As root or as a member of `tracct-viewer`:
 - Accounting, not security: programs are identified by their path, and anything running as
   root can evade or alter the record.
 - Bytes are counted at the socket, without headers or retransmits, and traffic through a
-  VPN tunnel appears once per layer; see [DESIGN.md](docs/DESIGN.md).
+  VPN tunnel appears once per layer; see
+  [DESIGN.md](https://github.com/dehesselle/tracct/blob/master/docs/DESIGN.md).
 
 ## Documentation
 
-- [docs/DESIGN.md](docs/DESIGN.md): architecture, what is and isn't counted, core principles
-- [docs/MANUAL.md](docs/MANUAL.md): commands, configuration reference, paths
-- [docs/OPERATIONS.md](docs/OPERATIONS.md): running the unit, capabilities, logs, failure
-  behavior, upgrades, troubleshooting
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building, checks, licensing, tests, benchmark
-- [docs/performance.md](docs/performance.md): measured CPU, memory and losses under load
+- [docs/DESIGN.md](https://github.com/dehesselle/tracct/blob/master/docs/DESIGN.md):
+  architecture, what is and isn't counted, core principles
+- [docs/MANUAL.md](https://github.com/dehesselle/tracct/blob/master/docs/MANUAL.md):
+  commands, configuration reference, paths
+- [docs/OPERATIONS.md](https://github.com/dehesselle/tracct/blob/master/docs/OPERATIONS.md):
+  running the unit, capabilities, logs, failure behavior, upgrades, troubleshooting
+- [docs/DEVELOPMENT.md](https://github.com/dehesselle/tracct/blob/master/docs/DEVELOPMENT.md):
+  building, checks, licensing, tests, benchmark
+- [docs/performance.md](https://github.com/dehesselle/tracct/blob/master/docs/performance.md):
+  measured CPU, memory and losses under load
 
 ## AI disclosure
 
