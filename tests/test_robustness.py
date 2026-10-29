@@ -511,6 +511,58 @@ def test_delete_orphans_stops_between_tables(tmp_path):
     con.close()
 
 
+def test_release_free_pages(tmp_path, monkeypatch):
+    """A new database gives its free pages back once they are more than a quarter of the
+    file, in chunks with the hook between; fewer wait to be reused, and a database made
+    without incremental auto_vacuum keeps them all.
+    """
+    import sqlite3
+
+    from tracct import cli, writer
+
+    db = tmp_path / "tracct.db"
+    monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(cli, "DB_PATH", db)
+    cli.init_database()
+    monkeypatch.setattr(writer, "RELEASE_CHUNK_PAGES", 100)
+    con = sqlite3.connect(db)
+    assert con.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
+    page_size = con.execute("PRAGMA page_size").fetchone()[0]
+
+    def fill_and_delete(con, keep):
+        con.executemany(
+            "INSERT INTO executables(exe, name, cmdline) VALUES (?, '', '')",
+            [(f"/bin/{i:06d}{'x' * 200}",) for i in range(20000)],
+        )
+        con.commit()
+        con.execute("DELETE FROM executables WHERE id > ?", (keep,))
+        con.commit()
+
+    def free(con):
+        return con.execute("PRAGMA freelist_count").fetchone()[0]
+
+    # A tenth of the rows gone: their pages wait to be reused.
+    fill_and_delete(con, 18000)
+    assert free(con) and writer.release_free_pages(con, lambda: False) == 0
+    con.execute("DELETE FROM executables WHERE id != 0")
+    con.commit()
+    pages = con.execute("PRAGMA page_count").fetchone()[0]
+    # The hook ends the release after a chunk; the next pass gives back the rest.
+    assert writer.release_free_pages(con, lambda: True) == 100 * page_size
+    calls = []
+    assert writer.release_free_pages(con, lambda: calls.append(1) or False) > 0
+    assert free(con) == 0 and len(calls) > 10
+    assert con.execute("PRAGMA page_count").fetchone()[0] < pages / 4
+    con.close()
+    # Without incremental auto_vacuum only a VACUUM could shrink the file.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    con = _purge_db(plain)
+    fill_and_delete(con, 0)
+    assert free(con) and writer.release_free_pages(con, lambda: False) == 0
+    con.close()
+
+
 def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
     """Raw rows past their window stay until their period is rolled up, and the rollup
     keeps their entries referenced.

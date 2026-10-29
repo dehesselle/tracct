@@ -203,6 +203,9 @@ def init_database() -> None:
     if not db_path.exists():
         con = sqlite3.connect(db_path)
         cur = con.cursor()
+        # Only possible before the first table: lets maintenance give free pages back to
+        # the filesystem, which otherwise takes a VACUUM rewriting the whole file.
+        cur.execute("PRAGMA auto_vacuum = INCREMENTAL")
         for table, schema in TABLES:
             cur.execute(f"CREATE TABLE {table} ({schema}) STRICT")
         for statement in SENTINELS + INDEXES:

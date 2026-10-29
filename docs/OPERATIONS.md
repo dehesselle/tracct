@@ -154,7 +154,8 @@ The messages, warnings unless marked:
 - `sqlite-retry`: a failed write, retried on the next window
 - `retry-buffer-full`: writes have failed for so long that the oldest rows were given up
 - `maintenance-done` (info): a maintenance pass that did something, with how long it
-  took and how many unreferenced lookup entries it cleaned
+  took, how many unreferenced lookup entries it cleaned and how much free space it gave
+  back
 - `maintenance-clock-jump`: the clock was set or stepped since the last pass; see
   [Failure and recovery](#failure-and-recovery)
 - `clock-went-back`: the clock had run ahead while periods were rolled up; they are rolled
@@ -198,8 +199,10 @@ which its rollups barely merge (each peer has its own domain); a `[[record.proce
 that drops its addresses and ports makes that a few rows per window (see
 [MANUAL.md](MANUAL.md#configuration)). Retention keeps it at roughly `raw_retention_days` worth of raw rows plus
 `rollup_retention_days` worth of rollups, which hold one row per program, peer domain and
-service port per period; deleted pages are reused, so the file stays at its largest size
-without shrinking. Once a day after deleting rows, maintenance also scans all of them for
+service port per period. Deleted pages are reused, so in steady state the file keeps its
+size; once free pages are more than a quarter of it (after a burst, or a shorter
+retention), maintenance gives them back in chunks of 10 MiB, and the file shrinks at the
+next WAL checkpoint. A database created before version 7 cannot do this. Once a day after deleting rows, maintenance also scans all of them for
 unreferenced lookup entries, one lookup table at a time with due writes in between; while a
 table is scanned, writes wait and the queue fills.
 
@@ -254,8 +257,8 @@ again in a later window. `[record] reverse_dns = false` turns it off.
 
 Maintenance runs at daemon start and then every `maintenance_interval_minutes`: closed
 periods are rolled up, raw rows older than `raw_retention_days` (once rolled up) and
-rollups older than `rollup_retention_days` are deleted, and once a day lookup entries nothing
-refers to any more.
+rollups older than `rollup_retention_days` are deleted, once a day lookup entries nothing
+refers to any more, and free space past a quarter of the file is given back.
 
 ## Upgrades
 

@@ -183,6 +183,11 @@ format: the writer is its only writer and the query server its only reader, so i
 changes whenever the design needs it, with a new `DB_VERSION` in `PRAGMA user_version` and
 no migrations.
 
+A new database is created with incremental `auto_vacuum`, which SQLite only allows before
+the first table. Freed pages are reused as rows come and go; once they are more than a
+quarter of the file (after a burst, or a shorter retention), maintenance gives them back to
+the filesystem.
+
 The tables come in three kinds:
 
 - **Lookup tables** intern text so traffic rows stay small; id 0 in each is the

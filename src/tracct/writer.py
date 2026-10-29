@@ -51,6 +51,12 @@ ID_CACHE_MAX = 65536
 NO_NETNS = (0, "")
 #: The interface of a row whose interface is unknown: namespace, name, kind.
 NO_INTERFACE = (NO_NETNS, "", "")
+#: Free pages past this share of the file are given back to the filesystem; fewer wait
+#: to be reused, as the next windows would only grow the file again.
+RELEASE_FREE_FRACTION = 0.25
+#: Pages given back per transaction (10 MiB at 4 KiB); a write that is due goes between
+#: two.
+RELEASE_CHUNK_PAGES = 2560
 
 #: Rows of a closed rollup period, summed; the parameters are the period, the first port
 #: of the ephemeral range (ports from there on are a peer's or our own random port, kept
@@ -598,6 +604,37 @@ def delete_orphans(
     return orphans
 
 
+def release_free_pages(
+    con: sqlite3.Connection, between_chunks: Callable[[], bool]
+) -> int:
+    """Give the free pages back to the filesystem in chunks, once they are more than
+    RELEASE_FREE_FRACTION of the file (after a burst, or a shorter retention).
+
+    between_chunks runs after each chunk and ends the release by returning True. The
+    file shrinks at the next WAL checkpoint. Returns the number of bytes released.
+    """
+    if con.execute("PRAGMA auto_vacuum").fetchone()[0] != 2:
+        # Not created with incremental auto_vacuum; only a VACUUM could shrink it.
+        return 0
+    free = con.execute("PRAGMA freelist_count").fetchone()[0]
+    if free <= con.execute("PRAGMA page_count").fetchone()[0] * RELEASE_FREE_FRACTION:
+        return 0
+    page_size = con.execute("PRAGMA page_size").fetchone()[0]
+    released = 0
+    while free:
+        with con:
+            # Each step releases one page, so the statement is run to its end.
+            con.execute(f"PRAGMA incremental_vacuum({RELEASE_CHUNK_PAGES})").fetchall()
+        left = con.execute("PRAGMA freelist_count").fetchone()[0]
+        if left >= free:
+            break
+        released += free - left
+        free = left
+        if free and between_chunks():
+            break
+    return released * page_size
+
+
 class ClockCheck:
     """How far the wall clock moved apart from the boot clock between two calls.
 
@@ -880,6 +917,7 @@ def run_writer(
             return
         started = time.monotonic()
         orphans = None
+        released = 0
         con = sqlite3.connect(file_path)
         try:
             periods, deleted = purge_database(con, config, between_chunks)
@@ -892,18 +930,25 @@ def run_writer(
                 orphans = delete_orphans(con, between_orphan_deletes)
                 next_orphans = time.monotonic() + orphan_interval
                 deleted_since_orphans = 0
+            if not stop.is_set():
+                released = release_free_pages(con, between_chunks)
         finally:
             con.close()
             # Orphan cleanup deletes ids the caches may hold.
             clear_id_caches()
-        if periods or deleted or orphans is not None:
+        if periods or deleted or orphans is not None or released:
             cleanup = (
                 "" if orphans is None else f" and {orphans} unreferenced lookup entries"
+            )
+            release = (
+                f", released {released / 1048576:.0f} MiB of free space"
+                if released
+                else ""
             )
             report(
                 logger,
                 "maintenance-done",
-                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup} in {time.monotonic() - started:.1f} s",
+                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup}{release} in {time.monotonic() - started:.1f} s",
             )
 
     # The first pass runs at startup.
