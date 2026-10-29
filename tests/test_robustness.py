@@ -98,12 +98,12 @@ def test_config_scalar_for_list_field_skipped(tmp_path):
     would be recorded.
     """
     (tmp_path / "config.toml").write_text(
-        '[log]\nignore_ports = 443\nignore_domains = "example.com"\nignore_ips = "10.0.0.1"\n'
+        '[record]\nignore_ports = 443\nignore_domains = "example.com"\nignore_ips = "10.0.0.1"\n'
     )
     config = load_config(tmp_path / "config.toml")
-    assert config.log.ignore_ports == []
-    assert config.log.ignore_domains == []
-    assert config.log.ignore_ips == []
+    assert config.record.ignore_ports == []
+    assert config.record.ignore_domains == []
+    assert config.record.ignore_ips == []
 
 
 def test_config_numeric_upper_clamps(tmp_path):
@@ -155,12 +155,12 @@ def test_config_drop_ins(tmp_path, caplog):
     """
     (tmp_path / "config.toml").write_text(
         "[database]\nraw_retention_days = 7\nrollup_retention_days = 100\n"
-        '[log]\nignore_ports = [22, 53]\n[viewer]\ngroup = "root"\n'
+        '[record]\nignore_ports = [22, 53]\n[viewer]\ngroup = "root"\n'
     )
     drop_ins = tmp_path / "config.d"
     drop_ins.mkdir()
     (drop_ins / "50-local.toml").write_text(
-        "[database]\nraw_retention_days = 14\n[log]\nignore_ports = [443]\n"
+        "[database]\nraw_retention_days = 14\n[record]\nignore_ports = [443]\n"
     )
     (drop_ins / "60-later.toml").write_text("[database]\nraw_retention_days = 21\n")
     (drop_ins / "40-broken.toml").write_text("this is [not valid")
@@ -168,7 +168,7 @@ def test_config_drop_ins(tmp_path, caplog):
     config = load_config(tmp_path / "config.toml")
     assert config.database.raw_retention_days == 21
     assert config.database.rollup_retention_days == 100
-    assert config.log.ignore_ports == [443]
+    assert config.record.ignore_ports == [443]
     assert config.viewer.group == "root"
     assert "40-broken.toml, ignoring it" in caplog.text
 
@@ -184,43 +184,46 @@ def test_base_config_lists_the_defaults():
             assert lines[number - 1].startswith("#"), line
     raw = tomllib.loads(base.read_text())
     for section in dataclasses.fields(Config):
-        options = {field.name for field in dataclasses.fields(section.type)}
+        if section.name == "log":
+            options = set(messages.DEFAULTS)
+        else:
+            options = {field.name for field in dataclasses.fields(section.type)}
         assert set(raw[section.name]) == options - {"st_dev_mask"}, section.name
     assert raw["viewer"]["group"] == "tracct-viewer"
     config = load_config(base)
     # Every message at its default level.
-    assert config.log.messages == {
+    assert config.log == {
         msgid: logging.getLevelName(level).lower()
         for msgid, level in messages.DEFAULTS.items()
     }
-    config.log.messages = {}
+    config.log = {}
     assert dataclasses.replace(config, viewer=ViewerConfig()) == Config()
 
 
 def test_config_message_levels(tmp_path, caplog):
-    """[log.messages] keeps known messages with known levels, and a drop-in adds to it."""
+    """[log] keeps known messages with known levels, and a drop-in adds to it."""
     (tmp_path / "config.toml").write_text(
-        '[log.messages]\nmulti-call-inode = "info"\nexec-ring-full = "loud"\n'
+        '[log]\nmulti-call-inode = "info"\nexec-ring-full = "loud"\n'
         'no-such-message = "off"\n'
     )
     (tmp_path / "config.d").mkdir()
     (tmp_path / "config.d" / "50-local.toml").write_text(
-        '[log.messages]\nsqlite-retry = "off"\n'
+        '[log]\nsqlite-retry = "off"\n'
     )
     config = load_config(tmp_path / "config.toml")
-    assert config.log.messages == {"multi-call-inode": "info", "sqlite-retry": "off"}
-    assert "config.log.messages: unknown message 'no-such-message'" in caplog.text
-    assert "config.log.messages.exec-ring-full: expected one of" in caplog.text
-    (tmp_path / "config.toml").write_text("[log]\nmessages = 5\n")
-    assert load_config(tmp_path / "config.toml").log.messages == {"sqlite-retry": "off"}
-    assert "log.messages: expected a table, got int, skipping" in caplog.text
+    assert config.log == {"multi-call-inode": "info", "sqlite-retry": "off"}
+    assert "config.log: unknown message 'no-such-message'" in caplog.text
+    assert "config.log.exec-ring-full: expected one of" in caplog.text
+    (tmp_path / "config.toml").write_text("log = 5\n")
+    assert load_config(tmp_path / "config.toml").log == {"sqlite-retry": "off"}
+    assert "log: expected a table, got int, ignoring" in caplog.text
 
 
 def test_config_drop_ins_without_config_toml(tmp_path):
     (tmp_path / "config.d").mkdir()
-    (tmp_path / "config.d" / "local.toml").write_text("[log]\ncommands = false\n")
+    (tmp_path / "config.d" / "local.toml").write_text("[record]\ncommands = false\n")
     config = load_config(tmp_path / "config.toml")
-    assert config.log.commands is False
+    assert config.record.commands is False
     assert config.database == Config().database
 
 
@@ -285,7 +288,7 @@ def test_paths_follow_systemd_directories(tmp_path):
 
 
 def test_config_ignore_ips_validated(tmp_path):
-    """log.ignore_ips entries that aren't valid networks must be dropped (a host-bit
+    """record.ignore_ips entries that aren't valid networks must be dropped (a host-bit
     CIDR is kept and later normalized with strict=False); else the writer crashes
     building ignored_networks at start (list[str] skips load_config's type check, so a
     non-list must also reset to []).
@@ -293,43 +296,44 @@ def test_config_ignore_ips_validated(tmp_path):
     import ipaddress
 
     (tmp_path / "config.toml").write_text(
-        '[log]\nignore_ips = ["not-an-ip", "192.168.1.5/24", "10.0.0.0/8"]\n'
+        '[record]\nignore_ips = ["not-an-ip", "192.168.1.5/24", "10.0.0.0/8"]\n'
     )
     config = load_config(tmp_path / "config.toml")
-    assert config.log.ignore_ips == [
+    assert config.record.ignore_ips == [
         "192.168.1.5/24",
         "10.0.0.0/8",
     ]  # invalid dropped, valid kept
     [
-        ipaddress.ip_network(x, strict=False) for x in config.log.ignore_ips
+        ipaddress.ip_network(x, strict=False) for x in config.record.ignore_ips
     ]  # consumer must not raise
     (tmp_path / "config.toml").write_text(
-        '[log]\nignore_ips = "1.2.3.4"\n'
+        '[record]\nignore_ips = "1.2.3.4"\n'
     )  # not a list
-    assert load_config(tmp_path / "config.toml").log.ignore_ips == []
+    assert load_config(tmp_path / "config.toml").record.ignore_ips == []
 
 
 def test_config_ignore_domains_validated(tmp_path):
-    """log.ignore_domains entries that aren't non-empty strings must be dropped.
+    """record.ignore_domains entries that aren't non-empty strings must be dropped.
 
     A non-str breaks the writer's startswith() filter on every write (nothing gets
     recorded), an empty string matches every domain (silently dropping all connections).
     """
     (tmp_path / "config.toml").write_text(
-        '[log]\nignore_domains = ["ads.", "", "telemetry."]\n'
+        '[record]\nignore_domains = ["ads.", "", "telemetry."]\n'
     )
     config = load_config(tmp_path / "config.toml")
-    assert config.log.ignore_domains == ["ads.", "telemetry."]  # empty string dropped
-    for prefix in config.log.ignore_domains:  # consumer must not raise
+    # The empty string is dropped.
+    assert config.record.ignore_domains == ["ads.", "telemetry."]
+    for prefix in config.record.ignore_domains:  # consumer must not raise
         "example.com".startswith(prefix)
 
 
 def test_config_ignore_ports_validated(tmp_path):
     (tmp_path / "config.toml").write_text(
-        "[log]\nignore_ports = [true, -2, -1, 443, 65536]\n"
+        "[record]\nignore_ports = [true, -2, -1, 443, 65536]\n"
     )
     config = load_config(tmp_path / "config.toml")
-    assert config.log.ignore_ports == [-1, 443]
+    assert config.record.ignore_ports == [-1, 443]
 
 
 def _purge_db(tmp_path):

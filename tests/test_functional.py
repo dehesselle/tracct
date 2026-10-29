@@ -80,7 +80,7 @@ enabled = true
 raw_retention_days = 1
 write_limit_seconds = {DB_WRITE_LIMIT}
 
-[log]
+[record]
 addresses = true
 commands = true
 ports = true

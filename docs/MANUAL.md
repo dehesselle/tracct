@@ -196,7 +196,7 @@ systemd variables point to.
 
 The daemon reads `config.toml` and then every `config.d/*.toml` beside it, in name order,
 once at startup; restart the unit after a change. A later file wins per option, and a list
-in it replaces the earlier list rather than adding to it, while `[log.messages]` adds to the
+in it replaces the earlier list rather than adding to it, while `[log]` adds to the
 earlier one, so a drop-in can set the level of a single message. Missing files mean all
 defaults.
 Unknown sections and keys are reported in the journal with their file and ignored; a value
@@ -210,7 +210,7 @@ the base file that `tracct install -f` replaces (see [Install](#install)):
 [database]
 raw_retention_days = 14
 
-[log]
+[record]
 ignore_ports = [22]
 ```
 
@@ -229,7 +229,7 @@ Both retentions take fractions of a day, down to seconds: `raw_retention_days = 
 keeps about ten minutes, which lets a test run through retention without waiting a day.
 Raw rows past `raw_retention_days` are only deleted once their period is rolled up. A change
 of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries
-are dropped. A `[viewer] group` that does not exist is ignored. The `[log]` settings apply to
+are dropped. A `[viewer] group` that does not exist is ignored. The `[record]` settings apply to
 forwarded flows too.
 
 Domains in the database are stored in reversed notation (`com.example.www`), which is what

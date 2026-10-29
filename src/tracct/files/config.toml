@@ -24,7 +24,7 @@ write_limit_seconds = 10
 maintenance_interval_minutes = 60
 
 # What is recorded of each connection, and which connections are not.
-[log]
+[record]
 # Store remote addresses and domains.
 addresses = true
 # Name addresses no program looked up by a PTR query (needs addresses).
@@ -43,7 +43,7 @@ ignore_ips = []
 # The level of each message the running daemon logs, by the ID that starts its line:
 # "debug", "info", "warning", "error", or "off" to leave it out. A drop-in can set a
 # single one; the others keep theirs.
-[log.messages]
+[log]
 # The kernel lacks what BPF needs; the daemon stops.
 bpf-requirements-failed = "error"
 # The BPF program did not load; the daemon stops.

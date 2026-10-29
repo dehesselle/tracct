@@ -100,7 +100,7 @@ def test_window_fills_domains_at_write():
     and ignore_domains matches the name from reverse DNS.
     """
     config = Config()
-    config.log.ignore_domains = ["org.ignored."]
+    config.record.ignore_domains = ["org.ignored."]
     dns = _FakeDns()
     window = writer.WriteWindow(config, typing.cast(ReverseDns, dns))
     window.add([_event(domain=""), _event(domain="", send=1, recv=1, pkts=1)])

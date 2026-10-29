@@ -132,7 +132,7 @@ flowchart LR
 
 - **reader** attaches the BPF program, polls the ring buffers, drains the maps every
   second and attributes each entry to an executable (`monitor.py`).
-- **writer** sums the batches per connection as they arrive, filters them per `[log]`, and
+- **writer** sums the batches per connection as they arrive, filters them per `[record]`, and
   once per window reads the interfaces and forwarded flows and writes everything to SQLite;
   it also rolls up and purges (`writer.py`).
 - **conntrack listener** collects the final counters of ended flows in every namespace for
@@ -333,7 +333,7 @@ to picosnitch's for the same reason.
    Each one carries the reason it is needed. Nothing that answers viewers runs with them:
    the live feed only sends, and history queries go to the query server, which has none.
 9. **History stays local.** Nothing is sent off the host apart from reverse DNS lookups,
-   which `[log] reverse_dns = false` turns off.
+   which `[record] reverse_dns = false` turns off.
 10. **Everything held in memory is bounded,** so months of uptime look like the first day:
     the hand-off queues by events, a write window by connections, the retry buffers by
     rows, every cache by entries, the remembered namespaces by count, the conntrack view of

@@ -122,13 +122,13 @@ running daemon reports starts with the message's ID in brackets:
 tracct.monitor: [exec-ring-full] exec ring buffer full: dropped 12 exec event(s) (total 12); …
 ```
 
-`[log.messages]` in the configuration sets each message's level, or leaves it out with
+`[log]` in the configuration sets each message's level, or leaves it out with
 `"off"`; the base `config.toml` lists them all at their default levels. For instance, a
 host with uutils coreutils that does not need to hear about it once per start:
 
 ```toml
 # config.d/50-local.toml
-[log.messages]
+[log]
 multi-call-inode = "info"
 ```
 
@@ -210,7 +210,7 @@ namespaces.
 Reverse DNS sends a PTR query through the system resolver for every remote address no
 program looked up by name, port scanners included. Four workers handle the queries, with
 up to 1024 addresses waiting and 8192 answers cached; addresses beyond that are asked for
-again in a later window. `[log] reverse_dns = false` turns it off.
+again in a later window. `[record] reverse_dns = false` turns it off.
 
 ## Failure and recovery
 

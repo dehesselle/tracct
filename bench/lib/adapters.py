@@ -202,7 +202,7 @@ class Tracct(ToolAdapter):
         # unconditionally: local DB, fine time resolution -- a pre-existing install must not
         # run the benchmark under different settings; last in name order, so it wins
         Path("/etc/opt/tracct/config.d/99-bench.toml").write_text(
-            "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[log]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
+            "[database]\nenabled = true\nraw_retention_days = 30\nwrite_limit_seconds = 1\n\n[record]\naddresses = true\ncommands = true\nports = true\n\n[monitoring]\nevery_exe = false\n"
         )
         sh("systemd-sysusers")
         sh("systemctl daemon-reload")

@@ -31,7 +31,9 @@ def fake_systemctl(monkeypatch, returncode, stdout, stderr=""):
 def test_status_files_drop_ins_and_units(tmp_path, monkeypatch, capsys):
     run_install(tmp_path, force=False, conntrack=False, yes=True)
     (tmp_path / CONFIG).write_text("[database]\nraw_retention_days = 7\n")
-    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text(
+        "[record]\nports = false\n"
+    )
     (tmp_path / install.DROP_INS / "README").write_text("notes\n")
     socket_drop_in = "/etc/systemd/system/tracct-query.socket.d/override.conf"
     fake_systemctl(

@@ -162,7 +162,7 @@ class WriteWindow:
         self.netinfo = netinfo
         self.ignored_networks = [
             ipaddress.ip_network(ip_subnet, strict=False)
-            for ip_subnet in config.log.ignore_ips
+            for ip_subnet in config.record.ignore_ips
         ]
         self.connections: dict[tuple, list[int]] = {}
         self.flows: dict[tuple, list[int]] = {}
@@ -207,24 +207,24 @@ class WriteWindow:
         return (netns, name, kind) if name else NO_INTERFACE
 
     def add(self, events: list[BpfEvent]) -> None:
-        log = self.config.log
+        record = self.config.record
         for proc in events:
             # Join or omit commands from logs.
-            if log.commands:
+            if record.commands:
                 cmdline = self.clean_cmdline(proc["cmdline"])
                 pcmdline = self.clean_cmdline(proc["pcmdline"])
             else:
                 cmdline = pcmdline = ""
             # The domain the program looked up; omitted with the address from logs.
             domain, raddr = proc["domain"], proc["raddr"]
-            if not log.addresses:
+            if not record.addresses:
                 domain = raddr = ""
             lport, rport = proc["lport"], proc["rport"]
-            if not log.ports:
+            if not record.ports:
                 lport, rport = min(0, lport), min(0, rport)
             # Omit entry from logs (domains are matched in take_rows, once reverse DNS
             # had its chance).
-            if rport in log.ignore_ports or lport in log.ignore_ports:
+            if rport in record.ignore_ports or lport in record.ignore_ports:
                 continue
             if self.ignored_networks and raddr and self.ignored(raddr, proc["laddr"]):
                 continue
@@ -271,13 +271,13 @@ class WriteWindow:
                 counters[2] += proc.get("pkts", 1)
 
     def add_flows(self, flows: list[Flow]) -> None:
-        log = self.config.log
+        record = self.config.record
         for flow in flows:
-            src, dst = (flow.src, flow.dst) if log.addresses else ("", "")
-            sport, dport = (flow.sport, flow.dport) if log.ports else (0, 0)
+            src, dst = (flow.src, flow.dst) if record.addresses else ("", "")
+            sport, dport = (flow.sport, flow.dport) if record.ports else (0, 0)
             if (
-                sport in log.ignore_ports
-                or dport in log.ignore_ports
+                sport in record.ignore_ports
+                or dport in record.ignore_ports
                 or self.ignored(src, dst)
             ):
                 continue
@@ -308,7 +308,7 @@ class WriteWindow:
     def is_ignored_domain(self, domain: str) -> bool:
         return any(
             domain.startswith(domain_prefix)
-            for domain_prefix in self.config.log.ignore_domains
+            for domain_prefix in self.config.record.ignore_domains
         )
 
     def take_rows(self) -> tuple[list[tuple], list[tuple]]:
@@ -584,7 +584,7 @@ def run_writer(
     interfaces = Interned("interfaces", ("netns", "name", "kind"), NO_INTERFACE)
     interned = (executables, domains, addresses, units, interfaces)
     reverse_dns = (
-        ReverseDns() if config.log.addresses and config.log.reverse_dns else None
+        ReverseDns() if config.record.addresses and config.record.reverse_dns else None
     )
     netinfo = NetInfo() if config.database.enabled else None
     forwarded = (

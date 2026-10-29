@@ -252,7 +252,7 @@ def main() -> int:
         return err
     # Read once: a change takes a restart.
     config = load_config()
-    set_levels(config.log.messages)
+    set_levels(config.log)
     files = config_files()
     logger.info(
         f"config: {', '.join(map(str, files)) if files else f'{CONFIG_PATH} (not found, using defaults)'}"

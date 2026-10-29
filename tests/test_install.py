@@ -73,7 +73,9 @@ def test_install_again_keeps_or_forces(tmp_path, capsys):
     assert "Nothing to write." in out
     assert "Continue?" not in out
     (tmp_path / CONFIG).write_text("[database]\nraw_retention_days = 7\n")
-    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text(
+        "[record]\nports = false\n"
+    )
     assert run(tmp_path, force=False, conntrack=False, yes=True) == 0
     assert f"  {tmp_path / CONFIG} (differs; -f replaces it)" in (
         capsys.readouterr().out
@@ -85,7 +87,7 @@ def test_install_again_keeps_or_forces(tmp_path, capsys):
     assert f"wrote {tmp_path / CONFIG}" in out
     assert "raw_retention_days = 30" in (tmp_path / CONFIG).read_text()
     assert (tmp_path / install.DROP_INS / "50-local.toml").read_text() == (
-        "[log]\nports = false\n"
+        "[record]\nports = false\n"
     )
 
 
@@ -168,7 +170,9 @@ def test_uninstall_without_terminal(tmp_path, monkeypatch, capsys, systemd):
 
 def test_uninstall_keeps_drop_ins_and_database(tmp_path, monkeypatch, capsys, systemd):
     run(tmp_path, force=False, conntrack=False, yes=True)
-    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text(
+        "[record]\nports = false\n"
+    )
     (tmp_path / install.STATE).mkdir(parents=True)
     (tmp_path / install.STATE / "tracct.db").write_bytes(b"")
     capsys.readouterr()
@@ -191,7 +195,9 @@ def test_uninstall_keeps_drop_ins_and_database(tmp_path, monkeypatch, capsys, sy
 
 def test_uninstall_purge(tmp_path, capsys, systemd):
     run(tmp_path, force=False, conntrack=True, yes=True)
-    (tmp_path / install.DROP_INS / "50-local.toml").write_text("[log]\nports = false\n")
+    (tmp_path / install.DROP_INS / "50-local.toml").write_text(
+        "[record]\nports = false\n"
+    )
     (tmp_path / install.STATE).mkdir(parents=True)
     (tmp_path / install.STATE / "tracct.db").write_bytes(b"")
     (tmp_path / "var/lib/tracct").symlink_to(tmp_path / install.STATE)

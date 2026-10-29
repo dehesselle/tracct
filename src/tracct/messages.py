@@ -11,7 +11,7 @@ from tracct.utils import sanitize_log_line
 
 __all__ = ["DEFAULTS", "LEVEL_NAMES", "report", "set_levels"]
 
-#: The levels [log.messages] can give a message; off leaves it out.
+#: The levels [log] can give a message; off leaves it out.
 LEVEL_NAMES: typing.Final[dict[str, int | None]] = {
     "debug": logging.DEBUG,
     "info": logging.INFO,
@@ -61,7 +61,7 @@ LEVELS: dict[str, int | None] = dict(DEFAULTS)
 
 
 def set_levels(levels: dict[str, str]) -> None:
-    """Give messages the levels named in [log.messages], the others their defaults.
+    """Give messages the levels named in [log], the others their defaults.
 
     Called before the threads start.
     """

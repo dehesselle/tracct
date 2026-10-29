@@ -30,7 +30,7 @@ class DatabaseConfig:
 
 
 @dataclasses.dataclass
-class LogConfig:
+class RecordConfig:
     addresses: bool = True
     #: PTR queries for remote addresses the program looked up no name for.
     reverse_dns: bool = True
@@ -39,8 +39,6 @@ class LogConfig:
     ignore_ports: list[int] = dataclasses.field(default_factory=list)
     ignore_domains: list[str] = dataclasses.field(default_factory=list)
     ignore_ips: list[str] = dataclasses.field(default_factory=list)
-    #: Message ID -> level name, for the messages not logged at their default level.
-    messages: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -67,7 +65,9 @@ class ViewerConfig:
 @dataclasses.dataclass
 class Config:
     database: DatabaseConfig = dataclasses.field(default_factory=DatabaseConfig)
-    log: LogConfig = dataclasses.field(default_factory=LogConfig)
+    record: RecordConfig = dataclasses.field(default_factory=RecordConfig)
+    #: Message ID -> level name, for the messages not logged at their default level.
+    log: dict[str, str] = dataclasses.field(default_factory=dict)
     monitoring: MonitoringConfig = dataclasses.field(default_factory=MonitoringConfig)
     viewer: ViewerConfig = dataclasses.field(default_factory=ViewerConfig)
 
@@ -105,6 +105,11 @@ def _apply(config: Config, raw: dict, path: Path) -> None:
             )
             continue
         section_obj = getattr(config, section_name)
+        if isinstance(section_obj, dict):
+            # A table section adds to the earlier files' rather than replacing it, so a
+            # drop-in can set one key; load_config() checks its keys.
+            setattr(config, section_name, {**section_obj, **section_data})
+            continue
         field_names = {field.name for field in dataclasses.fields(section_obj)}
         for key in section_data:
             if key not in field_names:
@@ -123,15 +128,6 @@ def _apply(config: Config, raw: dict, path: Path) -> None:
                             f"{path}: {section_name}.{field.name}: expected a list, got {type(value).__name__}, skipping"
                         )
                         continue
-                    if expected_type.__origin__ is dict:
-                        if not isinstance(value, dict):
-                            logger.warning(
-                                f"{path}: {section_name}.{field.name}: expected a table, got {type(value).__name__}, skipping"
-                            )
-                            continue
-                        # A table adds to the earlier files' rather than replacing it,
-                        # so a drop-in can set one key.
-                        value = {**getattr(section_obj, field.name), **value}
                 elif not isinstance(expected_type, type):
                     # field.type may be a forward-ref string under `from __future__
                     # import annotations`.
@@ -233,47 +229,47 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
                 f"config.viewer.group: {config.viewer.group!r} does not exist, ignoring"
             )
             config.viewer.group = ""
-    # Drop log.ignore_ips entries that aren't valid networks (strict=False accepts a
+    # Drop record.ignore_ips entries that aren't valid networks (strict=False accepts a
     # host-bit CIDR); otherwise the writer crashes building ignored_networks at start,
     # outside its try/except.
     valid_ignore_ips = []
-    for ip_subnet in config.log.ignore_ips:
+    for ip_subnet in config.record.ignore_ips:
         try:
             ipaddress.ip_network(ip_subnet, strict=False)
         except (ValueError, TypeError):
             logger.warning(
-                f"config.log.ignore_ips: {ip_subnet!r} is not a valid network, ignoring"
+                f"config.record.ignore_ips: {ip_subnet!r} is not a valid network, ignoring"
             )
             continue
         valid_ignore_ips.append(ip_subnet)
-    config.log.ignore_ips = valid_ignore_ips
+    config.record.ignore_ips = valid_ignore_ips
     # Drop ignore_domains entries that aren't non-empty strings: a non-str breaks the
     # writer's startswith() filter on every write (nothing gets recorded), an empty
     # string prefixes every domain (silently dropping all connections).
     valid_ignore_domains = []
-    for domain_prefix in config.log.ignore_domains:
+    for domain_prefix in config.record.ignore_domains:
         if not isinstance(domain_prefix, str) or not domain_prefix:
             logger.warning(
-                f"config.log.ignore_domains: {domain_prefix!r} is not a non-empty string, ignoring"
+                f"config.record.ignore_domains: {domain_prefix!r} is not a non-empty string, ignoring"
             )
             continue
         valid_ignore_domains.append(domain_prefix)
-    config.log.ignore_domains = valid_ignore_domains
-    config.log.ignore_ports = [
+    config.record.ignore_domains = valid_ignore_domains
+    config.record.ignore_ports = [
         port
-        for port in config.log.ignore_ports
+        for port in config.record.ignore_ports
         if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535
     ]
     # Drop unknown messages and levels; set_levels() takes the rest as they are.
     valid_messages = {}
-    for msgid, level in config.log.messages.items():
+    for msgid, level in config.log.items():
         if msgid not in DEFAULTS:
-            logger.warning(f"config.log.messages: unknown message {msgid!r}, ignoring")
+            logger.warning(f"config.log: unknown message {msgid!r}, ignoring")
         elif not isinstance(level, str) or level not in LEVEL_NAMES:
             logger.warning(
-                f"config.log.messages.{msgid}: expected one of {', '.join(LEVEL_NAMES)}, got {level!r}, ignoring"
+                f"config.log.{msgid}: expected one of {', '.join(LEVEL_NAMES)}, got {level!r}, ignoring"
             )
         else:
             valid_messages[msgid] = level
-    config.log.messages = valid_messages
+    config.log = valid_messages
     return config
