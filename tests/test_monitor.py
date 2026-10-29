@@ -9,14 +9,17 @@ import ipaddress
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
 from tracct.constants import ST_DEV_MASK
 from tracct.monitor import (
+    CMDLINE_MAX,
     ExeResolver,
     _classify_inode_fallback,
     _parse_proc_net_addr,
+    _read_proc_file,
     _read_proc_unit,
     unit_of_cgroup,
     unmap_ipv4,
@@ -161,6 +164,24 @@ def test_unit_of_cgroup_takes_the_innermost_unit():
     )
     assert unit_of_cgroup("/") == ""
     assert unit_of_cgroup("/user.slice") == ""
+
+
+def test_read_proc_file_keeps_the_start_of_a_long_command_line():
+    p = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", "x" * 100_000]
+    )
+    try:
+        # The command line reads empty for a moment after the exec.
+        deadline = time.monotonic() + 5
+        while not (whole := _read_proc_file(f"/proc/{p.pid}/cmdline")):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        cmdline = _read_proc_file(f"/proc/{p.pid}/cmdline", CMDLINE_MAX)
+    finally:
+        p.kill()
+        p.wait()
+    assert len(whole) > 100_000
+    assert cmdline == whole[:CMDLINE_MAX]
 
 
 def test_read_proc_unit_of_self():

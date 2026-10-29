@@ -45,6 +45,9 @@ def _report(msgid: str, message: str) -> None:
 CONN_DRAIN_CHUNK: typing.Final[int] = 2048
 #: Bound of each exe resolution cache and of the dns answer cache.
 LOOKUP_CACHE_MAX: typing.Final[int] = 8192
+#: Bytes of a command line kept: Linux allows about 2 MB, and the line goes into caches,
+#: every event of the live feed, the database and its unique index.
+CMDLINE_MAX: typing.Final[int] = 4096
 #: Entries of conn_stats_packet, one per process and namespace doing raw packet or TUN
 #: I/O.
 PACKET_MAP_MAX: typing.Final[int] = 65536
@@ -121,8 +124,8 @@ def unit_of_cgroup(path: str) -> str:
     return ""
 
 
-def _read_proc_file(path: str) -> str:
-    """The whole of a /proc file, decoded with errors replaced.
+def _read_proc_file(path: str, limit: int | None = None) -> str:
+    """A /proc file, whole or its first limit bytes, decoded with errors replaced.
 
     Plain reads, as a text-mode open costs more than the read itself and this runs per
     exec and per process and drain.
@@ -130,8 +133,13 @@ def _read_proc_file(path: str) -> str:
     fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
     try:
         chunks = []
-        while chunk := os.read(fd, 65536):
+        left = limit
+        while chunk := os.read(fd, 65536 if left is None else min(65536, left)):
             chunks.append(chunk)
+            if left is not None:
+                left -= len(chunk)
+                if not left:
+                    break
     finally:
         os.close(fd)
     return b"".join(chunks).decode(errors="replace")
@@ -570,7 +578,7 @@ def run_monitor(
         """
         try:
             # Errors replaced: a non-utf-8 argv must not blank the whole cmdline.
-            cmdline = _read_proc_file(f"/proc/{pid}/cmdline")
+            cmdline = _read_proc_file(f"/proc/{pid}/cmdline", CMDLINE_MAX)
             unit = _read_proc_unit(pid)
         except OSError:
             cmdline = unit = ""

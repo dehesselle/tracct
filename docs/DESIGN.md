@@ -53,8 +53,10 @@ traffic come from netlink.
   flows.
 - **Process context.** The reader reads each process's command line and systemd unit (the
   innermost unit of `/proc/<pid>/cgroup`) when it drains its connections, once per process
-  and drain, and at exec time. The last values read per pid answer for a process that has
-  exited before its last bytes were drained.
+  and drain, and at exec time. Of a command line it keeps the first 4 KiB, as Linux allows
+  about 2 MB and the line travels with every event into the live feed and the database. The
+  last values read per pid answer for a process that has exited before its last bytes were
+  drained.
 - **Interfaces** (`netinfo.py`, `rtnetlink.py`). Once per write window the writer lists every
   interface with its kind and byte counters (`RTM_GETLINK`, `IFLA_STATS64`) and every address
   (`RTM_GETADDR`), in the daemon's namespace, the named ones (`/run/netns`,
@@ -161,10 +163,11 @@ One process is enough because what remains besides the reader's attribution is I
 
 ## Executable identity
 
-A process is identified by the path of its executable plus its comm and command line, and
-the same for its parent. The comm is that of the thread that did the I/O, so a program whose
-threads name themselves (`tokio-runtime-w`) appears under those names next to its own; the
-path and command line stay the same. The reader reads `/proc/<pid>/exe` and accepts the path only if
+A process is identified by the path of its executable plus its comm and command line (its
+first 4 KiB, so lines that differ only past that are one), and the same for its parent. The
+comm is that of the thread that did the I/O, so a program whose threads name themselves
+(`tokio-runtime-w`) appears under those names next to its own; the path and command line
+stay the same. The reader reads `/proc/<pid>/exe` and accepts the path only if
 its device and inode match what BPF recorded at event time; a process that has exec'd
 since gets no stale attribution. When the process is already gone, the resolver
 (`ExeResolver`) falls back to caches keyed by (device, inode, comm), to a binary found on
