@@ -31,12 +31,13 @@ tabs, Live first and then the history tabs in alphabetical order, switched with 
 highlighted in their title (`l`, `f`, `i`, `p`). It opens on Live unless `--tab` names
 another:
 
-- **Live**: connections as the daemon drains them, with totals per executable since the tab
-  started. It keeps the newest 500 events and 100 executables; past that, the executables
-  idle the longest are dropped, and the summary's title counts them along with the seconds
-  since the tab started. The events table's title counts all events; a line above the tables
-  appears only for a problem with the feed or an active find. Clicking a column's header
-  sorts by it, clicking it again reverses; the executables start sorted by path, the events
+- **Live**: connections as the daemon drains them, with totals per executable and unit
+  since the tab started, so each instance of a template unit has its own. It keeps the
+  newest 500 events and 100 summary rows; past that, the rows idle the longest are
+  dropped, and the summary's title counts them along with the seconds since the tab
+  started. The events table's title counts all events; a line above the tables appears
+  only for a problem with the feed or an active find. Clicking a column's header sorts by
+  it, clicking it again reverses; the summary starts sorted by executable path, the events
   newest first. `Space` pauses the events table, `r` resets both.
 - **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and
   **Processes** (socket bytes): the history, grouped by the dimension chosen on the left, over the time

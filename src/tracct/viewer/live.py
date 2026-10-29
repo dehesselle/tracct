@@ -6,7 +6,7 @@
 """The live tab.
 
 Connections as the daemon drains them, from events.sock, with totals per executable
-since the tab started (or was reset).
+and unit since the tab started (or was reset).
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from tracct.viewer.banner import Banner
 from tracct.viewer.client import feed_closed, feed_unavailable
 from tracct.viewer.format import bytes_cell, clean, format_clock
 from tracct.viewer.pane import FindablePane
-from tracct.viewer.settings import LIVE_EVENTS, LIVE_EXECUTABLES, config
+from tracct.viewer.settings import LIVE_EVENTS, LIVE_SUMMARY_ROWS, config
 
 #: Events waiting between the feed thread and the next redraw; fills only while the UI
 #: stalls.
@@ -149,26 +149,28 @@ class LiveEvent:
 
 @dataclasses.dataclass
 class LiveTotal:
-    """The sums of one executable, under one name, since the tab started."""
+    """The sums of one executable, under one name, in one unit, since the tab started.
+
+    Instances of a template unit run the same executable, as do units sharing an
+    interpreter; each gets its own sums.
+    """
 
     name: str
     exe: str
+    unit: str
     sent: int = 0
     received: int = 0
     events: int = 0
-    #: The systemd unit of its last event that had one.
-    unit: str = ""
     last_seen: float = 0.0
 
     @staticmethod
-    def key_of(name: str, exe: str) -> str:
-        return f"{name}\0{exe}"
+    def key_of(name: str, exe: str, unit: str) -> str:
+        return f"{name}\0{exe}\0{unit}"
 
     def add(self, event: LiveEvent) -> None:
         self.sent += event.sent
         self.received += event.received
         self.events += 1
-        self.unit = event.unit or self.unit
         self.last_seen = event.arrived
 
 
@@ -188,10 +190,10 @@ class LivePane(FindablePane):
         )
         #: The latest events by row key, oldest first; frozen while paused.
         self.events: dict[str, LiveEvent] = {}
-        #: The totals per executable by row key.
+        #: The totals per executable and unit by row key.
         self.summary: dict[str, LiveTotal] = {}
-        #: Executables dropped from the summary for the limit, since the tab started or
-        #: was reset.
+        #: Rows dropped from the summary for the limit, since the tab started or was
+        #: reset.
         self.dropped = 0
         self.event_count = 0
         self.since = time.time()
@@ -280,8 +282,10 @@ class LivePane(FindablePane):
             self._seq += 1
             event = LiveEvent.parse(self._seq, t, raw)
             arrived.append(event)
-            key = LiveTotal.key_of(event.name, event.exe)
-            self.summary.setdefault(key, LiveTotal(event.name, event.exe)).add(event)
+            key = LiveTotal.key_of(event.name, event.exe, event.unit)
+            self.summary.setdefault(
+                key, LiveTotal(event.name, event.exe, event.unit)
+            ).add(event)
         self.event_count += len(arrived)
         if not self.paused:
             self.events.update((event.key, event) for event in arrived)
@@ -297,14 +301,14 @@ class LivePane(FindablePane):
 
         They are read on every redraw, so a change applies at once.
         """
-        executables = config.get(LIVE_EXECUTABLES)
-        if len(self.summary) > executables:
-            # The executables idle the longest make room.
+        rows = config.get(LIVE_SUMMARY_ROWS)
+        if len(self.summary) > rows:
+            # The rows idle the longest make room.
             ranked = sorted(
                 self.summary.items(), key=lambda item: item[1].last_seen, reverse=True
             )
-            self.dropped += len(ranked) - executables
-            self.summary = dict(ranked[:executables])
+            self.dropped += len(ranked) - rows
+            self.summary = dict(ranked[:rows])
             self._dirty = True
         # Paused, the events table keeps what it shows.
         excess = len(self.events) - config.get(LIVE_EVENTS)

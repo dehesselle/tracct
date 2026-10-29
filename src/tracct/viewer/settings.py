@@ -18,7 +18,7 @@ from tcoda.settings import Setting, config, configure
 
 configure("tracct")
 
-__all__ = ["LIVE_EVENTS", "LIVE_EXECUTABLES", "Setting", "config"]
+__all__ = ["LIVE_EVENTS", "LIVE_SUMMARY_ROWS", "Setting", "config"]
 
 LIMIT_MIN = 10
 LIMIT_MAX = 100000
@@ -31,12 +31,12 @@ def _limit(text: str) -> int:
     return value
 
 
-LIVE_EXECUTABLES = Setting(
-    key="live_executables",
-    label="executables kept",
+LIVE_SUMMARY_ROWS = Setting(
+    key="live_summary_rows",
+    label="summary rows kept",
     description=(
-        "Rows of the summary table. Past this, the executables idle the longest are"
-        f" dropped. {LIMIT_MIN} to {LIMIT_MAX}."
+        "Rows of the summary table, one per executable and unit. Past this, the rows"
+        f" idle the longest are dropped. {LIMIT_MIN} to {LIMIT_MAX}."
     ),
     group="Live",
     default=100,

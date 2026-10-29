@@ -66,7 +66,7 @@ def test_settings():
     configure(path=config.path)
     assert (
         config.get(settings.LIVE_EVENTS) == 20
-        and config.get(settings.LIVE_EXECUTABLES) == 100
+        and config.get(settings.LIVE_SUMMARY_ROWS) == 100
     )
 
 
@@ -681,11 +681,20 @@ async def test_live_tab(tmp_path, monkeypatch):
                     event,
                     {**event, "send": 1},
                     {**event, "name": "wget", "exe": "/usr/bin/wget", "recv": 5},
+                    {**event, "unit": "vpn@b.service", "recv": 1000},
                 ]
             )
-            await _until(pilot, lambda: pane.event_count == 3)
-            curl = pane.summary["curl\0/usr/bin/curl"]
+            await _until(pilot, lambda: pane.event_count == 4)
+            curl_key = "curl\0/usr/bin/curl\0session-1.scope"
+            vpn_key = "curl\0/usr/bin/curl\0vpn@b.service"
+            wget_key = "wget\0/usr/bin/wget\0session-1.scope"
+            curl = pane.summary[curl_key]
             assert (curl.sent, curl.received, curl.events) == (101, 4000, 2)
+            # The same executable in another unit, an instance here, sums on a row of
+            # its own.
+            vpn = pane.summary[vpn_key]
+            assert (vpn.sent, vpn.received, vpn.events) == (100, 1000, 1)
+            assert (curl.unit, vpn.unit) == ("session-1.scope", "vpn@b.service")
             # Nothing to say: no banner; the events title carries the counts.
             banner = pane.query_one(".banner")
             assert not banner.display
@@ -693,7 +702,7 @@ async def test_live_tab(tmp_path, monkeypatch):
                 pilot,
                 lambda: (
                     str(pane.query_one("#events", DataTable).border_title)
-                    == "last 500 events · 3 total"
+                    == "last 500 events · 4 total"
                 ),
             )
             # The seconds since the tab started go with the totals they were summed
@@ -722,8 +731,8 @@ async def test_live_tab(tmp_path, monkeypatch):
             await _until(
                 pilot,
                 lambda: (
-                    pane.query_one("#summary", DataTable).row_count == 2
-                    and pane.query_one("#events", DataTable).row_count == 3
+                    pane.query_one("#summary", DataTable).row_count == 3
+                    and pane.query_one("#events", DataTable).row_count == 4
                 ),
             )
             # By executable, newest event first.
@@ -731,19 +740,18 @@ async def test_live_tab(tmp_path, monkeypatch):
                 pane.query_one("#summary", DataTable),
                 pane.query_one("#events", DataTable),
             )
-            assert _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
-            assert _keys(events) == ["3", "2", "1"]
-            # By the number behind the text: 5 B before 4.0 kB, where the text would
-            # rank the other way.
+            assert _keys(summary) == [curl_key, vpn_key, wget_key]
+            assert _keys(events) == ["4", "3", "2", "1"]
+            # By the number behind the text: 5 B before 1.0 kB before 4.0 kB, where the
+            # text would rank them the other way.
             summary.sort_by("received")
-            assert _keys(summary) == ["wget\0/usr/bin/wget", "curl\0/usr/bin/curl"]
-            # A refill keeps the sort, and the cursor stays on its executable as it
-            # moves up.
-            summary.move_cursor(row=1)
-            pane.summary["curl\0/usr/bin/curl"].received = 0
+            assert _keys(summary) == [wget_key, vpn_key, curl_key]
+            # A refill keeps the sort, and the cursor stays on its row as it moves up.
+            summary.move_cursor(row=2)
+            pane.summary[curl_key].received = 0
             pane.render_tables()
             assert (
-                _keys(summary) == ["curl\0/usr/bin/curl", "wget\0/usr/bin/wget"]
+                _keys(summary) == [curl_key, wget_key, vpn_key]
                 and summary.cursor_row == 0
             )
             events.sort_by("sent")
@@ -752,8 +760,8 @@ async def test_live_tab(tmp_path, monkeypatch):
             pane.query_one("#summary", DataTable).focus()
             await pilot.press("space")
             publisher.publish(event)
-            await _until(pilot, lambda: pane.event_count == 4)
-            assert len(pane.events) == 3
+            await _until(pilot, lambda: pane.event_count == 5)
+            assert len(pane.events) == 4
             await _until(pilot, lambda: events.border_subtitle == "table is frozen")
             await pilot.press("r")
             await _until(pilot, lambda: pane.event_count == 0 and not pane.summary)
@@ -792,12 +800,12 @@ async def test_live_summary_scroll(tmp_path, monkeypatch):
             summary.scroll_to(y=10, animate=False)
             await pilot.pause()
             assert summary.scroll_y == 10
-            # More of an executable shown updates its row in place: the summary stays
+            # More traffic for a row shown updates it in place: the summary stays
             # scrolled where it was, the cursor out of view included.
             publisher.publish({"name": "x30", "exe": "/bin/x30", "send": 1})
             await _until(
                 pilot,
-                lambda: summary.get_cell("x30\0/bin/x30", "events").plain == "2",
+                lambda: summary.get_cell("x30\0/bin/x30\0", "events").plain == "2",
             )
             await pilot.pause()
             assert summary.scroll_y == 10 and summary.row_count == 60
@@ -828,7 +836,7 @@ async def test_live_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)
     publisher = live_feed.LiveFeedPublisher()
     publisher.start()
-    config.set(settings.LIVE_EXECUTABLES, 10)
+    config.set(settings.LIVE_SUMMARY_ROWS, 10)
     config.set(settings.LIVE_EVENTS, 12)
 
     try:
@@ -841,8 +849,7 @@ async def test_live_limits(tmp_path, monkeypatch):
                     pane.state is FeedState.CONNECTED and publisher.has_subscribers()
                 ),
             )
-            # Two executables go idle, ten more arrive after them: the idle two make
-            # room.
+            # Two rows go idle, ten more arrive after them: the idle two make room.
             publisher.publish_many(
                 [
                     {"name": f"old{i}", "exe": f"/bin/old{i}", "send": 1}
