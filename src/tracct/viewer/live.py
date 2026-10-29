@@ -29,7 +29,6 @@ from textual.widgets.data_table import RowKey
 from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber
-from tracct.viewer.banner import Banner
 from tracct.viewer.client import feed_closed, feed_unavailable
 from tracct.viewer.format import bytes_cell, clean, format_clock
 from tracct.viewer.pane import FindablePane
@@ -374,9 +373,7 @@ class LivePane(FindablePane):
         kept = bool(self.find) and not self.find_open()
         if kept:
             notes.append(f"find: {self.find}")
-        self.query_one(Banner).say(
-            notes, "press c to clear" if kept else "", error=down
-        )
+        self.banner.say(notes, "press c to clear" if kept else "", error=down)
 
     def update_titles(self) -> None:
         """Count the tables' rows and the time since the tab started in their titles."""

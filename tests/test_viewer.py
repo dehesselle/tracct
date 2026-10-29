@@ -706,6 +706,26 @@ async def test_history_without_query_server(tmp_path):
         )
 
 
+async def test_error_before_mount(tmp_path):
+    # A missing query server is reported as soon as the app is mounted, which can be
+    # before a pane has composed its banner, or the banner its own children.
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
+    async with app.run_test(size=(120, 40)) as pilot:
+        shown = app.query_one("#processes HistoryPane", HistoryPane)
+        await _until(pilot, lambda: bool(shown.error))
+        pane = HistoryPane("processes")
+        pane.show_error("unavailable")
+        await app.screen.mount(pane)
+        await pilot.pause()
+        # The app keeps asking the query server, whose error may have replaced this one.
+        banner = pane.query_one(Banner)
+        assert (
+            banner.display
+            and banner.has_class("-error")
+            and _banner(pane) == (pane.error, "")
+        )
+
+
 async def test_live_tab(tmp_path, monkeypatch):
     socket_path = tmp_path / "events.sock"
     monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)

@@ -26,7 +26,6 @@ from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.worker import get_current_worker
 
 from tracct.query import QueryError
-from tracct.viewer.banner import Banner
 from tracct.viewer.format import (
     bytes_cell,
     format_time,
@@ -434,7 +433,7 @@ class HistoryPane(FindablePane):
         if self.find and not self.find_open():
             notes.append(f"find: {self.find}")
             keys.insert(0, "c to clear")
-        self.query_one(Banner).say(
+        self.banner.say(
             notes, f"press {' · '.join(keys)}" if keys else "", error=bool(self.error)
         )
 

@@ -46,10 +46,13 @@ class FindablePane(Vertical):
         super().__init__(id=id)
         #: The text the rows shown contain; empty shows all of them.
         self.find = ""
+        # Kept rather than queried, so update_banner() works before compose has run: a
+        # missing query server is reported before then.
+        self.banner = Banner()
 
     def compose(self) -> ComposeResult:
         yield Input(classes="find", compact=True, placeholder=FIND_PLACEHOLDER)
-        yield Banner()
+        yield self.banner
         yield from self.compose_content()
 
     def compose_content(self) -> ComposeResult:

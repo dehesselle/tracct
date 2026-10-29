@@ -24,9 +24,16 @@ class Banner(Horizontal):
     Banner .banner-hint { width: auto; }
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        # Kept rather than queried, so say() works before they are mounted: a missing
+        # query server is reported before then.
+        self.text = Static(classes="banner-text")
+        self.hint = Static(classes="banner-hint")
+
     def compose(self) -> ComposeResult:
-        yield Static(classes="banner-text")
-        yield Static(classes="banner-hint")
+        yield self.text
+        yield self.hint
 
     def say(self, notes: list[str], hint: str = "", error: bool = False) -> None:
         """The notes joined with " · ", and no banner without any.
@@ -35,7 +42,6 @@ class Banner(Horizontal):
         """
         self.display = bool(notes)
         self.set_class(error, "-error")
-        self.query_one(".banner-text", Static).update(Text(" · ".join(notes)))
-        hint_static = self.query_one(".banner-hint", Static)
-        hint_static.display = bool(hint)
-        hint_static.update(Text(hint, style="dim italic"))
+        self.text.update(Text(" · ".join(notes)))
+        self.hint.display = bool(hint)
+        self.hint.update(Text(hint, style="dim italic"))
