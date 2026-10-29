@@ -96,6 +96,22 @@ those a recorded process lives in are read. Where flows carry no counters, or th
 be read, the journal says so once per namespace. `[monitoring] conntrack = false` turns the
 reading off.
 
+A namespace's table only holds flows once something there uses connection tracking: NAT, a
+stateful firewall rule, Docker. Loading the module and setting `acct` do not, and the
+journal says nothing about it. `nf_conntrack_count`, which `tracct status` shows, is 0 on
+a host with traffic when nothing tracks there; entries outlive what made them until they
+time out, minutes for most, days for an idle TCP connection. A namespace that
+routes without NAT or a stateful rule needs one of its own:
+
+```sh
+nft 'add table inet conntrack; add chain inet conntrack forward { type filter hook forward priority 0; }; add rule inet conntrack forward ct state new,established accept'
+```
+
+Its accept ends only its own chain; other tables still drop what they drop. Tracking then
+covers all traffic of the namespace, local traffic too, at a cost in CPU and memory per
+flow, and a full table (`nf_conntrack_max`) drops new connections. The rule lasts until
+reboot; keep it in the firewall's configuration.
+
 ## Capabilities
 
 `tracct run` checks these at startup and exits if one is missing; the unit grants
@@ -308,9 +324,9 @@ can be removed with `groupdel picosnitch-viewer`, and `/opt/picosnitch` and
   `systemctl daemon-reload`.
 - **`getaddrinfo uprobe not attached`**: `CAP_SYS_ADMIN` is missing, or libc is not where
   libbpf looks; domains then come from reverse DNS only.
-- **No forwarded rows on an exit node or VPN namespace**: check `nf_conntrack_acct` in that
-  namespace and the journal for `conntrack:` lines; flows that started while it was 0 never
-  get counters.
+- **No forwarded rows on an exit node or VPN namespace**: check in that namespace
+  `nf_conntrack_count` (0: nothing there uses conntrack) and `nf_conntrack_acct` (flows
+  that started while it was 0 never get counters), and the journal for `conntrack:` lines.
 - **`BPF requirements not met`**: the kernel lacks BTF (`CONFIG_DEBUG_INFO_BTF=y`), the bpf
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
 - **`view`: no access to `events.sock`**: the user is not in the viewer group (log in again

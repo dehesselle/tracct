@@ -13,7 +13,7 @@ import pytest
 from tracct import install
 from tracct.conntrack import ACCT_SYSCTL
 from tracct.install import install as run_install
-from tracct.status import MODULE_ACCT, status
+from tracct.status import COUNT_SYSCTL, MODULE_ACCT, status
 
 UNIT = "etc/systemd/system/tracct.service"
 CONFIG = "etc/opt/tracct/config.toml"
@@ -69,34 +69,42 @@ def test_status_files_drop_ins_and_units(tmp_path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    "module_acct, acct, config, lines",
+    "module_acct, acct, count, config, lines",
     [
         (
             "N",
             "1",
+            "42",
             "",
             [
                 "  net.netfilter.nf_conntrack_acct (sysctl): 1",
+                "  net.netfilter.nf_conntrack_count (sysctl): 42",
                 "  acct (nf_conntrack module parameter): N",
             ],
         ),
         (
             "Y",
             "0",
+            "0",
             "[monitoring]\nconntrack = false\n",
             [
                 "  net.netfilter.nf_conntrack_acct (sysctl): 0",
+                "  net.netfilter.nf_conntrack_count (sysctl): 0",
                 "  acct (nf_conntrack module parameter): Y",
             ],
         ),
-        (None, None, "", ["  nf_conntrack module: not loaded"]),
+        (None, None, None, "", ["  nf_conntrack module: not loaded"]),
     ],
 )
 def test_status_conntrack(
-    tmp_path, monkeypatch, capsys, module_acct, acct, config, lines
+    tmp_path, monkeypatch, capsys, module_acct, acct, count, config, lines
 ):
     """The kernel's values are shown as it has them."""
-    files = {MODULE_ACCT: module_acct, ACCT_SYSCTL.lstrip("/"): acct}
+    files = {
+        MODULE_ACCT: module_acct,
+        ACCT_SYSCTL.lstrip("/"): acct,
+        COUNT_SYSCTL: count,
+    }
     files[f"{install.DROP_INS}/50-local.toml"] = config
     for path, value in files.items():
         if value is not None:

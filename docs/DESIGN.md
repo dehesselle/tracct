@@ -73,7 +73,8 @@ traffic come from netlink.
   reads them is disturbed. Flows with a local address of their namespace at either end, and
   those sent to a broadcast or multicast address, are skipped, first by comparing the raw
   addresses at their fixed offsets in the message, which keeps a busy host's local flows
-  cheap. Needs `nf_conntrack_acct = 1` in each namespace.
+  cheap. Needs, in each namespace, something that uses conntrack (NAT, a stateful rule),
+  without which the kernel tracks nothing there, and `nf_conntrack_acct = 1`.
 
 Ring buffer drops, near-full aggregation maps, lost conntrack events, forwarded flows without
 counters and namespaces that cannot be queried are detected and logged, not silent.

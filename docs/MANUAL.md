@@ -184,8 +184,9 @@ tracct status
   `.toml`.
 - **Services**: each unit's enablement and state, the unit file when it is not the one
   `install` wrote, and its drop-ins from `systemctl edit`.
-- **Conntrack**: `[monitoring] conntrack`, then, as the kernel shows them, the sysctl
-  `net.netfilter.nf_conntrack_acct` of the namespace `status` runs in and the `acct`
+- **Conntrack**: `[monitoring] conntrack`, then, as the kernel shows them, the sysctls
+  `net.netfilter.nf_conntrack_acct` and `net.netfilter.nf_conntrack_count` (the flows in
+  its table) of the namespace `status` runs in and the `acct`
   parameter of the `nf_conntrack` module, which namespaces created later start from; or
   that the module is not loaded. What they mean for forwarded traffic is in
   [OPERATIONS.md](OPERATIONS.md#forwarded-traffic).

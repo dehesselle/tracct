@@ -112,7 +112,8 @@ in `pyproject.toml`).
   and is skipped otherwise.
 - `test_netinfo.py` and `test_conntrack.py` test their parsers and deltas with fakes; their
   root tests create network namespaces and route traffic between them, through the host and
-  through a router namespace (which needs `nft`), and are skipped without root and iproute2.
+  through a router namespace, and are skipped without root and iproute2; the conntrack ones
+  also need `nft`, whose rule makes the kernel track the routed flows.
 - `test_monitor.py` covers executable and unit resolution, `test_pipeline.py` the hand-off
   between the threads and the writer, `test_reverse_dns.py` the reverse DNS workers with a
   fake resolver, `test_robustness.py` config, rollups, retention, database and

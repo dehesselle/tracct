@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""`tracct status`: what is installed, how the units run, whether conntrack keeps byte
-counters for forwarded traffic, who may view, and the database.
+"""`tracct status`: what is installed, how the units run, whether conntrack tracks and
+counts forwarded traffic, who may view, and the database.
 
 All of it but the database can be read without privileges.
 """
@@ -30,6 +30,8 @@ from tracct.install import (
 
 #: The module's option, which a network namespace created later starts from.
 MODULE_ACCT = "sys/module/nf_conntrack/parameters/acct"
+#: The flows in this namespace's table, 0 while nothing here uses conntrack.
+COUNT_SYSCTL = "proc/sys/net/netfilter/nf_conntrack_count"
 #: A file's state as compare() sets it, as status shows it.
 LABELS = {"same": "same", "kept": "modified", "write": "missing"}
 
@@ -117,8 +119,8 @@ def read_value(path: Path) -> str | None:
 
 
 def print_conntrack(system: Path, config: Config) -> None:
-    """The option and the kernel's two settings, with the values as the kernel shows
-    them.
+    """The option, the kernel's two settings and the table's size, with the values as
+    the kernel shows them.
     """
     print("\nConntrack")
     print(f"  [monitoring] conntrack = {str(config.monitoring.conntrack).lower()}")
@@ -129,6 +131,9 @@ def print_conntrack(system: Path, config: Config) -> None:
     acct = read_value(system / ACCT_SYSCTL.lstrip("/"))
     if acct is not None:
         print(f"  net.netfilter.nf_conntrack_acct (sysctl): {acct}")
+    count = read_value(system / COUNT_SYSCTL)
+    if count is not None:
+        print(f"  net.netfilter.nf_conntrack_count (sysctl): {count}")
     print(f"  acct (nf_conntrack module parameter): {module_acct}")
 
 

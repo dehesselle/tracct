@@ -261,8 +261,9 @@ def test_trackers_follow_the_namespaces():
 @pytest.mark.skipif(
     os.geteuid() != 0
     or shutil.which("ip") is None
+    or shutil.which("nft") is None
     or not os.path.exists(conntrack.ACCT_SYSCTL),
-    reason="needs root, iproute2 and nf_conntrack",
+    reason="needs root, iproute2, nft and nf_conntrack",
 )
 def test_collect_sees_routed_traffic():
     """Two namespaces talk through the host.
@@ -270,7 +271,7 @@ def test_collect_sees_routed_traffic():
     The host forwards, no local socket is involved.
     """
     # Docker sets the FORWARD policy to DROP, and a dropped packet's flow is never
-    # committed.
+    # committed; an accept in a table of our own would not get past it.
     iptables = shutil.which("iptables")
     rules = ["FORWARD -s 10.97.0.0/16 -j ACCEPT", "FORWARD -d 10.97.0.0/16 -j ACCEPT"]
 
@@ -290,6 +291,11 @@ def test_collect_sees_routed_traffic():
         if iptables:
             for rule in rules:
                 sh(f"{iptables} -I {rule}")
+        # The kernel tracks flows in a namespace only once a rule there uses conntrack;
+        # loading the module does not.
+        sh(
+            "nft 'add table inet psct; add chain inet psct forward { type filter hook forward priority 0; }; add rule inet psct forward ct state new,established accept'"
+        )
         for i in (1, 2):
             sh(
                 f"ip netns add psct{i} && ip link add psct{i}h type veth peer name psct{i}n && ip link set psct{i}n netns psct{i}"
@@ -335,6 +341,9 @@ def test_collect_sees_routed_traffic():
                 capture_output=True,
                 check=False,
             )
+        subprocess.run(
+            "nft delete table inet psct", shell=True, capture_output=True, check=False
+        )
         if iptables:
             for rule in rules:
                 subprocess.run(
