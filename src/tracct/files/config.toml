@@ -1,6 +1,7 @@
+# SPDX-FileCopyrightText: 2020 Eric Lesiuta
 # SPDX-FileCopyrightText: 2026 René de Hesselle <dehesselle@web.de>
 #
-# SPDX-License-Identifier: 0BSD
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 # The base configuration from `tracct install`, which `tracct install -f` replaces: put
 # your own settings in a drop-in such as config.d/50-local.toml, which is read after this
