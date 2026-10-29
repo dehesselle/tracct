@@ -46,26 +46,45 @@ def _right(label: str) -> Text:
     return Text(label, justify="right")
 
 
-def _replace_rows(
-    table: DataTable, rows: list[tuple[str, tuple]], follow: bool
-) -> None:
+def _replace_rows(table: DataTable, rows: list[tuple[str, tuple]]) -> None:
     """New rows, in the table's sort order at once rather than on the next idle.
 
-    The cursor follows its row by key, or keeps its place.
+    The cursor keeps its place.
     """
     cursor = table.cursor_row
-    followed: RowKey | None = None
-    if follow and 0 <= cursor < table.row_count:
-        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
     table.clear()
     for row_key, cells in rows:
         table.add_row(*cells, key=row_key)
     if table.sort_column is not None:
         table.sort_by(table.sort_column, reverse=table.sort_reverse)
     if rows:
-        if followed is not None and followed in table.rows:
-            cursor = table.get_row_index(followed)
         table.move_cursor(row=min(cursor, len(rows) - 1))
+
+
+def _update_rows(table: DataTable, rows: list[tuple[str, tuple]]) -> None:
+    """The rows in place, so the table stays scrolled where it was.
+
+    They take the table's sort order at once rather than on the next idle, and the
+    cursor follows its row by key.
+    """
+    followed: RowKey | None = None
+    if 0 <= table.cursor_row < table.row_count:
+        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+    wanted = dict(rows)
+    for row_key in [key for key in table.rows if key.value not in wanted]:
+        table.remove_row(row_key)
+    columns = [column.key for column in table.ordered_columns]
+    for row_key, cells in rows:
+        if row_key not in table.rows:
+            table.add_row(*cells, key=row_key)
+            continue
+        for column_key, cell in zip(columns, cells, strict=True):
+            if table.get_cell(row_key, column_key) != cell:
+                table.update_cell(row_key, column_key, cell, update_width=True)
+    if table.sort_column is not None:
+        table.sort_by(table.sort_column, reverse=table.sort_reverse)
+    if followed is not None and followed in table.rows:
+        table.move_cursor(row=table.get_row_index(followed), scroll=False)
 
 
 def _int(value: object) -> int:
@@ -314,8 +333,9 @@ class LivePane(FindablePane):
             for key, total in self.summary.items()
             if self.matches(total.name, total.exe, total.unit)
         ]
-        # The cursor stays on its executable as the rows move with the sort.
-        _replace_rows(self.query_one("#summary", DataTable), rows, follow=True)
+        # In place, so a scrolled summary stays put; the cursor stays on its executable
+        # as the rows move with the sort.
+        _update_rows(self.query_one("#summary", DataTable), rows)
         if not events:
             return
         rows = [
@@ -338,7 +358,7 @@ class LivePane(FindablePane):
             )
         ]
         # The cursor keeps its place while new events push the rows along.
-        _replace_rows(self.query_one("#events", DataTable), rows, follow=False)
+        _replace_rows(self.query_one("#events", DataTable), rows)
 
     def update_banner(self) -> None:
         """Say why the feed is not connected, and a kept find; nothing, no banner."""

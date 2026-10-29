@@ -764,6 +764,47 @@ async def test_live_tab(tmp_path, monkeypatch):
         publisher.stop()
 
 
+async def test_live_summary_scroll(tmp_path, monkeypatch):
+    socket_path = tmp_path / "events.sock"
+    monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)
+    publisher = live_feed.LiveFeedPublisher()
+    publisher.start()
+
+    try:
+        app = TracctApp(socket_path, tmp_path / "missing.sock", "live")
+        async with app.run_test(size=(140, 45)) as pilot:
+            pane = app.query_one(LivePane)
+            summary = pane.query_one("#summary", DataTable)
+            await _until(
+                pilot,
+                lambda: (
+                    pane.state is FeedState.CONNECTED and publisher.has_subscribers()
+                ),
+            )
+            publisher.publish_many(
+                [
+                    {"name": f"x{i:02}", "exe": f"/bin/x{i:02}", "send": 1}
+                    for i in range(60)
+                ]
+            )
+            await _until(pilot, lambda: summary.row_count == 60)
+            await _until(pilot, lambda: summary.max_scroll_y > 10)
+            summary.scroll_to(y=10, animate=False)
+            await pilot.pause()
+            assert summary.scroll_y == 10
+            # More of an executable shown updates its row in place: the summary stays
+            # scrolled where it was, the cursor out of view included.
+            publisher.publish({"name": "x30", "exe": "/bin/x30", "send": 1})
+            await _until(
+                pilot,
+                lambda: summary.get_cell("x30\0/bin/x30", "events").plain == "2",
+            )
+            await pilot.pause()
+            assert summary.scroll_y == 10 and summary.row_count == 60
+    finally:
+        publisher.stop()
+
+
 def _keys(table: DataTable) -> list[str]:
     return [row.key.value for row in table.ordered_rows]
 
