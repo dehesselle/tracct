@@ -1,0 +1,13 @@
+          __                        __
+         |  |_.----.---.-.----.----|  |_
+         |   _|   _|  _  |  __|  __|   _|
+         |____|__| |___._|____|____|____|
+
+         version ${version}
+
+Traffic accounting per process, unit and interface.
+Forked from picosnitch by Eric Lesiuta.
+
+         Licensed under GPL-3.0-or-later.
+
+       https://github.com/dehesselle/tracct

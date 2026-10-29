@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("textual")
 
-from tcoda.dialogs import SettingsDialog
+from tcoda.dialogs import AboutDialog, SettingsDialog
 from tcoda.settings import config, configure
 from test_query_server import VPN, _db
 from textual.app import App, ComposeResult
@@ -77,6 +77,15 @@ async def test_settings_chord(tmp_path):
         assert not isinstance(app.screen, SettingsDialog)
         await pilot.press("comma", "s")
         await _until(pilot, lambda: isinstance(app.screen, SettingsDialog))
+
+
+async def test_about_chord(tmp_path):
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("comma", "a")
+        await _until(pilot, lambda: isinstance(app.screen, AboutDialog))
+        await pilot.press("escape")
+        await _until(pilot, lambda: not isinstance(app.screen, AboutDialog))
 
 
 async def test_tab_keys(tmp_path):

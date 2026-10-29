@@ -83,7 +83,7 @@ tab waits more than a moment for the query server, `↻` ends the plot's title.
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
 opens the viewer's settings, such as the live tab's limits. They are kept per user in
 `~/.config/tracct/settings.json` (under `$XDG_CONFIG_HOME` if set), which holds only the
-values changed from their defaults.
+values changed from their defaults. `,` `a` shows the about box.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
 forwarded flow's source, ephemeral ports as 0. Entries of the group by list marked "raw

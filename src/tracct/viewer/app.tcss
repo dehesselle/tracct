@@ -37,3 +37,7 @@ TrafficPlot {
     & > .plot--axis, &:focus > .plot--axis { color: $foreground 40%; }
     & > .plot--tick { color: $foreground 70%; text-style: none; }
 }
+
+/* The about box (, a): about.txt starts right below the border, often with ASCII art
+   that brings its own space at the top; below it, a line of padding. */
+AboutDialog > #dialog { padding: 0 2 1 2; }

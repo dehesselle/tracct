@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from tcoda.chords import ChordMixin
-from tcoda.dialogs import SettingsDialog
+from tcoda.dialogs import AboutDialog, SettingsDialog
 from tcoda.terminal_title import TerminalTitleMixin
 from tcoda.widgets import ChordViewer
 from textual import work
@@ -25,6 +25,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, TabbedContent, TabPane
 from textual.widgets.tabbed_content import ContentTabs
 
+from tracct.constants import VERSION
 from tracct.query import QueryError
 from tracct.viewer import TABS
 from tracct.viewer.client import HistoryClient
@@ -57,6 +58,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         # Chords start with a comma; the ChordViewer lists them when the next key is
         # slow to come.
         Binding("comma s", "settings", "Settings", show=False),
+        Binding("comma a", "about", "About", show=False),
     ]
 
     #: The range every history tab shows. It is changed in place, then announced with
@@ -224,6 +226,14 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
 
     def action_settings(self) -> None:
         self.push_screen(SettingsDialog())
+
+    def action_about(self) -> None:
+        # $version in the text is filled in.
+        self.push_screen(
+            AboutDialog(
+                Path(__file__).with_name("about.txt"), variables={"version": VERSION}
+            )
+        )
 
     def on_unmount(self) -> None:
         self.client.close()

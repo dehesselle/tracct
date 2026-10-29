@@ -270,7 +270,7 @@ def start_tracct() -> int:
     configure_logging()
     parser = argparse.ArgumentParser(
         prog="tracct",
-        description="Traffic accounting per process, unit and interface, recorded with BPF and kept in SQLite. Based on picosnitch by Eric Lesiuta.",
+        description="Traffic accounting per process, unit and interface, recorded with BPF and kept in SQLite.",
         epilog=(
             f"config: {CONFIG_PATH}, state: {STATE_DIR}, run: {RUN_DIR}. "
             "These follow $TRACCT_CONFIG (a file), else $CONFIGURATION_DIRECTORY, $STATE_DIRECTORY and $RUNTIME_DIRECTORY "
