@@ -402,10 +402,10 @@ def _purge_db(tmp_path):
 
 
 def _insert_connections(con, *rows):
-    # Each row (contime, ref[, lport, rport]) refers to ref as exe, parent, both
+    # Each row (time, ref[, lport, rport]) refers to ref as exe, parent, both
     # addresses, domain, namespace and interface.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 10)",
         [
             (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
             for row in rows
@@ -444,9 +444,12 @@ def test_roll_up_sums_closed_periods(tmp_path):
     )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
     rows = con.execute(
-        "SELECT period, lport, rport, send, recv, events, rows FROM connections_rollup ORDER BY period"
+        "SELECT period, lport, rport, sent, received, events, rows, seconds FROM connections_rollup ORDER BY period"
     ).fetchall()
-    assert rows == [(first, 0, 443, 20, 40, 2, 2), (first + hour, 443, 0, 10, 20, 1, 1)]
+    assert rows == [
+        (first, 0, 443, 20, 40, 2, 2, hour),
+        (first + hour, 443, 0, 10, 20, 1, 1, hour),
+    ]
     assert (
         con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[
             0
@@ -454,6 +457,28 @@ def test_roll_up_sums_closed_periods(tmp_path):
         == now // hour * hour
     )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    con.close()
+
+
+def test_roll_up_keeps_the_seconds_of_a_partial_period(tmp_path):
+    """After a longer period takes over, the watermark can sit inside a period: its
+    rollup covers the rest of it, and its seconds say so.
+    """
+    from tracct import writer
+
+    con = _purge_db(tmp_path)
+    hour = 3600
+    now = int(time.time())
+    first = now // hour * hour - 3 * hour
+    # Rolled up in quarter hours so far.
+    con.execute(
+        "INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?)", (first + 900,)
+    )
+    _insert_connections(con, (first + 1200, 1), (first + hour + 5, 1), (now, 1))
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
+    assert con.execute(
+        "SELECT period, seconds FROM connections_rollup ORDER BY period"
+    ).fetchall() == [(first, hour - 900), (first + hour, hour)]
     con.close()
 
 
@@ -629,7 +654,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     # went back.
     _insert_connections(con, (ahead + 10, 1), (now, 2))
     con.execute(
-        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 10, 20, 1, 1",
+        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 10, 20, 1, 1, 3600",
         (ahead,),
     )
     con.execute(
@@ -689,7 +714,7 @@ def test_purge_database_fraction_of_a_day(tmp_path):
     config = _config(15 / 1440, 0)
     config.database.rollup_period_minutes = 1
     assert writer.purge_database(con, config, lambda: False)[1] == 1
-    assert [r[0] for r in con.execute("SELECT contime FROM connections")] == [now - 300]
+    assert [r[0] for r in con.execute("SELECT time FROM connections")] == [now - 300]
     con.close()
 
 
@@ -795,7 +820,7 @@ def test_db_is_corrupt_ignores_transient_errors(tmp_path, monkeypatch):
     db = tmp_path / "tracct.db"
     con = sqlite3.connect(db)
     con.execute(
-        "CREATE TABLE connections (contime INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER)"
+        "CREATE TABLE connections (time INTEGER, domain_id INTEGER, laddr_id INTEGER, raddr_id INTEGER)"
     )
     con.execute("CREATE TABLE domains (id INTEGER)")
     con.execute("CREATE TABLE addresses (id INTEGER)")

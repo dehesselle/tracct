@@ -216,7 +216,12 @@ The tables come in three kinds:
 
 Rows are written every `write_limit_seconds`, one row per distinct connection and window,
 plus the window's interface counters and forwarded flows; a window that reaches 65 536
-connections is written early, so memory follows connections and not events.
+connections is written early, so memory follows connections and not events. A raw row's
+`time` is the end of its window, a rollup's `period` the start of its period, and each row
+has the `seconds` it covers: measured for a window, so an early one is shorter, and the
+period's length for a rollup, less for the part of a period left after the period length
+changed. Bytes are `sent` and `received` from the host's side in `connections` and
+`interface_traffic`.
 
 What a row keeps of its connection is decided when the window is summed: `[record]` can
 leave out addresses, ports and command lines, for every process or, by `[[record.process]]`
@@ -240,9 +245,9 @@ retention in chunks of 10 000, with any due write in between. A raw row is only 
 its period is rolled up.
 
 Lookup entries nothing refers to any more are deleted at most once a day, or once per
-retention when that is shorter, after a purge that deleted rows. Finding them scans every row
-of the tables referring to them, minutes on a large database, while waiting only leaves a few
-unused entries. Each lookup table is cleaned in its own transaction with any due write in
+retention when that is shorter, after a purge that deleted rows. Finding them reads every row
+(or index entry) of the tables referring to them, minutes on a large database, while waiting
+only leaves a few unused entries. Each lookup table is cleaned in its own transaction with any due write in
 between. Only the writer inserts, so no row can refer to an entry while it is deleted, and
 the writer drops its cached ids before the next write.
 
@@ -280,14 +285,14 @@ timeline. The sums over all values come per layer for connections and interfaces
 up across layers, and computed in the same pass: a condition per layer on each row (the ids of
 the `tun` devices are read first, so no row joins the interfaces), with outer as what the
 others leave. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
-given length within it, never shorter than a write window, whose rows share one `contime`; a
-rollup counts as one stretch of its period. A wide bucket averages a short spike away, its
-peak does not. The write window and the period come from the daemon's config, so after a
-change of either the peaks of older history are reckoned with the new lengths. The
+given length within it, never shorter than the current write window, whose rows share one
+`time`; a rollup counts as one stretch of its period. A wide bucket averages a short spike
+away, its peak does not. A stretch is never shorter than the `seconds` of its rows either, so
+history written with a longer window or period does not peak higher than it was. The
 dimensions are a fixed table mapped to SQL in `query_server.py`; values are
 bound, so a request carries no SQL. Each part of a request groups by the lookup ids and
-filters by id sets, so the `(exe_id, contime)` indexes serve a drill-down; the text is looked
-up once per group. Requests are bounded in size, filters, rows, buckets, response bytes, run
+filters by id sets, so the indexes of the executable, parent, unit and domain with the time
+serve a drill-down; the text is looked up once per group. Requests are bounded in size, filters, rows, buckets, response bytes, run
 time (30 s) and concurrent viewers (8).
 
 A range is read from the raw rows wherever they still exist and from the rollups before that,

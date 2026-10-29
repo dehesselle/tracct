@@ -78,7 +78,7 @@ def test_window_leaves_events_alone():
     assert len(window) == 1
     rows, flows = window.take_rows()
     assert len(rows) == 1 and not flows and len(window) == 0
-    _contime, send, recv, n_events, exe_key, _pexe_key, unit, *_ = rows[0]
+    _written, send, recv, n_events, exe_key, _pexe_key, unit, *_ = rows[0]
     assert (send, recv, n_events) == (101, 2001, 5)
     assert exe_key == ("/usr/bin/curl", "curl", "curl https://example.com")
     assert unit == "session-1.scope"
@@ -117,10 +117,12 @@ def test_window_process_rules():
     by_exe = {row[4][0]: row for row in rows}
     assert len(rows) == 3
     torrent_row = by_exe["/usr/bin/transmission-daemon"]
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface = torrent_row
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _seconds = torrent_row
     assert torrent_row[1:4] == (300, 6000, 12)
     assert (lport, rport, raddr, domain) == (0, 0, "", "")
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface = by_exe["/usr/bin/curl"]
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _seconds = by_exe[
+        "/usr/bin/curl"
+    ]
     assert (lport, rport, raddr, domain) == (50000, 443, "93.184.215.14", "com.example")
     assert by_exe["/usr/bin/curl"][4] == ("/usr/bin/curl", "curl", "")
     assert by_exe["/usr/bin/wget"][4:6] == (
@@ -166,7 +168,7 @@ def test_window_fills_domains_at_write():
     rows, _ = window.take_rows()
     assert [
         (send, recv, n_events, domain)
-        for _, send, recv, n_events, *_, domain, _, _ in rows
+        for _, send, recv, n_events, *_, domain, _, _, _ in rows
     ] == [(201, 4001, 9, "com.example")]
 
 
@@ -219,9 +221,10 @@ def test_window_interfaces_and_flows():
     )
     window.add_flows([flow, flow])
     # Namespaces go with the name they have now.
-    rows, flows = window.take_rows({4026531840: "host"})
+    rows, flows = window.take_rows({4026531840: "host"}, 10)
     host = (4026531840, "host")
-    assert sorted(row[-1] for row in rows) == [
+    assert {row[-1] for row in rows} == {10}
+    assert sorted(row[-2] for row in rows) == [
         writer.NO_INTERFACE,
         (host, "eth0", ""),
         (host, "tailscale0", "tun"),
@@ -240,6 +243,7 @@ def test_window_interfaces_and_flows():
             100000,
             20,
             80,
+            10,
         )
     ]
 
@@ -268,7 +272,7 @@ def test_writer_writes_what_is_left_on_stop(tmp_path, monkeypatch):
     assert not thread.is_alive()
     con = sqlite3.connect(db)
     rows = con.execute(
-        "SELECT c.rport, c.send, c.recv, e.exe, d.domain FROM connections c JOIN executables e ON c.exe_id = e.id JOIN domains d ON c.domain_id = d.id ORDER BY c.rport"
+        "SELECT c.rport, c.sent, c.received, e.exe, d.domain FROM connections c JOIN executables e ON c.exe_id = e.id JOIN domains d ON c.domain_id = d.id ORDER BY c.rport"
     ).fetchall()
     con.close()
     assert rows == [
@@ -309,8 +313,8 @@ def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
         writer.run_writer(config, batches, stop)
     con = sqlite3.connect(db)
     rows = con.execute(
-        "SELECT c.send, n.inode, n.name, i.name, i.netns_id = c.netns_id FROM connections c"
-        " JOIN netns n ON n.id = c.netns_id JOIN interfaces i ON i.id = c.iface_id ORDER BY c.send"
+        "SELECT c.sent, n.inode, n.name, i.name, i.netns_id = c.netns_id FROM connections c"
+        " JOIN netns n ON n.id = c.netns_id JOIN interfaces i ON i.id = c.iface_id ORDER BY c.sent"
     ).fetchall()
     interfaces = con.execute(
         "SELECT count(DISTINCT iface_id) FROM interface_traffic"
@@ -351,6 +355,14 @@ def test_writer_writes_full_window_early(tmp_path, monkeypatch):
         stop.set()
         thread.join(timeout=10)
     assert count() == 3
+    con = sqlite3.connect(db)
+    seconds = [
+        s for (s,) in con.execute("SELECT seconds FROM connections ORDER BY lport")
+    ]
+    con.close()
+    # The early window lasted until the bound was reached, the last one until the stop.
+    assert seconds[0] == seconds[1] <= 1
+    assert 1 <= seconds[2] <= 3
 
 
 def test_writer_quarantines_unusable_db(tmp_path, monkeypatch):

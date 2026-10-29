@@ -246,7 +246,7 @@ class Tracct(ToolAdapter):
     def _query(self, snap, exe, peer="", rport=0):
         con = sqlite3.connect(f"file:{self.DB}?mode=ro", uri=True, timeout=10)
         rows = con.execute(
-            "SELECT e.name, e.exe, SUM(c.send), SUM(c.recv), a.addr, c.rport "
+            "SELECT e.name, e.exe, SUM(c.sent), SUM(c.received), a.addr, c.rport "
             "FROM connections c JOIN executables e ON c.exe_id=e.id "
             "JOIN addresses a ON c.raddr_id=a.id WHERE c.rowid > ? GROUP BY e.id, a.addr, c.rport",
             (snap,),

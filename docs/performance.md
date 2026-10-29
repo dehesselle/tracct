@@ -113,3 +113,35 @@ Faults:
   early and left the rollup watermark 2 days ahead, which the next start moved back.
 - Under `MemoryMax=1G` the unit's memory sat at the cap from the database's page cache, with
   17 MB of the daemon's own; nothing was killed.
+
+## Indexes
+
+Measured 2026-10-29 on the same kind of VM, on a seeded database of 5.8 GB: 30 days at 1
+million connection rows per day, a year of hourly rollups (30 million rows), 1 500
+executables, 200 units and 5 000 domains, each picked with a skewed distribution. The
+queries ran through the query server's own functions, cold (page cache dropped) and warm.
+
+Indexes on `(unit_id, time)` and `(domain_id, time)`, and `(unit_id, period)` and
+`(domain_id, period)` on the rollups, in seconds, cold / warm:
+
+| Drill-down | Without | With |
+| --- | --- | --- |
+| a unit with 1 % of the rows, 7 days | 2.0 / 0.7 | 1.3 / 0.2 |
+| the same, 30 days | 8.7 / 3.0 | 5.3 / 0.6 |
+| the same, 365 days | 16 / 10 | 10 / 1.1 |
+| a unit with 0.04 % of the rows, 30 days | 8.9 / 2.8 | 2.4 / 0.04 |
+| a unit with 30 % of the rows, 30 days | 14 / 8.4 | 11 / 7.3 |
+| a domain with 0.6 % of the rows, 30 days | 9.3 / 3.1 | 5.8 / 0.3 |
+| a unit's timeline, 30 days | 8.5 / 3.0 | 5.0 / 0.5 |
+| by executable, no filter, 30 days | 27 / 21 | 27 / 21 |
+
+Without them a filter other than the executable walks every row of the range. Cold, both
+read the matching rows from all over the table, which the index does not change. The four
+indexes add 1.8 GB (30 %, about 450 MB each), and the daily search for unreferenced lookup
+entries takes 83 s instead of 116 s. Under the load test's churn at 50 000 connections per
+second on that database, the daemon used 26.6 % CPU with them and 26.0 % without, and
+recorded everything in both runs.
+
+`ANALYZE` made things worse: with its statistics SQLite answered unfiltered queries through
+the executable index instead of the time index, 11 s instead of 6 s over 7 days and 48 s
+instead of 27 s over 30 days, and a namespace filter four times as slow.

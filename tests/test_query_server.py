@@ -55,10 +55,10 @@ def _db(tmp_path):
     con.execute(
         f"INSERT INTO netns VALUES ({HOST_ID}, {HOST}, 'host'), ({VPN_ID}, {VPN}, '')"
     )
-    # Contime, send, recv, events, exe, pexe, unit, uid, family, protocol, lport, rport,
-    # laddr, raddr, domain, netns_id, iface.
+    # Time, sent, received, events, exe, pexe, unit, uid, family, protocol, lport, rport,
+    # laddr, raddr, domain, netns_id, iface, seconds.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 10)",
         [
             (
                 P0 + H + 100,
@@ -79,9 +79,9 @@ def _db(tmp_path):
         ],
     )
     # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns_id,
-    # iface, send, recv, events, rows.
+    # iface, sent, received, events, rows, seconds.
     con.executemany(
-        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, ?, ?, 1, 1)",
+        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, ?, ?, 1, 1, 3600)",
         [
             (P0, 1, 0, 0, 443, 1, HOST_ID, 1000, 10000),
             (P0 + H, 1, 0, 0, 443, 1, HOST_ID, 100, 1000),
@@ -100,22 +100,22 @@ def _db(tmp_path):
         ],
     )
     con.executemany(
-        "INSERT INTO interface_traffic VALUES (?, ?, ?, ?)",
+        "INSERT INTO interface_traffic VALUES (?, ?, ?, ?, 10)",
         [
             (P0 + H + 100, 1, 100000, 100000),
-            (P0 + 2 * H + 10, 1, 700, 70),
-            (P0 + 3 * H + 10, 3, 40, 4),
+            (P0 + 2 * H + 10, 1, 70, 700),
+            (P0 + 3 * H + 10, 3, 4, 40),
         ],
     )
     con.executemany(
-        "INSERT INTO interface_traffic_rollup VALUES (?, ?, ?, ?)",
-        [(P0 + H, 1, 6000, 600), (P0 + 2 * H, 1, 999999, 999999)],
+        "INSERT INTO interface_traffic_rollup VALUES (?, ?, ?, ?, 3600)",
+        [(P0 + H, 1, 600, 6000), (P0 + 2 * H, 1, 999999, 999999)],
     )
     con.execute(
-        f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST_ID}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80)"
+        f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST_ID}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80, 10)"
     )
     con.execute(
-        f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST_ID}, 6, 3, 443, 0, 50, 5000, 1, 4, 1)"
+        f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST_ID}, 6, 3, 443, 0, 50, 5000, 1, 4, 1, 3600)"
     )
     con.execute(f"INSERT INTO meta VALUES ('rollup_watermark', {P0 + 3 * H})")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
@@ -124,9 +124,12 @@ def _db(tmp_path):
     return db
 
 
-def _ask(db, op, write_window=10, **request):
+def _ask(db, op, write_window=10, rollup_period=H, **request):
     response = query_server.QueryServer(
-        db, ephemeral=EPHEMERAL, write_window=write_window, rollup_period=H
+        db,
+        ephemeral=EPHEMERAL,
+        write_window=write_window,
+        rollup_period=rollup_period,
     ).answer({"op": op, **request})
     assert response["ok"], response.get("error")
     return response
@@ -205,7 +208,7 @@ def test_interfaces_and_layers(tmp_path):
     assert rows == {"host/eth0": (11, 22), f"{VPN}/tun0": (300, 30)}
     _, rows = _aggregate(db, "layer", start=P0 + 2 * H)
     assert rows == {"outer": (11, 22), "inner": (300, 30)}
-    # Interface counters: values are (tx, rx).
+    # Interface counters, sent and received like the rest.
     _, rows = _aggregate(db, "iface", source="interfaces")
     assert rows == {"host/eth0": (600 + 70, 6000 + 700), f"{VPN}/tun0": (4, 40)}
     _, rows = _aggregate(db, "kind", source="interfaces")
@@ -227,7 +230,7 @@ def test_namespaces_keep_the_name_of_their_rows(tmp_path):
         "INSERT INTO interfaces VALUES (4, 3, 'tun0', 'tun'), (5, 4, 'tun0', 'tun')"
     )
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?, 10)",
         [(P0 + 3 * H + 30, 5, 6, 3, 4), (P0 + 3 * H + 40, 7, 8, 4, 5)],
     )
     con.commit()
@@ -339,6 +342,33 @@ def test_timeline_peaks(tmp_path):
         )
 
 
+def test_timeline_peaks_of_history_written_with_longer_windows(tmp_path):
+    """Rows keep the seconds they cover, so history written with a longer window or
+    period than today's does not peak higher than it was.
+    """
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute("UPDATE connections SET seconds = 60")
+    con.commit()
+    con.close()
+    response = _ask(
+        db,
+        "timeline",
+        rollup_period=H // 4,
+        source="connections",
+        start=P0,
+        end=P0 + 4 * H,
+        step=H,
+        peak=10,
+    )
+    assert response["buckets"] == [
+        [P0, 1000, 10000, pytest.approx(1000 / H), pytest.approx(10000 / H)],
+        [P0 + H, 5100, 1500, pytest.approx(5100 / H), pytest.approx(1500 / H)],
+        [P0 + 2 * H, 1, 2, pytest.approx(1 / 60), pytest.approx(2 / 60)],
+        [P0 + 3 * H, 310, 50, pytest.approx(300 / 60), pytest.approx(30 / 60)],
+    ]
+
+
 def test_describe(tmp_path):
     db = _db(tmp_path)
     sources = _ask(db, "describe")["sources"]
@@ -433,7 +463,7 @@ def test_slow_query_is_interrupted(tmp_path, monkeypatch):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     con.executemany(
-        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1)",
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1, 10)",
         [(P0 + 3 * H + i % 3000, HOST_ID) for i in range(20000)],
     )
     con.commit()

@@ -108,7 +108,7 @@ class Dimension:
 def _lookup(
     label: str, column: str, table: str, field: str, raw_only: bool = False
 ) -> Dimension:
-    # The id filters use the (exe_id, contime) indexes of the traffic tables.
+    # An id filter uses the index of its column with the time, where there is one.
     return Dimension(
         label,
         f"t.{column}",
@@ -201,7 +201,7 @@ SOURCES = {
         "socket bytes",
         "connections",
         "connections_rollup",
-        ("send", "recv"),
+        ("sent", "received"),
         ("sent", "received"),
         {
             "exe": _lookup("executable", "exe_id", "executables", "exe"),
@@ -242,7 +242,7 @@ SOURCES = {
         "interface bytes",
         "interface_traffic",
         "interface_traffic_rollup",
-        ("tx", "rx"),
+        ("sent", "received"),
         ("sent", "received"),
         {
             "iface": IFACE,
@@ -291,8 +291,8 @@ class Settings:
 
     #: The first ephemeral port, below which the rollups keep ports.
     ephemeral: int
-    #: The daemon's write window and rollup period, in seconds, for the peaks of a
-    #: timeline.
+    #: The daemon's write window and rollup period, in seconds, the shortest stretch the
+    #: peaks of a timeline are reckoned over.
     write_window: int
     rollup_period: int
 
@@ -356,7 +356,7 @@ def split_point(con: sqlite3.Connection, source: Source) -> int:
     purged, comes from the rollup), else the watermark; 0 when nothing is rolled up.
     """
     row = con.execute(
-        f"SELECT COALESCE((SELECT MIN(period) FROM {source.rollup} WHERE period >= (SELECT MIN(contime) FROM {source.raw})), (SELECT value FROM meta WHERE key = 'rollup_watermark'), 0)"
+        f"SELECT COALESCE((SELECT MIN(period) FROM {source.rollup} WHERE period >= (SELECT MIN(time) FROM {source.raw})), (SELECT value FROM meta WHERE key = 'rollup_watermark'), 0)"
     ).fetchone()
     return row[0]
 
@@ -403,7 +403,7 @@ class _Plan:
 
     def from_where(self, rollup: bool, start: int, end: int) -> tuple[str, list]:
         table, time_column = (
-            (self.source.rollup, "period") if rollup else (self.source.raw, "contime")
+            (self.source.rollup, "period") if rollup else (self.source.raw, "time")
         )
         where = [f"t.{time_column} >= ?", f"t.{time_column} < ?"]
         params: list = [start, end]
@@ -553,7 +553,7 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     plan = _Plan(con, source, [], filters, start, end, settings.ephemeral)
     result: dict = {**plan.info(), "step": step, "buckets": []}
     if peak is not None:
-        # A write window's rows share one contime, so a stretch shorter than the window
+        # A write window's rows share one time, so a stretch shorter than the window
         # would count the window's bytes as if they came in that stretch.
         result["peak"] = max(peak, settings.write_window)
     if not plan.parts:
@@ -562,7 +562,7 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     # the range.
     if peak is None:
         union, params = plan.union(
-            lambda rollup: f"(t.{'period' if rollup else 'contime'} - ?) / ?",
+            lambda rollup: f"(t.{'period' if rollup else 'time'} - ?) / ?",
             lambda: [start, step],
         )
         for bucket, a, b in con.execute(
@@ -573,16 +573,19 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     a_column, b_column = source.values
     selects, params = [], []
     for rollup, part_start, part_end in plan.parts:
-        # A rollup holds nothing finer than its period.
+        # A rollup holds nothing finer than its period, and a row nothing finer than the
+        # seconds it covers, which are longer than today's lengths for history written
+        # with a longer window or period.
         column, length = (
             ("period", max(peak, settings.rollup_period))
             if rollup
-            else ("contime", result["peak"])
+            else ("time", result["peak"])
         )
+        divisor = f"MAX({length}, MAX(t.seconds))"
         from_where, part_params = plan.from_where(rollup, part_start, part_end)
         selects.append(
             f"SELECT (t.{column} - ?) / ? AS k, SUM(t.{a_column}) AS a, SUM(t.{b_column}) AS b,"
-            f" SUM(t.{a_column}) * 1.0 / {length} AS ra, SUM(t.{b_column}) * 1.0 / {length} AS rb {from_where} GROUP BY k, (t.{column} - ?) / {length}"
+            f" SUM(t.{a_column}) * 1.0 / {divisor} AS ra, SUM(t.{b_column}) * 1.0 / {divisor} AS rb {from_where} GROUP BY k, (t.{column} - ?) / {length}"
         )
         params += [start, step, *part_params, start]
     union = " UNION ALL ".join(selects)
@@ -599,7 +602,7 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     sources = {}
     for name, source in SOURCES.items():
         oldest, newest = con.execute(
-            f"SELECT MIN(t), MAX(t) FROM (SELECT MIN(contime) AS t FROM {source.raw} UNION ALL SELECT MAX(contime) FROM {source.raw}"
+            f"SELECT MIN(t), MAX(t) FROM (SELECT MIN(time) AS t FROM {source.raw} UNION ALL SELECT MAX(time) FROM {source.raw}"
             f" UNION ALL SELECT MIN(period) FROM {source.rollup} UNION ALL SELECT MAX(period) FROM {source.rollup})"
         ).fetchone()
         sources[name] = {
@@ -663,9 +666,8 @@ class QueryServer:
         rollup_period: int | None = None,
     ) -> None:
         self.db_path = db_path
-        # The daemon's config, which the database was written with; a change of it
-        # applies to the history from then on, and the peaks of older history take the
-        # current values.
+        # The daemon's config: its window and period are the shortest stretch a peak is
+        # reckoned over; rows written with longer ones carry their own seconds.
         database = (
             load_config().database
             if write_window is None or rollup_period is None

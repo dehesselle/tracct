@@ -132,7 +132,7 @@ def results_sent(procs: list[subprocess.Popen]) -> int:
 
 def recorded_sent(tag: str, after_rowid: int) -> int:
     return query(
-        "SELECT COALESCE(SUM(c.send), 0) FROM connections c JOIN executables e ON c.exe_id = e.id WHERE c.rowid > ? AND instr(e.cmdline, ?) > 0",
+        "SELECT COALESCE(SUM(c.sent), 0) FROM connections c JOIN executables e ON c.exe_id = e.id WHERE c.rowid > ? AND instr(e.cmdline, ?) > 0",
         (after_rowid, tag),
     )[0][0]
 
@@ -249,7 +249,7 @@ def run_phase(name: str, args) -> dict:
         # the processes are gone before most drains, so their command lines are too:
         # find their bytes by destination port, and see which executable they got
         by_exe = query(
-            "SELECT e.exe, SUM(c.send) FROM connections c JOIN executables e ON c.exe_id = e.id WHERE c.rowid > ? AND c.rport >= ? AND c.rport < ? GROUP BY e.exe",
+            "SELECT e.exe, SUM(c.sent) FROM connections c JOIN executables e ON c.exe_id = e.id WHERE c.rowid > ? AND c.rport >= ? AND c.rport < ? GROUP BY e.exe",
             (before, EXEC_PORT, EXEC_PORT + EXEC_PORTS),
         )
         out["sent_by_exe"] = {exe or "(unresolved)": sent for exe, sent in by_exe}

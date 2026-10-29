@@ -65,8 +65,9 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown. `protocol` is an
 #: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. A network namespace is
 #: interned with the name it had when the row was written, as the kernel reuses its
-#: inode.
-DB_VERSION: typing.Final[int] = 7
+#: inode. A raw row's `time` is the end of its write window, a rollup's `period` the
+#: start of its period, and `seconds` how long either is.
+DB_VERSION: typing.Final[int] = 8
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -94,9 +95,9 @@ SCHEMA_INTERFACES: typing.Final[str] = """
     kind TEXT NOT NULL,
     UNIQUE(netns_id, name, kind)"""
 SCHEMA_CONNECTIONS: typing.Final[str] = """
-    contime INTEGER NOT NULL,
-    send INTEGER NOT NULL,
-    recv INTEGER NOT NULL,
+    time INTEGER NOT NULL,
+    sent INTEGER NOT NULL,
+    received INTEGER NOT NULL,
     events INTEGER NOT NULL,
     exe_id INTEGER NOT NULL REFERENCES executables(id),
     pexe_id INTEGER NOT NULL REFERENCES executables(id),
@@ -110,7 +111,8 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     raddr_id INTEGER NOT NULL REFERENCES addresses(id),
     domain_id INTEGER NOT NULL REFERENCES domains(id),
     netns_id INTEGER NOT NULL REFERENCES netns(id),
-    iface_id INTEGER NOT NULL REFERENCES interfaces(id)"""
+    iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    seconds INTEGER NOT NULL"""
 SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
     exe_id INTEGER NOT NULL REFERENCES executables(id),
@@ -124,22 +126,25 @@ SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     domain_id INTEGER NOT NULL REFERENCES domains(id),
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
-    send INTEGER NOT NULL,
-    recv INTEGER NOT NULL,
+    sent INTEGER NOT NULL,
+    received INTEGER NOT NULL,
     events INTEGER NOT NULL,
-    rows INTEGER NOT NULL"""
+    rows INTEGER NOT NULL,
+    seconds INTEGER NOT NULL"""
 SCHEMA_INTERFACE_TRAFFIC: typing.Final[str] = """
-    contime INTEGER NOT NULL,
+    time INTEGER NOT NULL,
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
-    rx INTEGER NOT NULL,
-    tx INTEGER NOT NULL"""
+    sent INTEGER NOT NULL,
+    received INTEGER NOT NULL,
+    seconds INTEGER NOT NULL"""
 SCHEMA_INTERFACE_TRAFFIC_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
-    rx INTEGER NOT NULL,
-    tx INTEGER NOT NULL"""
+    sent INTEGER NOT NULL,
+    received INTEGER NOT NULL,
+    seconds INTEGER NOT NULL"""
 SCHEMA_FORWARDED: typing.Final[str] = """
-    contime INTEGER NOT NULL,
+    time INTEGER NOT NULL,
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     protocol INTEGER NOT NULL,
     src_id INTEGER NOT NULL REFERENCES addresses(id),
@@ -150,7 +155,8 @@ SCHEMA_FORWARDED: typing.Final[str] = """
     orig_bytes INTEGER NOT NULL,
     reply_bytes INTEGER NOT NULL,
     orig_packets INTEGER NOT NULL,
-    reply_packets INTEGER NOT NULL"""
+    reply_packets INTEGER NOT NULL,
+    seconds INTEGER NOT NULL"""
 SCHEMA_FORWARDED_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
     netns_id INTEGER NOT NULL REFERENCES netns(id),
@@ -162,7 +168,8 @@ SCHEMA_FORWARDED_ROLLUP: typing.Final[str] = """
     reply_bytes INTEGER NOT NULL,
     orig_packets INTEGER NOT NULL,
     reply_packets INTEGER NOT NULL,
-    rows INTEGER NOT NULL"""
+    rows INTEGER NOT NULL,
+    seconds INTEGER NOT NULL"""
 SCHEMA_META: typing.Final[str] = """
     key TEXT PRIMARY KEY,
     value INTEGER NOT NULL"""
@@ -191,15 +198,23 @@ SENTINELS: typing.Final[tuple[str, ...]] = (
     "INSERT INTO netns(id, inode, name) VALUES (0, 0, '')",
     "INSERT INTO interfaces(id, netns_id, name, kind) VALUES (0, 0, '', '')",
 )
+#: Time, and the lookups a drill-down filters by most: executable, parent, unit and
+#: domain (see "Indexes" in docs/performance.md). There is no ANALYZE: with its
+#: statistics SQLite answers unfiltered queries through an executable index, twice as
+#: slow.
 INDEXES: typing.Final[tuple[str, ...]] = (
-    "CREATE INDEX idx_contime ON connections(contime)",
-    "CREATE INDEX idx_exe_id_contime ON connections(exe_id, contime)",
-    "CREATE INDEX idx_pexe_id_contime ON connections(pexe_id, contime)",
-    "CREATE INDEX idx_rollup_period ON connections_rollup(period)",
-    "CREATE INDEX idx_rollup_exe_id_period ON connections_rollup(exe_id, period)",
-    "CREATE INDEX idx_rollup_pexe_id_period ON connections_rollup(pexe_id, period)",
-    "CREATE INDEX idx_interface_traffic_contime ON interface_traffic(contime)",
+    "CREATE INDEX idx_connections_time ON connections(time)",
+    "CREATE INDEX idx_connections_exe_id_time ON connections(exe_id, time)",
+    "CREATE INDEX idx_connections_pexe_id_time ON connections(pexe_id, time)",
+    "CREATE INDEX idx_connections_unit_id_time ON connections(unit_id, time)",
+    "CREATE INDEX idx_connections_domain_id_time ON connections(domain_id, time)",
+    "CREATE INDEX idx_connections_rollup_period ON connections_rollup(period)",
+    "CREATE INDEX idx_connections_rollup_exe_id_period ON connections_rollup(exe_id, period)",
+    "CREATE INDEX idx_connections_rollup_pexe_id_period ON connections_rollup(pexe_id, period)",
+    "CREATE INDEX idx_connections_rollup_unit_id_period ON connections_rollup(unit_id, period)",
+    "CREATE INDEX idx_connections_rollup_domain_id_period ON connections_rollup(domain_id, period)",
+    "CREATE INDEX idx_interface_traffic_time ON interface_traffic(time)",
     "CREATE INDEX idx_interface_traffic_rollup_period ON interface_traffic_rollup(period)",
-    "CREATE INDEX idx_forwarded_contime ON forwarded(contime)",
+    "CREATE INDEX idx_forwarded_time ON forwarded(time)",
     "CREATE INDEX idx_forwarded_rollup_period ON forwarded_rollup(period)",
 )

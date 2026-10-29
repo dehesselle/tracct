@@ -177,7 +177,7 @@ def query_db(query: str, params: tuple = ()) -> list:
 def get_connections_for_process(process_name: str) -> list:
     """Get all connections for a process name."""
     return query_db(
-        "SELECT e.name, e.exe, a.addr, c.rport, c.send, c.recv, d.domain "
+        "SELECT e.name, e.exe, a.addr, c.rport, c.sent, c.received, d.domain "
         "FROM connections c "
         "JOIN executables e ON c.exe_id = e.id "
         "JOIN addresses a ON c.raddr_id = a.id "
@@ -404,7 +404,7 @@ assert got == total, got
 
         def spliced_recv_rows() -> list:
             return query_db(
-                "SELECT c.send, c.recv FROM connections c JOIN addresses a ON c.raddr_id = a.id WHERE c.rport = ? AND a.addr = '127.0.0.1'",
+                "SELECT c.sent, c.received FROM connections c JOIN addresses a ON c.raddr_id = a.id WHERE c.rport = ? AND a.addr = '127.0.0.1'",
                 (port,),
             )
 
@@ -455,8 +455,8 @@ t.join()
 
         def server_rows() -> list:
             return query_db(
-                "SELECT c.family, la.addr, ra.addr, c.send, i.name FROM connections c JOIN addresses la ON c.laddr_id = la.id"
-                " JOIN addresses ra ON c.raddr_id = ra.id JOIN interfaces i ON c.iface_id = i.id WHERE c.lport = ? AND c.send > 0",
+                "SELECT c.family, la.addr, ra.addr, c.sent, i.name FROM connections c JOIN addresses la ON c.laddr_id = la.id"
+                " JOIN addresses ra ON c.raddr_id = ra.id JOIN interfaces i ON c.iface_id = i.id WHERE c.lport = ? AND c.sent > 0",
                 (port,),
             )
 
@@ -526,13 +526,13 @@ class TestParentTracking:
                 time.sleep(DB_WRITE_LIMIT + TRAFFIC_WAIT)
 
                 # Filter strictly to this test's curl: same rport (unique to this
-                # server) and contime within the invocation window. This isolates us
+                # server) and time within the invocation window. This isolates us
                 # from any other curl traffic happening on the box.
                 results = query_db(
                     "SELECT p.exe, p.name FROM connections c "
                     "JOIN executables e ON c.exe_id = e.id "
                     "JOIN executables p ON c.pexe_id = p.id "
-                    "WHERE e.name LIKE '%curl%' AND c.rport = ? AND c.contime >= ?",
+                    "WHERE e.name LIKE '%curl%' AND c.rport = ? AND c.time >= ?",
                     (port, start_time),
                 )
                 if results:

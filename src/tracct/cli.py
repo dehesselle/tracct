@@ -170,7 +170,7 @@ def _db_is_corrupt(db_path: Path) -> bool:
             # validates the columns without reading any rows; a missing table or column
             # raises here.
             cur.execute(
-                "SELECT contime, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0"
+                "SELECT time, domain_id, laddr_id, raddr_id, unit_id, iface_id FROM connections LIMIT 0"
             )
             cur.execute("SELECT id, exe, name, cmdline FROM executables LIMIT 0")
             for table, _ in TABLES:
