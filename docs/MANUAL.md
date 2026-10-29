@@ -41,8 +41,9 @@ another:
   newest first. `Space` pauses the events table, `r` resets both.
 - **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and
   **Processes** (socket bytes): the history, grouped by the dimension chosen in the group
-  by list on the left, over the time range named at the start of the plot's title. The
-  three kinds of bytes are never added together.
+  by list on the left, over the time range named at the start of the plot's title. On
+  Processes, headings the highlight skips (process, parent, network, connection) group
+  the list. The three kinds of bytes are never added together.
 
 A history table starts with the sums over all its rows. On Processes and Interfaces there is
 one per layer, `(all · inner)`, `(all · tunnel)` and `(all · outer)`, as a VPN's traffic shows

@@ -22,7 +22,7 @@ from tcoda.settings import config, configure
 from test_query_server import VPN, _db
 from textual.app import App, ComposeResult
 from textual.content import Content
-from textual.widgets import DataTable, TabbedContent, TabPane
+from textual.widgets import DataTable, OptionList, TabbedContent, TabPane
 from textual.widgets.tabbed_content import ContentTabs
 
 from tracct import live_feed, query_server
@@ -630,6 +630,53 @@ async def test_history_plot_only(tmp_path):
             await _until(
                 pilot,
                 lambda: table.display and app.focused is table and plot.size == size,
+            )
+    finally:
+        listener.close()
+
+
+async def test_history_dimension_headings(tmp_path):
+    listener = _server(tmp_path)
+
+    try:
+        app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
+        app.time_range = TimeRange(0)
+        async with app.run_test(size=(140, 45)) as pilot:
+            processes = app.query_one("#processes HistoryPane", HistoryPane)
+            interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
+            await _until(
+                pilot, lambda: bool(processes.result) and interfaces.info is not None
+            )
+            options = processes.query_one("#dimensions", OptionList)
+            # Each a rule as wide as the list.
+            headings = [
+                option.prompt.title for option in options.options if option.disabled
+            ]
+            assert headings == [
+                f"─── {heading}"
+                for heading in ("process", "parent", "network", "connection")
+            ]
+            # The first heading comes before the dimension the tab starts on.
+            assert options.highlighted == 1
+            assert options.highlighted_option.id == "exe"
+            # The highlight skips a heading, both ways.
+            options.focus()
+            processes.select_dimension("uid")
+            await pilot.press("down")
+            assert options.highlighted_option.id == "pexe"
+            # Under its heading it drops the prefix, but the table's header keeps it.
+            assert str(options.highlighted_option.prompt) == "executable"
+            table = processes.query_one(DataTable)
+            await _until(
+                pilot,
+                lambda: str(table.columns["value"].label) == "parent executable",
+            )
+            await pilot.press("up")
+            assert options.highlighted_option.id == "uid"
+            # Interfaces' short list has none.
+            assert not any(
+                option.disabled
+                for option in interfaces.query_one("#dimensions", OptionList).options
             )
     finally:
         listener.close()

@@ -40,6 +40,8 @@ class SourceInfo:
     dimensions: tuple[Dimension, ...]
     #: The start of its history, or None while it has none.
     oldest: int | None
+    #: The headings in the list of dimensions, by the dimension each comes before.
+    headings: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def parse(cls, raw: dict) -> SourceInfo:
@@ -53,13 +55,11 @@ class SourceInfo:
                 for name, label, raw_only in raw["dimensions"]
             ),
             oldest=raw["oldest"],
+            headings=raw.get("headings", {}),
         )
 
     def dimension_label(self, name: str) -> str:
         return next((d.label for d in self.dimensions if d.name == name), name)
-
-    def dimension_index(self, name: str) -> int | None:
-        return next((i for i, d in enumerate(self.dimensions) if d.name == name), None)
 
 
 @dataclasses.dataclass(frozen=True)

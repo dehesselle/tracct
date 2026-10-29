@@ -315,6 +315,9 @@ def test_describe(tmp_path):
     assert connections["oldest"] == P0 and connections["newest"] == P0 + 3 * H + 20
     assert ["raddr", "remote address", True] in connections["dimensions"]
     assert ["exe", "executable", False] in connections["dimensions"]
+    # The viewer's headings, by the dimension each comes before; a short list has none.
+    assert connections["headings"]["pexe"] == "parent"
+    assert sources["interfaces"]["headings"] == {}
 
 
 @pytest.mark.parametrize(

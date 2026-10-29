@@ -188,6 +188,9 @@ class Source:
     totals_by: str | None = None
     totals: tuple[tuple[str, str], ...] = ()
     totals_rest: str | None = None
+    #: The viewer's headings in the list of dimensions, by the dimension each comes
+    #: before; only a long list has them.
+    headings: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 SOURCES = {
@@ -202,11 +205,11 @@ SOURCES = {
             "exe": _lookup("executable", "exe_id", "executables", "exe"),
             "name": _lookup("name", "exe_id", "executables", "name"),
             "cmdline": _lookup("command", "exe_id", "executables", "cmdline"),
+            "unit": _lookup("unit", "unit_id", "units", "unit"),
+            "uid": Dimension("user", "t.uid"),
             "pexe": _lookup("parent executable", "pexe_id", "executables", "exe"),
             "pname": _lookup("parent name", "pexe_id", "executables", "name"),
             "pcmdline": _lookup("parent command", "pexe_id", "executables", "cmdline"),
-            "unit": _lookup("unit", "unit_id", "units", "unit"),
-            "uid": Dimension("user", "t.uid"),
             "netns": NETNS,
             "iface": IFACE,
             "layer": LAYER,
@@ -225,6 +228,12 @@ SOURCES = {
         "layer",
         LAYER_SUMS,
         "outer",
+        headings={
+            "exe": "process",
+            "pexe": "parent",
+            "netns": "network",
+            "lport": "connection",
+        },
     ),
     "interfaces": Source(
         "Interfaces",
@@ -600,6 +609,7 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
                 [key, dimension.label, dimension.rollup is None]
                 for key, dimension in source.dimensions.items()
             ],
+            "headings": source.headings,
             "oldest": oldest,
             "newest": newest,
             "split": split_point(con, source),

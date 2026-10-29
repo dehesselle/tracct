@@ -19,6 +19,11 @@ LivePane #events { height: 3fr; }
 
 /* A history tab: the dimensions on the left, the plot above the table. */
 HistoryPane OptionList { width: 30; height: 1fr; }
+/* Its only disabled options are the headings, which the highlight skips. */
+HistoryPane OptionList > .option-list--option-disabled {
+    color: $foreground 60%;
+    text-style: bold;
+}
 HistoryPane DataTable { height: 1fr; }
 /* Plot only (, p): the plot takes the whole tab. */
 HistoryPane.-plot-only OptionList, HistoryPane.-plot-only DataTable { display: none; }

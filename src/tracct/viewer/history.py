@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.rule import Rule
 from rich.text import Text
 from tcoda.widgets import DataTable
 from textual import work
@@ -21,7 +22,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import OptionList
-from textual.widgets.option_list import Option
+from textual.widgets.option_list import Option, OptionDoesNotExist
 from textual.worker import get_current_worker
 
 from tracct.query import QueryError
@@ -168,13 +169,23 @@ class HistoryPane(FindablePane):
         self.group_by = info.default
         options = self.query_one(OptionList)
         options.clear_options()
-        options.add_options(
-            [
-                Option(d.label + (" (raw only)" if d.raw_only else ""), id=d.name)
-                for d in info.dimensions
-            ]
-        )
-        options.highlighted = info.dimension_index(self.group_by) or 0
+        entries = []
+        heading = ""
+        for d in info.dimensions:
+            # Disabled, so the highlight skips it, and without an id, so it is never
+            # grouped by; a rule as wide as the list, so the rules end in line.
+            if d.name in info.headings:
+                heading = info.headings[d.name]
+                rule = Rule(f"─── {heading}", characters="─", style="", align="left")
+                entries.append(Option(rule, disabled=True))
+            # Under its heading, parent executable is executable; elsewhere, as in the
+            # filters and the table's header, it keeps its whole label.
+            label = d.label.removeprefix(f"{heading} ") if heading else d.label
+            entries.append(
+                Option(label + (" (raw only)" if d.raw_only else ""), id=d.name)
+            )
+        options.add_options(entries)
+        options.highlighted = options.get_option_index(self.group_by)
 
     def shown(self) -> list[Row]:
         """The rows of values in the table, without the sums."""
@@ -486,12 +497,16 @@ class HistoryPane(FindablePane):
             self.reload()
 
     def select_dimension(self, dimension: str) -> None:
-        index = self.info.dimension_index(dimension) if self.info else None
-        if index is not None:
-            # group_by first: the highlight's handler then finds nothing changed and
-            # leaves the reload to the caller, which has the filters to set first.
-            self.group_by = dimension
-            self.query_one(OptionList).highlighted = index
+        options = self.query_one(OptionList)
+        try:
+            # The headings count, so the dimension's place among the options.
+            index = options.get_option_index(dimension)
+        except OptionDoesNotExist:
+            return
+        # group_by first: the highlight's handler then finds nothing changed and
+        # leaves the reload to the caller, which has the filters to set first.
+        self.group_by = dimension
+        options.highlighted = index
 
     def apply_find(self) -> None:
         self.render_rows()
