@@ -73,6 +73,10 @@ picosnitch code breaks, so it stays close to picosnitch's; `bench/`, picosnitch'
 benchmark, ignores the rules its harness breaks on purpose. Commits
 that only reformat go into `.git-blame-ignore-revs`.
 
+Files are UTF-8 with LF line endings: `.gitattributes` makes git store and check out LF
+on every platform, and `.editorconfig` tells editors to write UTF-8, LF and a final
+newline and to trim trailing whitespace outside Markdown.
+
 ## Licensing
 
 Every file states its copyright and license in the [REUSE](https://reuse.software) format:
