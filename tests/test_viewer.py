@@ -762,7 +762,7 @@ async def test_live_tab(tmp_path, monkeypatch):
             publisher.publish(event)
             await _until(pilot, lambda: pane.event_count == 5)
             assert len(pane.events) == 4
-            await _until(pilot, lambda: events.border_subtitle == "table is frozen")
+            await _until(pilot, lambda: events.border_subtitle == "updates are paused")
             await pilot.press("r")
             await _until(pilot, lambda: pane.event_count == 0 and not pane.summary)
             # Reset empties the frozen table too, so nothing in it outlives its event.

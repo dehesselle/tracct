@@ -388,7 +388,7 @@ class LivePane(FindablePane):
         events.border_title = (
             f"last {config.get(LIVE_EVENTS)} events · {self.event_count} total"
         )
-        events.border_subtitle = "table is frozen" if self.paused else ""
+        events.border_subtitle = "updates are paused" if self.paused else ""
 
     def action_pause(self) -> None:
         self.paused = not self.paused
