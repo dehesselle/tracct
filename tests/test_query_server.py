@@ -23,6 +23,8 @@ from tracct.query import QueryClient, QueryError, recv_message
 H = 3600
 P0 = 100 * H
 HOST, VPN = 4026531840, 4026532500
+#: Their ids in the netns table.
+HOST_ID, VPN_ID = 1, 2
 EPHEMERAL = 32768
 
 
@@ -48,11 +50,13 @@ def _db(tmp_path):
     )
     con.execute("INSERT INTO domains VALUES (1, 'com.example')")
     con.execute(
-        f"INSERT INTO interfaces VALUES (1, {HOST}, 'eth0', ''), (2, {HOST}, 'tailscale0', 'tun'), (3, {VPN}, 'tun0', 'tun')"
+        f"INSERT INTO interfaces VALUES (1, {HOST_ID}, 'eth0', ''), (2, {HOST_ID}, 'tailscale0', 'tun'), (3, {VPN_ID}, 'tun0', 'tun')"
     )
-    con.execute(f"INSERT INTO netns VALUES ({HOST}, 'host')")
+    con.execute(
+        f"INSERT INTO netns VALUES ({HOST_ID}, {HOST}, 'host'), ({VPN_ID}, {VPN}, '')"
+    )
     # Contime, send, recv, events, exe, pexe, unit, uid, family, protocol, lport, rport,
-    # laddr, raddr, domain, netns, iface.
+    # laddr, raddr, domain, netns_id, iface.
     con.executemany(
         "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?)",
         [
@@ -66,22 +70,22 @@ def _db(tmp_path):
                 443,
                 2,
                 1,
-                HOST,
+                HOST_ID,
                 1,
             ),  # purged period: from the rollup
-            (P0 + 2 * H + 10, 1, 2, 1, 0, 50001, 443, 2, 1, HOST, 1),
-            (P0 + 3 * H + 10, 10, 20, 1, 0, 50002, 443, 2, 1, HOST, 1),
-            (P0 + 3 * H + 20, 300, 30, 3, 1, 80, 50003, 3, 0, VPN, 3),
+            (P0 + 2 * H + 10, 1, 2, 1, 0, 50001, 443, 2, 1, HOST_ID, 1),
+            (P0 + 3 * H + 10, 10, 20, 1, 0, 50002, 443, 2, 1, HOST_ID, 1),
+            (P0 + 3 * H + 20, 300, 30, 3, 1, 80, 50003, 3, 0, VPN_ID, 3),
         ],
     )
-    # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns,
+    # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns_id,
     # iface, send, recv, events, rows.
     con.executemany(
         "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, ?, ?, 1, 1)",
         [
-            (P0, 1, 0, 0, 443, 1, HOST, 1000, 10000),
-            (P0 + H, 1, 0, 0, 443, 1, HOST, 100, 1000),
-            (P0 + H, 3, 1, 80, 0, 0, HOST, 5000, 500),
+            (P0, 1, 0, 0, 443, 1, HOST_ID, 1000, 10000),
+            (P0 + H, 1, 0, 0, 443, 1, HOST_ID, 100, 1000),
+            (P0 + H, 3, 1, 80, 0, 0, HOST_ID, 5000, 500),
             (
                 P0 + 2 * H,
                 1,
@@ -89,7 +93,7 @@ def _db(tmp_path):
                 0,
                 443,
                 1,
-                HOST,
+                HOST_ID,
                 999999,
                 999999,
             ),  # still raw: from the raw rows
@@ -108,10 +112,10 @@ def _db(tmp_path):
         [(P0 + H, 1, 6000, 600), (P0 + 2 * H, 1, 999999, 999999)],
     )
     con.execute(
-        f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80)"
+        f"INSERT INTO forwarded VALUES ({P0 + 3 * H + 10}, {HOST_ID}, 6, 3, 40000, 4, 443, 0, 2000, 100000, 20, 80)"
     )
     con.execute(
-        f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST}, 6, 3, 443, 0, 50, 5000, 1, 4, 1)"
+        f"INSERT INTO forwarded_rollup VALUES ({P0 + H}, {HOST_ID}, 6, 3, 443, 0, 50, 5000, 1, 4, 1)"
     )
     con.execute(f"INSERT INTO meta VALUES ('rollup_watermark', {P0 + 3 * H})")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
@@ -209,6 +213,35 @@ def test_interfaces_and_layers(tmp_path):
     # A tun device's counters are what went through the tunnel.
     _, rows = _aggregate(db, "layer", source="interfaces")
     assert rows == {"outer": (670, 6700), "inner": (4, 40)}
+
+
+def test_namespaces_keep_the_name_of_their_rows(tmp_path):
+    """A reused inode named anew leaves the older rows their name, and one name over
+    several inodes (a namespace made again after a reboot) is one value.
+    """
+    db = _db(tmp_path)
+    other = VPN + 100
+    con = sqlite3.connect(db)
+    con.execute(f"INSERT INTO netns VALUES (3, {VPN}, 'vpn'), (4, {other}, 'vpn')")
+    con.execute(
+        "INSERT INTO interfaces VALUES (4, 3, 'tun0', 'tun'), (5, 4, 'tun0', 'tun')"
+    )
+    con.executemany(
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?)",
+        [(P0 + 3 * H + 30, 5, 6, 3, 4), (P0 + 3 * H + 40, 7, 8, 4, 5)],
+    )
+    con.commit()
+    con.close()
+    _, rows = _aggregate(db, "netns", start=P0 + 2 * H)
+    assert rows == {"host": (11, 22), str(VPN): (300, 30), "vpn": (12, 14)}
+    _, rows = _aggregate(db, "iface", start=P0 + 2 * H)
+    assert rows == {
+        "host/eth0": (11, 22),
+        f"{VPN}/tun0": (300, 30),
+        "vpn/tun0": (12, 14),
+    }
+    _, rows = _aggregate(db, "exe", start=P0 + 2 * H, filters=[["netns", "vpn", False]])
+    assert rows == {"/usr/sbin/nginx": (12, 14)}
 
 
 def test_totals_per_layer(tmp_path):
@@ -401,7 +434,7 @@ def test_slow_query_is_interrupted(tmp_path, monkeypatch):
     con = sqlite3.connect(db)
     con.executemany(
         "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1)",
-        [(P0 + 3 * H + i % 3000, HOST) for i in range(20000)],
+        [(P0 + 3 * H + i % 3000, HOST_ID) for i in range(20000)],
     )
     con.commit()
     con.close()

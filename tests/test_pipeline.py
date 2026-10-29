@@ -218,16 +218,18 @@ def test_window_interfaces_and_flows():
         4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40
     )
     window.add_flows([flow, flow])
-    rows, flows = window.take_rows()
+    # Namespaces go with the name they have now.
+    rows, flows = window.take_rows({4026531840: "host"})
+    host = (4026531840, "host")
     assert sorted(row[-1] for row in rows) == [
-        (0, "", ""),
-        (4026531840, "eth0", ""),
-        (4026531840, "tailscale0", "tun"),
+        writer.NO_INTERFACE,
+        (host, "eth0", ""),
+        (host, "tailscale0", "tun"),
     ]
     assert netinfo.noted == [(4026531840, 4242)] * 2 + [(4026531840, 77)]
     assert [flow_row[1:] for flow_row in flows] == [
         (
-            4026531840,
+            host,
             6,
             "100.64.0.2",
             40000,
@@ -273,6 +275,49 @@ def test_writer_writes_what_is_left_on_stop(tmp_path, monkeypatch):
         (80, 100, 2000, "/usr/bin/curl", "org.example"),
         (443, 100, 2000, "/usr/bin/curl", "com.example"),
     ]
+
+
+class _NamedNetInfo(_FakeNetInfo):
+    """One namespace under the name given, whose eth0 moved bytes in every window."""
+
+    def __init__(self, inode: int, name: str) -> None:
+        super().__init__()
+        self.inode = inode
+        self.names = {inode: name}
+
+    def refresh(self) -> list[tuple[int, str, str, int, int]]:
+        return [(self.inode, "eth0", "", 10, 20)]
+
+
+def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
+    """An inode the kernel hands to a namespace of another name is another namespace:
+    the older rows keep their name and their own interface.
+    """
+    db = _init_database(tmp_path, monkeypatch)
+    inode = 4026532500
+    config = Config()
+    config.monitoring.conntrack = False
+    config.record.reverse_dns = False
+    for send, name in ((1, "vpn-a"), (2, "vpn-b")):
+        monkeypatch.setattr(
+            writer, "NetInfo", lambda name=name: _NamedNetInfo(inode, name)
+        )
+        batches: DropOldestQueue[BpfEvent] = DropOldestQueue(1000)
+        batches.put([_event(netns=inode, send=send)])
+        stop = threading.Event()
+        stop.set()
+        writer.run_writer(config, batches, stop)
+    con = sqlite3.connect(db)
+    rows = con.execute(
+        "SELECT c.send, n.inode, n.name, i.name, i.netns_id = c.netns_id FROM connections c"
+        " JOIN netns n ON n.id = c.netns_id JOIN interfaces i ON i.id = c.iface_id ORDER BY c.send"
+    ).fetchall()
+    interfaces = con.execute(
+        "SELECT count(DISTINCT iface_id) FROM interface_traffic"
+    ).fetchone()[0]
+    con.close()
+    assert rows == [(1, inode, "vpn-a", "eth0", 1), (2, inode, "vpn-b", "eth0", 1)]
+    assert interfaces == 2
 
 
 def test_writer_writes_full_window_early(tmp_path, monkeypatch):

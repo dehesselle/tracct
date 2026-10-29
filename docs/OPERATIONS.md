@@ -278,7 +278,8 @@ more, remove the group too (`groupdel tracct-viewer`).
 ### Moving from a picosnitch install
 
 Installs from before the rename used the name picosnitch for the unit, user, group and
-paths. The database format is the same, so its history carries over:
+paths. Their configuration carries over; their database has an older schema, so tracct
+starts a new one:
 
 ```sh
 systemctl disable --now picosnitch picosnitch-query.socket
@@ -287,19 +288,15 @@ rm /etc/sysusers.d/picosnitch.conf
 ```
 
 Then install tracct as in the [README](../README.md#install), but move the old
-configuration and database in place before the final `systemctl enable --now`:
+configuration in place before the final `systemctl enable --now`:
 
 ```sh
 sed 's/picosnitch-viewer/tracct-viewer/' /etc/opt/picosnitch/config.toml > /etc/opt/tracct/config.d/50-local.toml
-install -d -m 700 /var/lib/private/tracct
-mv /var/lib/private/picosnitch/picosnitch.db /var/lib/private/tracct/tracct.db
-mv /var/lib/private/picosnitch/picosnitch.db-wal /var/lib/private/tracct/tracct.db-wal 2>/dev/null
-mv /var/lib/private/picosnitch/picosnitch.db-shm /var/lib/private/tracct/tracct.db-shm 2>/dev/null
 ```
 
-systemd hands the state directory to the new dynamic user on start. Add viewers to
-`tracct-viewer` again (`usermod -aG tracct-viewer <user>`); the old group can be removed
-with `groupdel picosnitch-viewer`, and `/opt/picosnitch` deleted.
+Add viewers to `tracct-viewer` again (`usermod -aG tracct-viewer <user>`); the old group
+can be removed with `groupdel picosnitch-viewer`, and `/opt/picosnitch` and
+`/var/lib/private/picosnitch` deleted.
 
 ## Troubleshooting
 

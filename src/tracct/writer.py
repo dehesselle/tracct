@@ -46,28 +46,48 @@ CLOCK_JUMP_SECONDS = 60
 #: Ids the writer keeps per lookup table; past it the cache starts over from the
 #: database.
 ID_CACHE_MAX = 65536
-#: The interface of a row whose interface is unknown.
-NO_INTERFACE = (0, "", "")
+#: A namespace as the database keeps it: its inode and the name it has now, "" for
+#: none; the namespace of a row whose namespace is unknown.
+NO_NETNS = (0, "")
+#: The interface of a row whose interface is unknown: namespace, name, kind.
+NO_INTERFACE = (NO_NETNS, "", "")
 
 #: Rows of a closed rollup period, summed; the parameters are the period, the first port
 #: of the ephemeral range (ports from there on are a peer's or our own random port, kept
 #: as 0 so a server's rollup does not grow with its clients), and the period's bounds.
+#: Columns are named, so no statement depends on the order a table declares them in.
 ROLLUPS = (
     # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     (
-        "INSERT INTO connections_rollup SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
+        "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, send, recv, events, rows)"
+        " SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
         " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
         " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
-        " domain_id, netns, iface_id, SUM(send), SUM(recv), SUM(events), COUNT(*)"
+        " domain_id, netns_id, iface_id, SUM(send), SUM(recv), SUM(events), COUNT(*)"
         " FROM connections WHERE contime >= :start AND contime < :end"
-        " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns, iface_id"
+        " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id"
     ),
-    "INSERT INTO interface_traffic_rollup SELECT :period, iface_id, SUM(rx), SUM(tx) FROM interface_traffic WHERE contime >= :start AND contime < :end GROUP BY iface_id",
     (
-        "INSERT INTO forwarded_rollup SELECT :period, netns, protocol, src_id, CASE WHEN dport < :ephemeral THEN dport ELSE 0 END AS dp, domain_id,"
-        " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*)"
-        " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns, protocol, src_id, dp, domain_id"
+        "INSERT INTO interface_traffic_rollup(period, iface_id, rx, tx)"
+        " SELECT :period, iface_id, SUM(rx), SUM(tx) FROM interface_traffic WHERE contime >= :start AND contime < :end GROUP BY iface_id"
     ),
+    (
+        "INSERT INTO forwarded_rollup(period, netns_id, protocol, src_id, dport, domain_id, orig_bytes, reply_bytes, orig_packets, reply_packets, rows)"
+        " SELECT :period, netns_id, protocol, src_id, CASE WHEN dport < :ephemeral THEN dport ELSE 0 END AS dp, domain_id,"
+        " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*)"
+        " FROM forwarded WHERE contime >= :start AND contime < :end GROUP BY netns_id, protocol, src_id, dp, domain_id"
+    ),
+)
+INSERT_CONNECTIONS = (
+    "INSERT INTO connections(contime, send, recv, events, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+INSERT_INTERFACE_TRAFFIC = (
+    "INSERT INTO interface_traffic(contime, iface_id, rx, tx) VALUES (?, ?, ?, ?)"
+)
+INSERT_FORWARDED = (
+    "INSERT INTO forwarded(contime, netns_id, protocol, src_id, sport, dst_id, dport, domain_id, orig_bytes, reply_bytes, orig_packets, reply_packets)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 #: The tables purged past the raw and the rollup retention, with their time column.
 RAW_TABLES = (
@@ -101,9 +121,10 @@ ORPHAN_DELETES = (
         "DELETE FROM interfaces WHERE id != 0 AND id NOT IN"
         " (SELECT iface_id FROM connections UNION SELECT iface_id FROM connections_rollup UNION SELECT iface_id FROM interface_traffic UNION SELECT iface_id FROM interface_traffic_rollup)"
     ),
+    # After the interfaces, whose deletion frees namespaces.
     (
-        "DELETE FROM netns WHERE inode NOT IN"
-        " (SELECT netns FROM connections UNION SELECT netns FROM connections_rollup UNION SELECT netns FROM interfaces UNION SELECT netns FROM forwarded UNION SELECT netns FROM forwarded_rollup)"
+        "DELETE FROM netns WHERE id != 0 AND id NOT IN"
+        " (SELECT netns_id FROM connections UNION SELECT netns_id FROM connections_rollup UNION SELECT netns_id FROM interfaces UNION SELECT netns_id FROM forwarded UNION SELECT netns_id FROM forwarded_rollup)"
     ),
 )
 
@@ -219,7 +240,9 @@ class WriteWindow:
                     return True
         return False
 
-    def interface(self, netns: int, laddr: str, tun: str) -> tuple[int, str, str]:
+    def interface(
+        self, netns: tuple[int, str], laddr: str, tun: str
+    ) -> tuple[tuple[int, str], str, str]:
         """The interface a row was counted on.
 
         The TUN device of a process's TUN reads and writes, else the interface holding
@@ -227,7 +250,7 @@ class WriteWindow:
         """
         if self.netinfo is None:
             return NO_INTERFACE
-        name, kind = (tun, "tun") if tun else self.netinfo.interface_of(netns, laddr)
+        name, kind = (tun, "tun") if tun else self.netinfo.interface_of(netns[0], laddr)
         return (netns, name, kind) if name else NO_INTERFACE
 
     def add(self, events: list[BpfEvent]) -> None:
@@ -336,16 +359,21 @@ class WriteWindow:
             for domain_prefix in self.config.record.ignore_domains
         )
 
-    def take_rows(self) -> tuple[list[tuple], list[tuple]]:
+    def take_rows(
+        self, names: dict[int, str] | None = None
+    ) -> tuple[list[tuple], list[tuple]]:
         """The window as connection and forwarded rows for the database, with domains
-        from reverse DNS where the program looked up none; the next window starts empty.
+        from reverse DNS where the program looked up none and each namespace as (inode,
+        name) by names; the next window starts empty.
         """
+        names = names or {}
         contime = int(time.time())
         rows: dict[tuple, list[int]] = {}
         for key, (send, recv, n_events) in self.connections.items():
-            *identity, laddr, raddr, domain, netns, tun = key
+            *identity, laddr, raddr, domain, inode, tun = key
             if not domain:
                 domain = self.domain_of(raddr)
+            netns = (inode, names.get(inode, ""))
             key = (
                 *identity,
                 laddr,
@@ -366,13 +394,13 @@ class WriteWindow:
                 counters[1] += recv
                 counters[2] += n_events
         flow_rows = []
-        for (netns, protocol, src, sport, dst, dport), counters in self.flows.items():
+        for (inode, protocol, src, sport, dst, dport), counters in self.flows.items():
             domain = self.domain_of(dst)
             if not self.is_ignored_domain(domain):
                 flow_rows.append(
                     (
                         contime,
-                        netns,
+                        (inode, names.get(inode, "")),
                         protocol,
                         src,
                         sport,
@@ -607,8 +635,16 @@ def run_writer(
     domains = Interned("domains", ("domain",), ("",))
     addresses = Interned("addresses", ("addr",), ("",))
     units = Interned("units", ("unit",), ("",))
-    interfaces = Interned("interfaces", ("netns", "name", "kind"), NO_INTERFACE)
-    interned = (executables, domains, addresses, units, interfaces)
+    namespaces = Interned("netns", ("inode", "name"), NO_NETNS)
+    interfaces = Interned("interfaces", ("netns_id", "name", "kind"), (0, "", ""))
+    interned = (executables, domains, addresses, units, namespaces, interfaces)
+
+    def interface_id(
+        con: sqlite3.Connection, iface: tuple[tuple[int, str], str, str]
+    ) -> int:
+        netns, name, kind = iface
+        return interfaces.id(con, (namespaces.id(con, netns), name, kind))
+
     record = config.record
     reverse_dns = (
         ReverseDns()
@@ -655,16 +691,22 @@ def run_writer(
 
     def write() -> None:
         nonlocal transaction, iface_rows, flow_rows
+        names: dict[int, str] = {}
         if netinfo is not None:
+            # A namespace removed since the last refresh keeps its name for the rows of
+            # its last window.
+            names = dict(netinfo.names)
             # First, so the window's rows find the namespaces and addresses as they are
             # now.
             contime = int(time.time())
+            traffic = netinfo.refresh()
+            names.update(netinfo.names)
             iface_rows += [
-                (contime, (netns, name, kind), rx, tx)
-                for netns, name, kind, rx, tx in netinfo.refresh()
+                (contime, ((inode, names.get(inode, "")), name, kind), rx, tx)
+                for inode, name, kind, rx, tx in traffic
             ]
             window.add_flows(collect_forwarded())
-        rows, flows = window.take_rows()
+        rows, flows = window.take_rows(names)
         transaction += rows
         flow_rows += flows
         if any(len(table.ids) > ID_CACHE_MAX for table in interned):
@@ -711,27 +753,24 @@ def run_writer(
                                 addresses.id(con, (laddr,)),
                                 addresses.id(con, (raddr,)),
                                 domains.id(con, (domain,)),
-                                netns,
-                                interfaces.id(con, iface),
+                                namespaces.id(con, netns),
+                                interface_id(con, iface),
                             )
                         )
+                    con.executemany(INSERT_CONNECTIONS, conn_rows)
                     con.executemany(
-                        "INSERT INTO connections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        conn_rows,
-                    )
-                    con.executemany(
-                        "INSERT INTO interface_traffic VALUES (?, ?, ?, ?)",
+                        INSERT_INTERFACE_TRAFFIC,
                         [
-                            (contime, interfaces.id(con, iface), rx, tx)
+                            (contime, interface_id(con, iface), rx, tx)
                             for contime, iface, rx, tx in iface_rows
                         ],
                     )
                     con.executemany(
-                        "INSERT INTO forwarded VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        INSERT_FORWARDED,
                         [
                             (
                                 contime,
-                                netns,
+                                namespaces.id(con, netns),
                                 protocol,
                                 addresses.id(con, (src,)),
                                 sport,
@@ -743,11 +782,6 @@ def run_writer(
                             for contime, netns, protocol, src, sport, dst, dport, domain, *counters in flow_rows
                         ],
                     )
-                    if netinfo is not None:
-                        con.executemany(
-                            "INSERT INTO netns(inode, name) VALUES (?, ?) ON CONFLICT(inode) DO UPDATE SET name = excluded.name WHERE name != excluded.name",
-                            list(netinfo.names.items()),
-                        )
                 con.close()
                 transaction_success = True
                 for table in interned:

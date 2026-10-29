@@ -129,17 +129,19 @@ def _port(label: str, column: str, icmp: bool) -> Dimension:
     )
 
 
-#: A namespace by name, unnamed ones by inode; an interface qualified by its namespace,
-#: as each namespace has its own lo and the VPN namespaces may each have a tun0.
+#: A namespace by the name it had when the row was written, unnamed ones by inode; an
+#: interface qualified by its namespace, as each namespace has its own lo and the VPN
+#: namespaces may each have a tun0.
+_NETNS_LABEL = "COALESCE(NULLIF({n}name, ''), CAST({n}inode AS TEXT))"
 NETNS = Dimension(
     "namespace",
-    "t.netns",
-    "COALESCE((SELECT name FROM netns WHERE inode = {k}), CAST({k} AS TEXT))",
-    "(t.netns IN (SELECT inode FROM netns WHERE name IS ?) OR CAST(t.netns AS TEXT) IS ?)",
+    "t.netns_id",
+    f"(SELECT {_NETNS_LABEL.format(n='')} FROM netns WHERE id = {{k}})",
+    f"t.netns_id IN (SELECT id FROM netns WHERE {_NETNS_LABEL.format(n='')} IS ?)",
 )
-_IFACE_FROM = "interfaces i LEFT JOIN netns n ON n.inode = i.netns"
-_IFACE_NAME = "CASE WHEN i.id = 0 THEN '' ELSE COALESCE(n.name, CAST(i.netns AS TEXT)) || '/' || i.name END"
-_IFACE_NETNS = "COALESCE(n.name, CAST(i.netns AS TEXT))"
+_IFACE_FROM = "interfaces i JOIN netns n ON n.id = i.netns_id"
+_IFACE_NETNS = _NETNS_LABEL.format(n="n.")
+_IFACE_NAME = f"CASE WHEN i.id = 0 THEN '' ELSE {_IFACE_NETNS} || '/' || i.name END"
 IFACE = Dimension(
     "interface",
     "t.iface_id",

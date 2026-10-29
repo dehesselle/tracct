@@ -392,6 +392,10 @@ def _purge_db(tmp_path):
     )
     con.execute("INSERT INTO domains VALUES (1, 'live.example'), (2, 'old.example')")
     con.execute("INSERT INTO addresses VALUES (1, '10.0.0.1'), (2, '10.0.0.2')")
+    con.execute(
+        "INSERT INTO netns VALUES (1, 4026531840, 'host'), (2, 4026532500, 'old')"
+    )
+    con.execute("INSERT INTO interfaces VALUES (1, 1, 'eth0', ''), (2, 2, 'eth0', '')")
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
     return con
@@ -399,11 +403,11 @@ def _purge_db(tmp_path):
 
 def _insert_connections(con, *rows):
     # Each row (contime, ref[, lport, rport]) refers to ref as exe, parent, both
-    # addresses and domain.
+    # addresses, domain, namespace and interface.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, 0, 0)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (row[0], row[1], row[1], *(row[2:] or (50000, 443)), row[1], row[1], row[1])
+            (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
             for row in rows
         ],
     )
@@ -473,9 +477,10 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     assert len(calls) == 3
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
     calls.clear()
-    assert writer.delete_orphans(con, lambda: calls.append(1) or False) == 3
+    # The namespace goes in the same pass as the interface that referred to it too.
+    assert writer.delete_orphans(con, lambda: calls.append(1) or False) == 5
     assert len(calls) == len(writer.ORPHAN_DELETES)
-    for table in ("executables", "domains", "addresses"):
+    for table in ("executables", "domains", "addresses", "interfaces", "netns"):
         assert [r[0] for r in con.execute(f"SELECT id FROM {table} ORDER BY id")] == [
             0,
             1,

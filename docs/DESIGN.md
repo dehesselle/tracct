@@ -190,11 +190,13 @@ The tables come in three kinds:
   run with other arguments gets a new one. `domains` holds names in reversed notation
   (`com.example.www`): the name the program looked up, else the reverse DNS name, else the
   address itself. `units` holds the innermost systemd unit of a process's cgroup, `addresses`
-  the canonical text of an address. `interfaces` is keyed by (namespace inode, name, kind),
-  as every namespace has its own `lo` and several may have a `tun0`. `netns` names the
-  namespaces found in `/run/netns` and `/run/docker/netns`, and the daemon's own as `host`;
-  unnamed ones keep their inode, and as inodes are reused once a namespace is gone, a name
-  holds only for the time it was seen.
+  the canonical text of an address. `interfaces` is keyed by (namespace, name, kind), as
+  every namespace has its own `lo` and several may have a `tun0`. `netns` holds a
+  namespace as (inode, name) with the name it had when the row was written: those found in
+  `/run/netns` and `/run/docker/netns`, the daemon's own as `host`, and none for the rest.
+  The kernel hands a namespace's inode to the next one once it is gone, so the same inode
+  under another name is another entry, and the older rows and their interfaces keep theirs;
+  unnamed namespaces that shared an inode cannot be told apart.
 - **Raw tables**, a row per write window, one per kind of byte (principle 4):
   `connections` holds socket bytes per process and peer, `interface_traffic` interface bytes
   per interface, `forwarded` IP bytes per routed flow. In `forwarded`, `src` is the side that

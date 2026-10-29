@@ -63,9 +63,10 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: Database schema version and table definitions, see "Storage" in docs/DESIGN.md. Id 0
 #: in each lookup table is the "empty/unknown" sentinel. `family` is AF_INET (2),
 #: AF_INET6 (10), AF_PACKET (17) for raw L2 sends, or 0 when unknown. `protocol` is an
-#: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. `netns` is the inode of a
-#: network namespace.
-DB_VERSION: typing.Final[int] = 6
+#: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. A network namespace is
+#: interned with the name it had when the row was written, as the kernel reuses its
+#: inode.
+DB_VERSION: typing.Final[int] = 7
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -81,15 +82,17 @@ SCHEMA_ADDRESSES: typing.Final[str] = """
 SCHEMA_UNITS: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     unit TEXT NOT NULL UNIQUE"""
+SCHEMA_NETNS: typing.Final[str] = """
+    id INTEGER PRIMARY KEY,
+    inode INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE(inode, name)"""
 SCHEMA_INTERFACES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
-    netns INTEGER NOT NULL,
+    netns_id INTEGER NOT NULL REFERENCES netns(id),
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
-    UNIQUE(netns, name, kind)"""
-SCHEMA_NETNS: typing.Final[str] = """
-    inode INTEGER PRIMARY KEY,
-    name TEXT NOT NULL"""
+    UNIQUE(netns_id, name, kind)"""
 SCHEMA_CONNECTIONS: typing.Final[str] = """
     contime INTEGER NOT NULL,
     send INTEGER NOT NULL,
@@ -106,7 +109,7 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     laddr_id INTEGER NOT NULL REFERENCES addresses(id),
     raddr_id INTEGER NOT NULL REFERENCES addresses(id),
     domain_id INTEGER NOT NULL REFERENCES domains(id),
-    netns INTEGER NOT NULL,
+    netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id)"""
 SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
@@ -119,7 +122,7 @@ SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     lport INTEGER NOT NULL,
     rport INTEGER NOT NULL,
     domain_id INTEGER NOT NULL REFERENCES domains(id),
-    netns INTEGER NOT NULL,
+    netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
     send INTEGER NOT NULL,
     recv INTEGER NOT NULL,
@@ -137,7 +140,7 @@ SCHEMA_INTERFACE_TRAFFIC_ROLLUP: typing.Final[str] = """
     tx INTEGER NOT NULL"""
 SCHEMA_FORWARDED: typing.Final[str] = """
     contime INTEGER NOT NULL,
-    netns INTEGER NOT NULL,
+    netns_id INTEGER NOT NULL REFERENCES netns(id),
     protocol INTEGER NOT NULL,
     src_id INTEGER NOT NULL REFERENCES addresses(id),
     sport INTEGER NOT NULL,
@@ -150,7 +153,7 @@ SCHEMA_FORWARDED: typing.Final[str] = """
     reply_packets INTEGER NOT NULL"""
 SCHEMA_FORWARDED_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
-    netns INTEGER NOT NULL,
+    netns_id INTEGER NOT NULL REFERENCES netns(id),
     protocol INTEGER NOT NULL,
     src_id INTEGER NOT NULL REFERENCES addresses(id),
     dport INTEGER NOT NULL,
@@ -170,8 +173,8 @@ TABLES: typing.Final[tuple[tuple[str, str], ...]] = (
     ("domains", SCHEMA_DOMAINS),
     ("addresses", SCHEMA_ADDRESSES),
     ("units", SCHEMA_UNITS),
-    ("interfaces", SCHEMA_INTERFACES),
     ("netns", SCHEMA_NETNS),
+    ("interfaces", SCHEMA_INTERFACES),
     ("connections", SCHEMA_CONNECTIONS),
     ("connections_rollup", SCHEMA_CONNECTIONS_ROLLUP),
     ("interface_traffic", SCHEMA_INTERFACE_TRAFFIC),
@@ -185,7 +188,8 @@ SENTINELS: typing.Final[tuple[str, ...]] = (
     "INSERT INTO domains(id, domain) VALUES (0, '')",
     "INSERT INTO addresses(id, addr) VALUES (0, '')",
     "INSERT INTO units(id, unit) VALUES (0, '')",
-    "INSERT INTO interfaces(id, netns, name, kind) VALUES (0, 0, '', '')",
+    "INSERT INTO netns(id, inode, name) VALUES (0, 0, '')",
+    "INSERT INTO interfaces(id, netns_id, name, kind) VALUES (0, 0, '', '')",
 )
 INDEXES: typing.Final[tuple[str, ...]] = (
     "CREATE INDEX idx_contime ON connections(contime)",
