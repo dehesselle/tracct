@@ -7,8 +7,7 @@ interface in every network namespace and the flows the host forwards for others.
 are counted in the kernel with [BPF](https://ebpf.io/) and netlink and stored in SQLite, so
 a spike in traffic can be traced to its cause long after it happened.
 
-It is meant for servers: it runs headless as a systemd unit with a dynamic user, and a
-terminal viewer shows live and recorded traffic.
+tracct also comes with a [Textual](https://textual.textualize.io/)-based TUI to watch traffic live and browse the collectd history.
 
 ## Install
 
@@ -66,6 +65,4 @@ Substantial parts of this code were generated with Opus 5.x. Generated code was 
 
 ## License
 
-tracct is based on [picosnitch](https://github.com/elesiuta/picosnitch) by Eric Lesiuta and
-is distributed under the GPL-3.0-or-later. Its BPF program is GPL-2.0-only, and files
-written for tracct alone are 0BSD; each file states its own terms.
+tracct is based on [picosnitch](https://github.com/elesiuta/picosnitch) by Eric Lesiuta, licensed under GPL-3.0-or-later. Its BPF program is GPL-2.0-only. Everything written for tracct alone is licensed under 0BSD.
