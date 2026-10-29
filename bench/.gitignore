@@ -8,10 +8,3 @@ downloads/
 bin/
 # generated intermediate artifacts
 results/
-
-# The repo-root .gitignore ignores "lib/" (Python venv); re-include ours
-!lib/
-!lib/**
-# ...but never compiled caches, even under the re-included lib/
-__pycache__/
-*.pyc
