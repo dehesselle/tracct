@@ -259,9 +259,9 @@ refers to any more.
 
 ## Upgrades
 
-Install the new version into `/opt/tracct`, run `/opt/tracct/bin/tracct install -f` to
-bring the units and the base `config.toml` up to it, then `systemctl daemon-reload` and
-restart the unit. `-f` replaces `config.toml`, so keep your own settings in `config.d/`
+Upgrade with `/opt/tracct/bin/pip install -U 'tracct[viewer]'`, run
+`/opt/tracct/bin/tracct install -f` to bring the units and the base `config.toml` up to
+it, then `systemctl daemon-reload` and restart the unit. `-f` replaces `config.toml`, so keep your own settings in `config.d/`
 (see [MANUAL.md](MANUAL.md#configuration)); move them there before the first `install -f`
 if they are still in `config.toml`. When a release changes
 the schema version, the daemon refuses the old database: stop the unit, move

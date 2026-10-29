@@ -26,7 +26,7 @@ of `tracct-query.socket`). Its footer shows the keys of the tab in view; `Ctrl+Q
 
 ### The viewer
 
-`tracct view` needs the `viewer` extra (`uv pip install 'tracct[viewer]'`). It has four
+`tracct view` needs the `viewer` extra (`pip install 'tracct[viewer]'`). It has four
 tabs, Live first and then the history tabs in alphabetical order, switched with the letter
 highlighted in their title (`l`, `f`, `i`, `p`). It opens on Live unless `--tab` names
 another:

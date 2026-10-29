@@ -131,8 +131,9 @@ name the same versions; change both together.
 ## Releasing
 
 Pushing a tag `v<version>` runs the same workflow, which checks that the wheels carry that
-version and then creates a draft GitHub release with the sdist and both wheels attached,
-which the README's install uses. Look it over and publish it.
+version, creates a draft GitHub release with the sdist and both wheels attached, and
+publishes them to PyPI through trusted publishing (GitHub environment `pypi`). Look the
+draft release over and publish it.
 
 ## Comparing with picosnitch
 
