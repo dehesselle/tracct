@@ -63,7 +63,7 @@ def _value_cell(dimension: str, value: object) -> Text:
 
 class HistoryPane(FindablePane):
     BINDINGS: ClassVar[list[Binding]] = [
-        # The time range and the byte unit are the app's, shared by the history tabs.
+        # The time range is the app's, shared by the history tabs.
         # In the span picker, s pressed again returns from a zoom to the span.
         Binding("s", "app.span", "Span"),
         # By a whole span of local time, next to s that picks its length; the range is
@@ -82,7 +82,6 @@ class HistoryPane(FindablePane):
             key_display="⇧→",
             group=Binding.Group("Step span"),
         ),
-        Binding("u", "app.byte_unit", "Unit"),
         Binding("r", "app.refresh", "Refresh"),
         # The drill-down: a filter on the highlighted row's value stays when the
         # dimension on the left changes, which breaks that value down.
@@ -92,6 +91,8 @@ class HistoryPane(FindablePane):
         Binding("comma f c", "clear_filters", "Clear", show=False),
         # Shared by the history tabs, as the range is.
         Binding("comma p", "app.plot_only", "Plot only", show=False),
+        # Rarely changed; in the picker, b pressed again goes back to the unit before.
+        Binding("comma b", "app.byte_unit", "Byte unit", show=False),
     ]
     CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma f": "Filter"}
 

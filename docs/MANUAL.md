@@ -75,15 +75,16 @@ dragging or `←` and `→` pan, and a moment after the plot comes to rest the t
 `s` picks the span (last hour, last day, ...) from a list, where spans past the oldest data
 say so; after a zoom, `s` pressed again in the list returns to the span; `Shift+←` and
 `Shift+→` step back and forward by a whole span of local time (with "1 day", yesterday from
-midnight to midnight), `u` picks the byte unit from a list, where `u` pressed again goes
-back to the unit before, `/` finds text in the rows shown (on every
-tab; `c` clears it), `r` refreshes. A range that ends now refreshes every 10 seconds. While a
-tab waits more than a moment for the query server, `↻` ends the plot's title.
+midnight to midnight), `/` finds text in the rows shown (on every tab; `c` clears it), `r`
+refreshes. A range that ends now refreshes every 10 seconds. While a tab waits more than a
+moment for the query server, `↻` ends the plot's title.
 
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
 opens the viewer's settings, such as the live tab's limits. They are kept per user in
 `~/.config/tracct/settings.json` (under `$XDG_CONFIG_HOME` if set), which holds only the
-values changed from their defaults. `,` `a` shows the about box.
+values changed from their defaults. `,` `a` shows the about box. On the history tabs, `,`
+`b` picks the byte unit from a list, where `b` pressed again goes back to the unit
+before.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
 forwarded flow's source, ephemeral ports as 0. Entries of the group by list marked "raw

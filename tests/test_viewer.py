@@ -116,7 +116,7 @@ async def test_tab_keys(tmp_path):
         await _until(
             pilot,
             lambda: (
-                {"s", "shift+left", "shift+right", "u"}
+                {"s", "shift+left", "shift+right", "comma b"}
                 <= set(app.screen.active_bindings)
             ),
         )
@@ -126,11 +126,11 @@ async def test_tab_keys(tmp_path):
         await _until(
             pilot,
             lambda: (
-                not {"s", "shift+left", "shift+right", "u"}
+                not {"s", "shift+left", "shift+right", "comma b"}
                 & set(app.screen.active_bindings)
             ),
         )
-        await pilot.press("u")
+        await pilot.press("comma", "b")
         assert app.byte_unit == "auto"
 
 
@@ -178,17 +178,17 @@ async def test_span_picker(tmp_path):
 async def test_unit_picker(tmp_path):
     app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "processes")
     async with app.run_test(size=(120, 40)) as pilot:
-        # Before any change there is no unit to go back to: no hint, and u leaves it
+        # Before any change there is no unit to go back to: no hint, and b leaves it
         # open.
-        await pilot.press("u")
+        await pilot.press("comma", "b")
         await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
         assert app.screen._entries[options.highlighted][0] == "auto"
         assert not any(
-            "press u" in str(options.get_option_at_index(i).prompt)
+            "press b" in str(options.get_option_at_index(i).prompt)
             for i in range(options.option_count)
         )
-        await pilot.press("u")
+        await pilot.press("b")
         await pilot.pause(0.2)
         assert isinstance(app.screen, ByteUnitPicker)
         # Enter takes the highlighted unit.
@@ -199,20 +199,20 @@ async def test_unit_picker(tmp_path):
                 app.byte_unit == "MB" and not isinstance(app.screen, ByteUnitPicker)
             ),
         )
-        # The unit before has the hint, and u u goes back and forth.
-        await pilot.press("u")
+        # The unit before has the hint, and , b b goes back and forth.
+        await pilot.press("comma", "b")
         await _until(pilot, lambda: isinstance(app.screen, ByteUnitPicker))
         options = app.screen.query_one("#picker-results")
         assert (
             str(options.get_option_at_index(0).prompt)
             .rstrip()
-            .endswith("(press u to select)")
+            .endswith("(press b to select)")
         )
-        await pilot.press("u")
+        await pilot.press("b")
         await _until(
             pilot, lambda: app.byte_unit == "auto" and app.last_byte_unit == "MB"
         )
-        await pilot.press("u", "u")
+        await pilot.press("comma", "b", "b")
         await _until(
             pilot, lambda: app.byte_unit == "MB" and app.last_byte_unit == "auto"
         )
@@ -534,7 +534,7 @@ async def test_history_drill_down(tmp_path):
                 pilot,
                 lambda: app.time_range.zoom is None and plot.timeline.start == start,
             )
-            await pilot.press("u", "down", "enter")
+            await pilot.press("comma", "b", "down", "enter")
             await _until(pilot, lambda: app.byte_unit == "B")
             # Every history tab shows it, the hidden ones too, without asking again.
             for pane in (interfaces, processes):

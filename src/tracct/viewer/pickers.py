@@ -163,17 +163,19 @@ class SpanPicker(ListPicker[int | Unzoom]):
 
 
 class ByteUnitPicker(ListPicker[str]):
-    """One of BYTE_UNITS; `u` pressed again goes back to the byte unit before."""
+    """One of BYTE_UNITS; `b` pressed again goes back to the byte unit before."""
 
     DEFAULT_CSS = """
     ByteUnitPicker > #dialog { width: 52; }
     """
-    KEY = "u"
-    BINDINGS: ClassVar[list[Binding]] = [Binding("u", "again", "Last unit")]
+    KEY = "b"
+    BINDINGS: ClassVar[list[Binding]] = [Binding("b", "again", "Last unit")]
 
     def __init__(self, current: str, last: str | None) -> None:
         entries = [
             (byte_unit, byte_unit, "a unit per value" if byte_unit == "auto" else "")
             for byte_unit in BYTE_UNITS
         ]
-        super().__init__("Unit", entries, current, hint_value=last, again_value=last)
+        super().__init__(
+            "Byte unit", entries, current, hint_value=last, again_value=last
+        )
