@@ -232,6 +232,27 @@ of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_
 are dropped. A `[viewer] group` that does not exist is ignored. The `[record]` settings apply to
 forwarded flows too.
 
+`[[record.process]]` rules record some processes with less detail, or more, than the rest.
+A program with many peers, such as a BitTorrent client, writes a row per peer and window;
+without addresses and ports all of its traffic in a window is a row per protocol and local
+address:
+
+```toml
+# config.d/50-local.toml
+[[record.process]]
+unit = "transmission-daemon.service"
+addresses = false
+ports = false
+```
+
+A rule matches `exe`, `name` (the comm, which a thread may have changed) and `unit` as shell
+patterns, and every one it gives must match; the first rule that matches applies, to the
+rows written from then on. Its `addresses`, `ports` and `commands` replace those of
+`[record]` for its processes. The `ignore_*` lists see what the rule leaves: `ignore_ports`
+cannot match a process whose ports are not recorded. Rules apply neither to forwarded flows,
+which have no process, nor to the live feed. A rule without patterns or settings, or with
+an unknown key, is dropped with a warning.
+
 Domains in the database are stored in reversed notation (`com.example.www`), which is what
 `ignore_domains` prefixes match. A domain is the name the program looked up, else the
 reverse DNS name; a connection whose reverse DNS answer was still outstanding when its

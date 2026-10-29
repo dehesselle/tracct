@@ -39,6 +39,21 @@ ignore_ports = []
 ignore_domains = []
 # Addresses or networks, e.g. "10.0.0.0/8", matched against both ends.
 ignore_ips = []
+# Rules that record some processes differently, see below; the first that matches
+# applies.
+process = []
+
+# A rule as a drop-in would add it, here for a BitTorrent client whose many peers would
+# each be a row of their own:
+# [[record.process]]
+# Patterns as in a shell ("*" for anything); a process must match every one given.
+# exe = "/usr/bin/transmission-daemon"
+# name = "transmission-*"
+# unit = "transmission-daemon.service"
+# The options above for these processes; those left out stay as above.
+# addresses = false
+# ports = false
+# commands = false
 
 # The level of each message the running daemon logs, by the ID that starts its line:
 # "debug", "info", "warning", "error", or "off" to leave it out. A drop-in can set a

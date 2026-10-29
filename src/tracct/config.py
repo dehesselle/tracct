@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import dataclasses
+import fnmatch
 import grp
 import ipaddress
 import logging
@@ -29,6 +30,33 @@ class DatabaseConfig:
     maintenance_interval_minutes: int = 60
 
 
+#: The keys of a [[record.process]] rule that pick its processes, and those that set
+#: what is recorded of them.
+RULE_PATTERNS = ("exe", "name", "unit")
+RULE_SETTINGS = ("addresses", "ports", "commands")
+
+
+@dataclasses.dataclass(frozen=True)
+class ProcessRule:
+    """What is recorded of the processes matching every pattern given; a setting left
+    out (None) stays as [record] has it.
+    """
+
+    exe: str | None = None
+    name: str | None = None
+    unit: str | None = None
+    addresses: bool | None = None
+    ports: bool | None = None
+    commands: bool | None = None
+
+    def matches(self, exe: str, name: str, unit: str) -> bool:
+        patterns = (self.exe, self.name, self.unit)
+        return all(
+            pattern is None or fnmatch.fnmatchcase(value, pattern)
+            for pattern, value in zip(patterns, (exe, name, unit))
+        )
+
+
 @dataclasses.dataclass
 class RecordConfig:
     addresses: bool = True
@@ -39,6 +67,8 @@ class RecordConfig:
     ignore_ports: list[int] = dataclasses.field(default_factory=list)
     ignore_domains: list[str] = dataclasses.field(default_factory=list)
     ignore_ips: list[str] = dataclasses.field(default_factory=list)
+    #: Tables as read, ProcessRules once load_config() has checked them.
+    process: list[ProcessRule] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -148,6 +178,28 @@ def _apply(config: Config, raw: dict, path: Path) -> None:
                     )
                     continue
                 setattr(section_obj, field.name, value)
+
+
+def _rule_problem(rule: object) -> str | None:
+    """Why a [[record.process]] entry can't be used, or None. A rule without patterns
+    would match every process, one without settings would change nothing.
+    """
+    if not isinstance(rule, dict):
+        return f"expected a table, got {type(rule).__name__}"
+    unknown = set(rule) - set(RULE_PATTERNS) - set(RULE_SETTINGS)
+    if unknown:
+        return f"unknown option {', '.join(sorted(unknown))}"
+    for key in RULE_PATTERNS:
+        if key in rule and not isinstance(rule[key], str):
+            return f"{key}: expected a pattern, got {rule[key]!r}"
+    for key in RULE_SETTINGS:
+        if key in rule and not isinstance(rule[key], bool):
+            return f"{key}: expected true or false, got {rule[key]!r}"
+    if not any(key in rule for key in RULE_PATTERNS):
+        return f"names none of {', '.join(RULE_PATTERNS)}"
+    if not any(key in rule for key in RULE_SETTINGS):
+        return f"sets none of {', '.join(RULE_SETTINGS)}"
+    return None
 
 
 def load_config(config_path: Path = CONFIG_PATH) -> Config:
@@ -260,6 +312,14 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         for port in config.record.ignore_ports
         if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535
     ]
+    rules = []
+    for number, rule in enumerate(config.record.process, 1):
+        problem = _rule_problem(rule)
+        if problem:
+            logger.warning(f"config.record.process #{number}: {problem}, ignoring")
+        else:
+            rules.append(ProcessRule(**rule))
+    config.record.process = rules
     # Drop unknown messages and levels; set_levels() takes the rest as they are.
     valid_messages = {}
     for msgid, level in config.log.items():

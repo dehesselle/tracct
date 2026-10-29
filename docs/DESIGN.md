@@ -207,6 +207,13 @@ Rows are written every `write_limit_seconds`, one row per distinct connection an
 plus the window's interface counters and forwarded flows; a window that reaches 65 536
 connections is written early, so memory follows connections and not events.
 
+What a row keeps of its connection is decided when the window is summed: `[record]` can
+leave out addresses, ports and command lines, for every process or, by `[[record.process]]`
+rules, for some. A field left out is empty in the key, so the connections that differ only
+in it become one row, and the rollups follow from those rows. A program with many peers
+thus costs a few rows per window instead of one per peer, at the price of the detail no
+longer being there to take its spikes apart.
+
 History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
 spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
 who, which unit, which service port and which domain but drop addresses and ephemeral

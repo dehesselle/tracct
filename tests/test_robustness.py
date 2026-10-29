@@ -26,7 +26,7 @@ import pytest
 import tracct
 from tracct import messages, utils
 from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
-from tracct.config import Config, ViewerConfig, load_config
+from tracct.config import Config, ProcessRule, ViewerConfig, load_config
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -334,6 +334,44 @@ def test_config_ignore_ports_validated(tmp_path):
     )
     config = load_config(tmp_path / "config.toml")
     assert config.record.ignore_ports == [-1, 443]
+
+
+def test_config_process_rules_validated(tmp_path, caplog):
+    """[[record.process]] entries become rules; one that can't be used is dropped with
+    a warning, and a drop-in's list replaces the earlier one.
+    """
+    (tmp_path / "config.toml").write_text(
+        '[[record.process]]\nunit = "transmission-*"\naddresses = false\nports = false\n'
+        '[[record.process]]\nexe = "/usr/bin/curl"\n'
+        "[[record.process]]\naddresses = false\n"
+        '[[record.process]]\nname = "curl"\nports = "no"\n'
+        "[[record.process]]\nname = 5\nports = false\n"
+        '[[record.process]]\nname = "curl"\nports = false\nignore = true\n'
+    )
+    config = load_config(tmp_path / "config.toml")
+    assert config.record.process == [
+        ProcessRule(unit="transmission-*", addresses=False, ports=False)
+    ]
+    for problem in (
+        "#2: sets none of addresses, ports, commands",
+        "#3: names none of exe, name, unit",
+        "#4: ports: expected true or false, got 'no'",
+        "#5: name: expected a pattern, got 5",
+        "#6: unknown option ignore",
+    ):
+        assert f"config.record.process {problem}, ignoring" in caplog.text
+    (tmp_path / "config.toml").write_text("[record]\nprocess = [5]\n")
+    assert load_config(tmp_path / "config.toml").record.process == []
+    assert "config.record.process #1: expected a table, got int" in caplog.text
+    (tmp_path / "config.toml").write_text(
+        '[[record.process]]\nexe = "/usr/bin/a"\ncommands = false\n'
+    )
+    (tmp_path / "config.d").mkdir()
+    (tmp_path / "config.d" / "50-local.toml").write_text(
+        '[[record.process]]\nexe = "/usr/bin/b"\ncommands = false\n'
+    )
+    config = load_config(tmp_path / "config.toml")
+    assert [rule.exe for rule in config.record.process] == ["/usr/bin/b"]
 
 
 def _purge_db(tmp_path):

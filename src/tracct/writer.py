@@ -169,6 +169,8 @@ class WriteWindow:
         #: Many connections in one window share a cmdline, and this string work
         #: dominated at high cardinality.
         self.cmdlines: dict[str, str] = {}
+        #: (exe, name, unit) -> what is recorded of it, from [[record.process]].
+        self.details: dict[tuple[str, str, str], tuple[bool, bool, bool]] = {}
 
     def __len__(self) -> int:
         return len(self.connections) + len(self.flows)
@@ -184,6 +186,28 @@ class WriteWindow:
             )
             self.cmdlines[raw] = cleaned
         return cleaned
+
+    def detail(self, proc: BpfEvent) -> tuple[bool, bool, bool]:
+        """Whether a process's addresses, ports and commands are recorded: as the first
+        rule matching it says, else as [record] does.
+        """
+        record = self.config.record
+        if not record.process:
+            return record.addresses, record.ports, record.commands
+        key = (proc["exe"], proc["name"], proc.get("unit", ""))
+        detail = self.details.get(key)
+        if detail is None:
+            rule = next((rule for rule in record.process if rule.matches(*key)), None)
+            if rule is None:
+                detail = record.addresses, record.ports, record.commands
+            else:
+                detail = (
+                    record.addresses if rule.addresses is None else rule.addresses,
+                    record.ports if rule.ports is None else rule.ports,
+                    record.commands if rule.commands is None else rule.commands,
+                )
+            self.details[key] = detail
+        return detail
 
     def ignored(self, *addresses: str) -> bool:
         if self.ignored_networks:
@@ -209,18 +233,19 @@ class WriteWindow:
     def add(self, events: list[BpfEvent]) -> None:
         record = self.config.record
         for proc in events:
+            addresses, ports, commands = self.detail(proc)
             # Join or omit commands from logs.
-            if record.commands:
+            if commands:
                 cmdline = self.clean_cmdline(proc["cmdline"])
                 pcmdline = self.clean_cmdline(proc["pcmdline"])
             else:
                 cmdline = pcmdline = ""
             # The domain the program looked up; omitted with the address from logs.
             domain, raddr = proc["domain"], proc["raddr"]
-            if not record.addresses:
+            if not addresses:
                 domain = raddr = ""
             lport, rport = proc["lport"], proc["rport"]
-            if not record.ports:
+            if not ports:
                 lport, rport = min(0, lport), min(0, rport)
             # Omit entry from logs (domains are matched in take_rows, once reverse DNS
             # had its chance).
@@ -360,6 +385,7 @@ class WriteWindow:
         self.connections = {}
         self.flows = {}
         self.cmdlines = {}
+        self.details = {}
         return [
             (contime, send, recv, n_events, *key)
             for key, (send, recv, n_events) in rows.items()
@@ -583,8 +609,12 @@ def run_writer(
     units = Interned("units", ("unit",), ("",))
     interfaces = Interned("interfaces", ("netns", "name", "kind"), NO_INTERFACE)
     interned = (executables, domains, addresses, units, interfaces)
+    record = config.record
     reverse_dns = (
-        ReverseDns() if config.record.addresses and config.record.reverse_dns else None
+        ReverseDns()
+        if record.reverse_dns
+        and (record.addresses or any(rule.addresses for rule in record.process))
+        else None
     )
     netinfo = NetInfo() if config.database.enabled else None
     forwarded = (

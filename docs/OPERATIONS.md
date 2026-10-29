@@ -193,7 +193,10 @@ unit's `MemoryMax=1G` leaves room above it.
 
 The database grows with the number of distinct connections per write window (process,
 addresses, ports), not with bytes. Longer `write_limit_seconds` makes fewer, larger rows.
-Retention keeps it at roughly `raw_retention_days` worth of raw rows plus
+A program with many peers, such as a BitTorrent client, writes a row per peer and window,
+which its rollups barely merge (each peer has its own domain); a `[[record.process]]` rule
+that drops its addresses and ports makes that a few rows per window (see
+[MANUAL.md](MANUAL.md#configuration)). Retention keeps it at roughly `raw_retention_days` worth of raw rows plus
 `rollup_retention_days` worth of rollups, which hold one row per program, peer domain and
 service port per period; deleted pages are reused, so the file stays at its largest size
 without shrinking. Once a day after deleting rows, maintenance also scans all of them for

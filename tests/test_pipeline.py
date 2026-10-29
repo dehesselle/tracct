@@ -14,7 +14,7 @@ import time
 import typing
 
 from tracct import cli, writer
-from tracct.config import Config
+from tracct.config import Config, ProcessRule
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
 from tracct.utils import DropOldestQueue
@@ -82,6 +82,62 @@ def test_window_leaves_events_alone():
     assert (send, recv, n_events) == (101, 2001, 5)
     assert exe_key == ("/usr/bin/curl", "curl", "curl https://example.com")
     assert unit == "session-1.scope"
+
+
+def test_window_process_rules():
+    """A rule records its processes with the detail it sets, so a client's peers become
+    one row while other processes keep theirs; the first rule that matches applies, and a
+    rule can record what [record] leaves out.
+    """
+    config = Config()
+    config.record.commands = False
+    config.record.process = [
+        ProcessRule(unit="transmission-*", addresses=False, ports=False),
+        # Never reached: the rule above matches the same processes first.
+        ProcessRule(unit="transmission-daemon.service", ports=True),
+        ProcessRule(exe="/usr/bin/wget", commands=True),
+    ]
+    torrent = {
+        "exe": "/usr/bin/transmission-daemon",
+        "name": "transmission-da",
+        "unit": "transmission-daemon.service",
+        "lport": 51413,
+    }
+    window = writer.WriteWindow(config)
+    window.add(
+        [
+            _event(**torrent, raddr="192.0.2.1", rport=51413, domain=""),
+            _event(**torrent, raddr="192.0.2.2", rport=6881, domain=""),
+            _event(**torrent, raddr="198.51.100.7", rport=40000, domain="net.peer"),
+            _event(),
+            _event(exe="/usr/bin/wget", name="wget", cmdline="wget\0https://a.b\0"),
+        ]
+    )
+    rows, _ = window.take_rows()
+    by_exe = {row[4][0]: row for row in rows}
+    assert len(rows) == 3
+    torrent_row = by_exe["/usr/bin/transmission-daemon"]
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface = torrent_row
+    assert torrent_row[1:4] == (300, 6000, 12)
+    assert (lport, rport, raddr, domain) == (0, 0, "", "")
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface = by_exe["/usr/bin/curl"]
+    assert (lport, rport, raddr, domain) == (50000, 443, "93.184.215.14", "com.example")
+    assert by_exe["/usr/bin/curl"][4] == ("/usr/bin/curl", "curl", "")
+    assert by_exe["/usr/bin/wget"][4:6] == (
+        ("/usr/bin/wget", "wget", "wget https://a.b"),
+        ("/usr/bin/bash", "bash", "bash"),
+    )
+    # Addresses for one program only.
+    config = Config()
+    config.record.addresses = False
+    config.record.process = [ProcessRule(name="cur?", addresses=True)]
+    window = writer.WriteWindow(config)
+    window.add([_event(), _event(exe="/usr/bin/wget", name="wget")])
+    rows, _ = window.take_rows()
+    assert sorted((row[4][1], row[13]) for row in rows) == [
+        ("curl", "93.184.215.14"),
+        ("wget", ""),
+    ]
 
 
 class _FakeDns:
