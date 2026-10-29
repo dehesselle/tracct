@@ -6,7 +6,7 @@
 
 A list rather than cycling through the values makes a choice one reload, not one per
 value passed on the way. The key that opened a picker, pressed again, picks the entry
-with the hint, as snakecam's `f` does in its filter dialog.
+with the hint.
 """
 
 from __future__ import annotations

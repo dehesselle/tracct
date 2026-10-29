@@ -21,7 +21,7 @@ from tracct.viewer.model import Timeline
 #: the query server's bucket limit at the longest bucket.
 MIN_SPAN = 60
 MAX_SPAN = 10 * 365 * 86400
-#: In the title while the tab is updating, as snakecam shows it.
+#: In the title while the tab is updating.
 BUSY = "↻"
 #: The stretch, in seconds, whose highest rate a point shows; the default write window,
 #: which the query server lengthens it to if the daemon writes less often.
