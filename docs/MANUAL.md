@@ -40,9 +40,9 @@ another:
   it, clicking it again reverses; the summary starts sorted by executable path, the events
   newest first. `Space` pauses the events table, `r` resets both.
 - **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and
-  **Processes** (socket bytes): the history, grouped by the dimension chosen on the left, over the time
-  range named at the start of the plot's title. The three kinds of bytes are never added
-  together.
+  **Processes** (socket bytes): the history, grouped by the dimension chosen in the group
+  by list on the left, over the time range named at the start of the plot's title. The
+  three kinds of bytes are never added together.
 
 A history table starts with the sums over all its rows. On Processes and Interfaces there is
 one per layer, `(all · inner)`, `(all · tunnel)` and `(all · outer)`, as a VPN's traffic shows
@@ -51,8 +51,8 @@ through a VPN, seen at the program's socket or the `tun` device; tunnel the same
 client; outer everything else, which is what leaves the network card (the VPN's own
 encrypted traffic too) and localhost. On Forwarded there is one `(all)`. The highlight starts
 on the largest row below them; a find hides them, as they sum up the rows it hides too. The
-table's title counts the rows while a find hides some or there are more than it shows (up to
-1000).
+table, the summary, counts the rows in its title while a find hides some or there are more
+than it shows (up to 1000).
 
 In a history tab, the chords under `,` `f` filter: `i` keeps only the highlighted row's value
 and `e` excludes it, `p` takes the last filter off and `c` all of them. A filter stays when
@@ -66,7 +66,7 @@ any 10 seconds within its bucket (a whole period in the rollups), so a short spi
 height at any zoom; if the daemon writes less often than every 10 seconds, the stretch is its
 write window and the title says so. A vertical line marks where the rollups end. Hovering
 shows a bucket's bytes and peaks in the bottom border. `,` `p` gives the whole tab to the
-plot, for more room to zoom and pan, and brings back the dimensions and the table when
+plot, for more room to zoom and pan, and brings back the group by list and the summary when
 pressed again; it holds for every history tab.
 
 The plot's time axis is the range of every history tab: the mouse wheel or `+` and `-` zoom,
@@ -85,8 +85,9 @@ opens the viewer's settings, such as the live tab's limits. They are kept per us
 values changed from their defaults.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
-forwarded flow's source, ephemeral ports as 0. Dimensions marked "raw only" narrow the range
-to the raw rows. The table's bottom border says from when, or where the rollups begin.
+forwarded flow's source, ephemeral ports as 0. Entries of the group by list marked "raw
+only" narrow the range to the raw rows. The summary's bottom border says from when, or
+where the rollups begin.
 
 ```text
 tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [--query-socket PATH]

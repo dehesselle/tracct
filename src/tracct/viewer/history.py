@@ -150,7 +150,9 @@ class HistoryPane(FindablePane):
 
     def compose_content(self) -> ComposeResult:
         with Horizontal():
-            yield OptionList(id="dimensions")
+            dimensions = OptionList(id="dimensions")
+            dimensions.border_title = "group by"
+            yield dimensions
             with Vertical():
                 yield TrafficPlot()
                 # tcoda's, for the same look as the live tab's; its columns do not sort,
@@ -428,15 +430,15 @@ class HistoryPane(FindablePane):
     def update_status(self) -> None:
         """The table's borders.
 
-        Its title counts the rows only while some are not shown, its bottom border says
-        where the range meets the rollups.
+        Its title names it summary, as on the live tab, and counts the rows only while
+        some are not shown; its bottom border says where the range meets the rollups.
         """
         table = self.query_one(DataTable)
         result = self.result
-        title = subtitle = ""
+        title, subtitle = "summary", ""
         if result is not None:
             if self.find or result.truncated:
-                title = f"{len(self.shown())} of {result.groups} rows"
+                title += f" · {len(self.shown())} of {result.groups} rows"
             if result.clipped:
                 subtitle = f"raw rows only: from {format_time(result.start)}"
             elif result.start < result.split:

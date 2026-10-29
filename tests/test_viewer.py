@@ -454,13 +454,14 @@ async def test_history_drill_down(tmp_path):
             processes.reload()
             await _until(pilot, lambda: set(_values(processes)) == {"host", str(VPN)})
             assert not banner.display
+            assert processes.query_one("#dimensions").border_title == "group by"
             # The table's title counts the rows only while some are hidden.
-            assert not table.border_title
+            assert table.border_title == "summary"
             # Find narrows the rows shown; kept with Enter, the banner says it, and c
             # clears it.
             await pilot.press("slash", "h", "o", "s", "t")
             await _until(pilot, lambda: _values(processes) == ["host"])
-            assert table.border_title == "1 of 2 rows"
+            assert table.border_title == "summary · 1 of 2 rows"
             # The input opens on the tab's own top line.
             assert (
                 processes.children[0].has_class("find", "shown") and not banner.display
@@ -473,7 +474,7 @@ async def test_history_drill_down(tmp_path):
             await _until(
                 pilot, lambda: len(_values(processes)) == 2 and not banner.display
             )
-            assert not table.border_title
+            assert table.border_title == "summary"
             # Escape clears an open one.
             await pilot.press("slash", "h")
             await _until(pilot, lambda: _values(processes) == ["host"])
