@@ -125,7 +125,8 @@ in `pyproject.toml`).
 
 CI (`.github/workflows/build.yml`) runs the checks, builds the sdist and, with the BPF
 object, the x86_64 and aarch64 wheels, and runs the tests as root from the wheels on Python
-3.12 to 3.14.
+3.12 to 3.14. The `Programming Language :: Python :: 3.x` classifiers in `pyproject.toml`
+name the same versions; change both together.
 
 ## Releasing
 
