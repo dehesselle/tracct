@@ -69,7 +69,9 @@ traffic come from netlink.
   connection tracking table (ctnetlink) of every namespace it reads the interfaces of, and
   turns each flow's cumulative counters into the bytes moved since the last dump; one
   listener thread reads the destroy group of each namespace for the final counters of flows
-  that end in between. Another namespace's table is dumped from a short-lived thread that joins it,
+  that end in between. A flow missing from a dump is remembered for one more window, so an
+  end the listener passes on late is counted from where the flow was, not from zero.
+  Another namespace's table is dumped from a short-lived thread that joins it,
   and its listener socket is opened there; that socket keeps the namespace alive until the
   next window has found it gone. Counters are only read, never zeroed, so nothing else that
   reads them is disturbed. Flows with a local address of their namespace at either end, and

@@ -109,6 +109,24 @@ class Entry:
     #: was off as the flow started.
     counters: tuple[int, int, int, int] | None
 
+    def same_flow(self, other: Entry) -> bool:
+        """Whether other has the tuples of this one, as an id reused by another flow
+        would not.
+        """
+        return (
+            self.protocol,
+            self.orig_src,
+            self.orig_sport,
+            self.reply_src,
+            self.reply_sport,
+        ) == (
+            other.protocol,
+            other.orig_src,
+            other.orig_sport,
+            other.reply_src,
+            other.reply_sport,
+        )
+
 
 def _align(n: int) -> int:
     return (n + 3) & ~3
@@ -359,6 +377,8 @@ class Conntrack:
         try:
             #: The counters each forwarded flow had at the last collect.
             self.seen = self._enter(lambda: self.dumper(self.local))
+            #: Flows the last collect no longer found, without an event of their end.
+            self.gone: dict[int, Entry] = {}
             #: When seen was dumped: the start of what the next collect counts.
             self.collected_at = clock()
         except BaseException:
@@ -455,10 +475,24 @@ class Conntrack:
 
         for flow_id, entry in current.items():
             add(entry, self.seen.get(flow_id))
-        # Ended flows: what they moved after the dump that saw them last, this one or
-        # the one before.
+        # Ended flows: what they moved after the dump that saw them last, this one, the
+        # one before, or for an event that came late, the one before that.
         for flow_id, entry in destroyed:
-            add(entry, current.pop(flow_id, None) or self.seen.get(flow_id))
+            before = current.pop(flow_id, None) or self.seen.get(flow_id)
+            if before is None:
+                before = self.gone.get(flow_id)
+                if before is not None and not before.same_flow(entry):
+                    before = None
+            add(entry, before)
+        # A flow that ended before this dump reached it, whose event the listener had
+        # not passed on yet, is missing from both: kept for one more collect, its event
+        # finds what was counted of it already.
+        ended = {flow_id for flow_id, _ in destroyed}
+        self.gone = {
+            flow_id: entry
+            for flow_id, entry in self.seen.items()
+            if flow_id not in current and flow_id not in ended
+        }
         self.seen = current
         if lost:
             self.report(

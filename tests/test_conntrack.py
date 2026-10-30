@@ -184,6 +184,35 @@ def test_collect_reports_deltas():
     assert set(tracker.seen) == {2}
 
 
+def test_collect_counts_a_late_end_once():
+    """A flow that ends before a dump reaches it, whose destroy event the listener
+    passes on only after that collect, is counted from where it was, not from zero.
+    """
+    dumps = [{1: _entry(100, 1000)}, {1: _entry(150, 1500)}, {}, {}, {}]
+    tracker = conntrack.Conntrack(
+        lambda msgid, message: None,
+        set(),
+        dumper=lambda local: dumps.pop(0),
+        opener=None,
+    )
+    assert [(flow.orig_bytes, flow.reply_bytes) for flow in tracker.collect(set())] == [
+        (50, 500)
+    ]
+    # Gone from the dump, its event not yet there.
+    assert tracker.collect(set()) == []
+    tracker.destroyed.append((1, _entry(170, 1700)))
+    assert [(flow.orig_bytes, flow.reply_bytes) for flow in tracker.collect(set())] == [
+        (20, 200)
+    ]
+    # Another flow under the id is not taken for it.
+    tracker.gone = {1: _entry(170, 1700)}
+    other = conntrack.Entry(6, "100.64.0.3", 40001, "198.51.100.7", 443, (5, 50, 1, 1))
+    tracker.destroyed.append((1, other))
+    assert [(flow.orig_bytes, flow.reply_bytes) for flow in tracker.collect(set())] == [
+        (5, 50)
+    ]
+
+
 def test_collect_reports_flows_without_counters_once():
     uncounted = conntrack.Entry(6, "100.64.0.2", 40000, "198.51.100.7", 443, None)
     dumps = [{}, {1: uncounted}, {1: uncounted, 2: _entry(30, 300)}]
