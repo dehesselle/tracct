@@ -142,12 +142,13 @@ what it carries into packets sent by another interface (`TUNNEL_KINDS` in
 - the kernel's own tunnels and encapsulations: `wireguard`, `gre`, `gretap`, `ip6gre`,
   `ip6gretap`, `ipip`, `sit`, `ip6tnl`, `vxlan`, `geneve`, `xfrm`, `vti`, `vti6`.
 
-Every row carries its interface, which gives its layer:
+Every row carries its family and its interface, which give its layer:
 
 - **Processes**:
   - **inner**: a socket whose local address is on a tunnel device;
   - **tunnel**: an `AF_PACKET` row on a `tun` device;
-  - **outer**: every other row, localhost and traffic between namespaces included.
+  - **packet**: every other `AF_PACKET` row;
+  - **outer**: every other socket, localhost and traffic between namespaces included.
 - **Interfaces**:
   - **inner**: a tunnel device's counters;
   - **outer**: every other device's.
@@ -161,6 +162,18 @@ The layers follow these choices:
 - **The `tunnel` layer.** The name is tracct's own. Elsewhere, the VPN client's TUN read is
   still the inner packet, seen at the tunnel's endpoint. tracct keeps it apart because it
   is a second process's count of the same bytes.
+- **The `packet` layer.** The name is tracct's own, after packet(7), the sockets most of
+  its bytes go through. Its rows are a process's raw I/O outside a TUN: packet sockets,
+  AF_XDP, and the TUN reads and writes of a process that holds no TUN device, or several,
+  so the writer cannot tell which. Raw I/O is counted per process and namespace only, so a
+  row holds all of these at once, without an interface or a peer.
+  - Sent bytes are mostly frames a program injects (arping, a DHCP client). They leave an
+    interface and no socket counts them otherwise.
+  - Received bytes are mostly a capture's copies (tcpdump) of frames that the kernel
+    handles anyway, and that a socket or an interface counts already.
+
+  So, as with the tunnel layer, adding the layer to the others can count bytes twice.
+  Interface counters likewise count injected frames and not a capture's copies.
 
 A connection's **peer** says where its remote address is. The writer decides it once per
 window, from the address the program used, so it is right also where `[record]` leaves the
@@ -171,8 +184,9 @@ address out. It is stored with the row (`peer`):
   the machine: localhost, the host's own addresses, and traffic between the host and its
   containers.
 - **remote**: any other address, broadcast and multicast included.
-- **none** (`''`): a row without a remote address, such as an `AF_PACKET` row or a socket
-  that has no peer.
+- **none** (`''`): a row without a remote address: an `AF_PACKET` row, or a row without
+  bytes, such as a process's exec. A socket always has one, `0.0.0.0` or `::` while it
+  is unconnected.
 
 An interface's **class** says whether it is a network card:
 
@@ -196,21 +210,19 @@ The peer and the class follow these choices and terms:
   interfaces. rtnetlink fills `IFLA_PARENT_DEV_NAME` from the same parent, so the class
   is the same in every namespace, where sysfs only shows the daemon's own. There are two
   classes, as there; `lo` is virtual and is easy to find by its name.
-- **Raw rows outside a TUN.** An `AF_PACKET` row that is not on a `tun` is outer and has
-  no peer. It is either a capture's copy (tcpdump), which is not traffic, or a frame a
-  program injects (arping, DHCP), which leaves the NIC. The row cannot tell the two apart.
 
 The **totals** are built from these, so that no two hold the same bytes:
 
-- **Processes**: inner, tunnel, outer · local, outer · remote, and outer · no peer for the
-  rest. Together they hold every socket byte, a tunnel's traffic once per layer, so only
-  each on its own means one thing.
+- **Processes**: inner, tunnel, packet, outer · local, outer · remote, and outer · no
+  peer for the rest, which only has bytes if a socket ever comes without an address.
+  Together they hold every byte, a tunnel's traffic once per layer, so only each on its
+  own means one thing.
 - **Interfaces**: inner (the tunnel devices) and physical. The other virtual devices get
   no total, as theirs would add the same bytes several times (a veth and its bridge, a
   bond and its VLAN). Netdata's aggregate is the physical interfaces only, and vnstat
   adds no interfaces unless asked to.
-- The labels `tunnel` and `outer · no peer` are tracct's own names; the rest are the terms
-  above.
+- The labels `tunnel`, `packet` and `outer · no peer` are tracct's own names; the rest are
+  the terms above.
 
 **What leaves the network cards** is two of these totals: `outer · remote` on Processes,
 `physical` on Interfaces. They differ where a socket does not see what the card carries:
@@ -218,6 +230,7 @@ The **totals** are built from these, so that no two hold the same bytes:
 - headers and retransmits, which socket bytes leave out;
 - a kernel tunnel's encrypted packets, which have no socket and are only in the
   interface's counters;
+- frames that programs inject, which are in the packet layer;
 - forwarded traffic, which has no process and is on Interfaces and the Forwarded tab.
 
 ## Threads

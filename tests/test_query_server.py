@@ -347,19 +347,22 @@ def test_interfaces_and_layers(tmp_path):
 
 def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     """A socket on a kernel tunnel is inside it, as are the tunnel device's counters;
-    a raw row on a tun is the VPN client's, the tunnel layer.
+    a raw row on a tun is the VPN client's, the tunnel layer, and one elsewhere is packet
+    I/O.
     """
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     con.execute(
         f"INSERT INTO interfaces VALUES (4, {HOST_ID}, 'wg0', 'wireguard', 'virtual')"
     )
-    # A socket on wg0 to a remote peer, and a raw row on tailscale0, without one.
+    # A socket on wg0 to a remote peer, a raw row on tailscale0, without one, and a raw
+    # row of a process with no tun, also without one.
     con.executemany(
         "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 10)",
         [
             (P0 + 3 * H + 30, 7, 8, 1, 2, 6, 50004, 443, 1, 2, HOST_ID, 4, 2),
             (P0 + 3 * H + 40, 5, 6, 3, 17, 0, 0, 0, 0, 0, HOST_ID, 2, 0),
+            (P0 + 3 * H + 40, 2, 1, 2, 17, 0, 0, 0, 0, 0, HOST_ID, 0, 0),
         ],
     )
     con.execute(
@@ -368,12 +371,18 @@ def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     con.commit()
     con.close()
     _, rows = _aggregate(db, "layer", start=P0 + 2 * H)
-    assert rows == {"outer": (11, 22), "inner": (307, 38), "tunnel": (5, 6)}
+    assert rows == {
+        "outer": (11, 22),
+        "inner": (307, 38),
+        "tunnel": (5, 6),
+        "packet": (2, 1),
+    }
     response, _ = _aggregate(db, "exe")
     assert [part[:3] for part in response["parts"]] == [
         ["outer · remote", 6111, 11522],
         ["inner", 307, 38],
         ["tunnel", 5, 6],
+        ["packet", 2, 1],
     ]
     _, rows = _aggregate(db, "layer", source="interfaces")
     assert rows == {"outer": (670, 6700), "inner": (13, 130)}
@@ -441,13 +450,14 @@ def test_namespaces_keep_the_name_of_their_rows(tmp_path):
 def test_totals_per_layer_and_peer(tmp_path):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
-    # A connection to a local peer, a raw row outside a tun (a capture), and a bridge's
-    # counters.
+    # A connection to a local peer, a raw row outside a tun (a capture), a socket
+    # without a peer, and a bridge's counters.
     con.executemany(
         "INSERT INTO connections VALUES (?, ?, ?, 1, 2, 2, 0, 1000, ?, 6, 0, 0, 0, 0, 0, ?, ?, ?, 10)",
         [
             (P0 + 3 * H + 50, 3, 4, 2, HOST_ID, 1, 1),
             (P0 + 3 * H + 50, 1, 2, 17, HOST_ID, 0, 0),
+            (P0 + 3 * H + 50, 1, 1, 2, HOST_ID, 1, 0),
         ],
     )
     con.execute(
@@ -465,7 +475,8 @@ def test_totals_per_layer_and_peer(tmp_path):
         ["outer · remote", 6111, 11522, [["layer", "outer"], ["peer", "remote"]]],
         ["inner", 300, 30, [["layer", "inner"]]],
         ["outer · local", 3, 4, [["layer", "outer"], ["peer", "local"]]],
-        ["outer · no peer", 1, 2, [["layer", "outer"], ["peer", ""]]],
+        ["packet", 1, 2, [["layer", "packet"]]],
+        ["outer · no peer", 1, 1, [["layer", "outer"], ["peer", ""]]],
     ]
     # The bridge is in no sum: virtual devices other than tunnels carry the same bytes
     # several times.

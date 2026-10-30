@@ -173,10 +173,11 @@ TUNNEL_KINDS = (
     "vti6",
 )
 _TUNNEL_KINDS_SQL = ", ".join(f"'{kind}'" for kind in TUNNEL_KINDS)
-#: A socket on a tunnel is inside it, a raw row on a tun is the VPN client's.
+#: A socket on a tunnel is inside it, a raw row on a tun is the VPN client's, and any
+#: other raw row is packet I/O, which is a copy where it is a capture's.
 LAYER = Dimension(
     "layer",
-    f"CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind IN ({_TUNNEL_KINDS_SQL}) THEN 'inner' ELSE 'outer' END",
+    f"CASE WHEN t.family = 17 THEN CASE WHEN ti.kind = 'tun' THEN 'tunnel' ELSE 'packet' END WHEN ti.kind IN ({_TUNNEL_KINDS_SQL}) THEN 'inner' ELSE 'outer' END",
     join=True,
 )
 #: The same on an interface's counters: a tunnel device carries what goes through the
@@ -211,16 +212,19 @@ class Total:
 
 #: See "Layers, peers and interface classes" in docs/DESIGN.md: never two totals of
 #: the same bytes, as no total adds up layers or peers.
-_INNER = (
-    "t.iface_id IN ({tunnel}) AND (t.family IS NOT 17 OR t.iface_id NOT IN ({tun}))"
-)
-_OUTER = "t.iface_id NOT IN ({tunnel})"
+_INNER = "t.iface_id IN ({tunnel}) AND t.family IS NOT 17"
+_OUTER = "t.iface_id NOT IN ({tunnel}) AND t.family IS NOT 17"
 CONNECTION_TOTALS = (
     Total("inner", _INNER, (("layer", "inner"),)),
     Total(
         "tunnel",
         "t.iface_id IN ({tun}) AND t.family = 17",
         (("layer", "tunnel"),),
+    ),
+    Total(
+        "packet",
+        "t.iface_id NOT IN ({tun}) AND t.family = 17",
+        (("layer", "packet"),),
     ),
     Total(
         "outer · local",

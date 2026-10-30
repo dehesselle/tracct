@@ -55,10 +55,13 @@ three times.
   - `(all · inner)`: what goes through a tunnel (a VPN, WireGuard in the kernel, GRE,
     VXLAN, …), at the program's socket;
   - `(all · tunnel)`: the same, at a VPN client's TUN device;
-  - `(all · outer · local)`: everything else whose peer is on this machine (localhost, its
-    own addresses, its containers);
-  - `(all · outer · remote)`: everything else whose peer is elsewhere;
-  - `(all · outer · no peer)`: raw frames outside a VPN, such as a capture's copies.
+  - `(all · packet)`: frames that programs read and write themselves outside a VPN:
+    sent, frames they inject (arping, a DHCP client); received, mostly a capture's copies
+    of traffic counted elsewhere (tcpdump);
+  - `(all · outer · local)`: the other sockets whose peer is on this machine (localhost,
+    its own addresses, its containers);
+  - `(all · outer · remote)`: the other sockets whose peer is elsewhere;
+  - `(all · outer · no peer)`: sockets without a peer, if there are bytes of any.
 - **Interfaces**:
   - `(all · inner)`: the tunnel devices;
   - `(all · physical)`: the network cards.
@@ -68,7 +71,8 @@ three times.
 
 What left the machine through its network cards is `(all · physical)` on Interfaces. On
 Processes it is `(all · outer · remote)`, without headers, without a kernel tunnel's
-encrypted traffic (which has no socket) and without forwarded traffic. The reasons are in
+encrypted traffic (which has no socket), without injected frames (in `packet`) and without
+forwarded traffic. The reasons are in
 [DESIGN.md](DESIGN.md#layers-peers-and-interface-classes). The highlight starts
 on the largest row below them; a find hides them, as they sum up the rows it hides too. The
 table, the summary, counts the rows in its title while a find hides some or there are more
