@@ -232,7 +232,10 @@ their defaults with a warning.
 
 Both retentions take fractions of a day, down to seconds: `raw_retention_days = 0.0069`
 keeps about ten minutes, which lets a test run through retention without waiting a day.
-Raw rows past `raw_retention_days` are only deleted once their period is rolled up. A change
+Raw rows past `raw_retention_days` are only deleted once their period is rolled up. Raw rows
+kept longer than the rollups (`raw_retention_days = 0`, or a longer one than
+`rollup_retention_days`) outlast them, and once they do, the history tabs read the raw rows
+alone. A change
 of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries
 are dropped. A `[viewer] group` that does not exist is ignored. The `[record]` settings apply to
 forwarded flows too.

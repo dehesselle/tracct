@@ -167,6 +167,41 @@ def test_raw_rows_take_over_from_rollups(tmp_path):
     )
 
 
+def test_raw_rows_older_than_the_rollups_are_read(tmp_path):
+    # Rollups kept shorter than the raw rows, raw rows kept forever, or both as long, which
+    # purges the oldest raw rows' own period from the rollups: the rollups begin after
+    # the raw rows.
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    for table in ("connections_rollup", "interface_traffic_rollup", "forwarded_rollup"):
+        con.execute(f"DELETE FROM {table} WHERE period <= ?", (P0 + H,))
+    con.commit()
+    con.close()
+    response, rows = _aggregate(db, "exe")
+    # The raw rows are all there is before the oldest rollup, and from it on hold more
+    # than the rollups do.
+    assert response["split"] == 0
+    assert rows == {
+        "/usr/bin/curl": (100000 + 1 + 10, 100000 + 2 + 20),
+        "/usr/sbin/nginx": (300, 30),
+    }
+    # Nor do they clip a dimension the rollups do not keep.
+    response, rows = _aggregate(db, "raddr")
+    assert not response["clipped"] and rows["93.184.215.14"] == (100011, 100022)
+    assert _ask(db, "describe")["sources"]["connections"]["split"] == 0
+
+
+def test_without_rollups_the_raw_rows_are_read(tmp_path):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM connections_rollup")
+    con.commit()
+    con.close()
+    response, rows = _aggregate(db, "exe")
+    assert response["split"] == 0
+    assert rows["/usr/bin/curl"] == (100011, 100022)
+
+
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
     db = _db(tmp_path)
     # Reaching into the rollups, ephemeral ports in raw rows become 0 as they are there.

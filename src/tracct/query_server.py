@@ -353,10 +353,15 @@ def split_point(con: sqlite3.Connection, source: Source) -> int:
     """Where a source's raw rows take over from its rollups.
 
     The first rolled-up period from the oldest raw row on (that row's own period, partly
-    purged, comes from the rollup), else the watermark; 0 when nothing is rolled up.
+    purged, comes from the rollup), else the watermark. 0 reads the raw rows alone: when
+    nothing is rolled up, and when the rollups begin after the raw rows do, as with raw
+    rows kept longer than the rollups, or forever.
     """
     row = con.execute(
-        f"SELECT COALESCE((SELECT MIN(period) FROM {source.rollup} WHERE period >= (SELECT MIN(time) FROM {source.raw})), (SELECT value FROM meta WHERE key = 'rollup_watermark'), 0)"
+        f"WITH r AS (SELECT MIN(period) AS oldest FROM {source.rollup}), w AS (SELECT MIN(time) AS oldest FROM {source.raw})"
+        " SELECT CASE WHEN r.oldest IS NULL OR r.oldest > w.oldest THEN 0"
+        f" ELSE COALESCE((SELECT MIN(period) FROM {source.rollup} WHERE period >= w.oldest), (SELECT value FROM meta WHERE key = 'rollup_watermark'), 0) END"
+        " FROM r, w"
     ).fetchone()
     return row[0]
 

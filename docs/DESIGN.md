@@ -299,7 +299,9 @@ time (30 s) and concurrent viewers (8).
 A range is read from the raw rows wherever they still exist and from the rollups before that,
 so a spike can be taken apart by address and port for all of `raw_retention_days`. The split
 is the first rolled-up period from the oldest raw row on: that row's own period has already
-been partly purged, and only its rollup is complete. A dimension the rollups do not keep
+been partly purged, and only its rollup is complete. Where the rollups begin after the
+oldest raw row, as when raw rows are kept longer than the rollups or forever, the raw rows
+alone are read. A dimension the rollups do not keep
 (the addresses of connections, the destination address and source port of forwarded flows) narrows
 the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
