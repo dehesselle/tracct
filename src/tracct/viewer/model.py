@@ -111,12 +111,16 @@ class Aggregate:
     groups: int
     #: Whether there are more values than rows.
     truncated: bool
-    #: The start of the range the answer covers.
+    #: The range the answer covers: narrower where a dimension clips it, wider where it
+    #: reaches into rollup periods, which it takes whole.
     start: int
+    end: int
     #: Where the raw rows take over from the rollups.
     split: int
     #: Whether the dimension exists only in the raw rows, which then cut the range.
     clipped: bool
+    #: Whether the range was widened to whole rollup periods.
+    widened: bool
 
     @classmethod
     def parse(cls, raw: dict) -> Aggregate:
@@ -127,8 +131,10 @@ class Aggregate:
             groups=raw["groups"],
             truncated=raw["truncated"],
             start=raw["start"],
+            end=raw["end"],
             split=raw["split"],
             clipped=raw["clipped"],
+            widened=raw["widened"],
         )
 
 
@@ -141,6 +147,22 @@ class Bucket:
     in_bytes: int
     out_rate: float
     in_rate: float
+
+
+@dataclasses.dataclass(frozen=True)
+class Span:
+    """A rollup period longer than a bucket: its sums and its average rates."""
+
+    start: int
+    seconds: int
+    out_bytes: int
+    in_bytes: int
+    out_rate: float
+    in_rate: float
+
+    @property
+    def end(self) -> int:
+        return self.start + self.seconds
 
 
 @dataclasses.dataclass(frozen=True)
@@ -158,6 +180,8 @@ class Timeline:
     split: int
     #: Only the buckets with bytes, in order.
     buckets: tuple[Bucket, ...]
+    #: The rollup periods longer than a bucket, in order, which take no buckets.
+    spans: tuple[Span, ...] = ()
 
     @classmethod
     def parse(cls, raw: dict, start: int, end: int, origin: int) -> Timeline:
@@ -169,4 +193,9 @@ class Timeline:
             peak=raw["peak"],
             split=raw["split"],
             buckets=tuple(Bucket(*bucket) for bucket in raw["buckets"]),
+            spans=tuple(Span(*span) for span in raw.get("spans", ())),
         )
+
+    def span_at(self, t: float) -> Span | None:
+        """Return the span that holds `t`, if any."""
+        return next((s for s in self.spans if s.start <= t < s.end), None)

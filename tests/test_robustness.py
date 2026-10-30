@@ -462,7 +462,7 @@ def test_roll_up_sums_closed_periods(tmp_path):
 
 def test_roll_up_keeps_the_seconds_of_a_partial_period(tmp_path):
     """After a longer period takes over, the watermark can sit inside a period: its
-    rollup covers the rest of it, and its seconds say so.
+    rollup covers the rest of it, starting where the rest starts, and its seconds say so.
     """
     from tracct import writer
 
@@ -478,7 +478,7 @@ def test_roll_up_keeps_the_seconds_of_a_partial_period(tmp_path):
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
     assert con.execute(
         "SELECT period, seconds FROM connections_rollup ORDER BY period"
-    ).fetchall() == [(first, hour - 900), (first + hour, hour)]
+    ).fetchall() == [(first + 900, hour - 900), (first + hour, hour)]
     con.close()
 
 

@@ -60,6 +60,10 @@ IDLE_EXIT_SECONDS = 600
 #: The first file descriptor systemd passes (sd_listen_fds(3)).
 SD_LISTEN_FDS_START = 3
 
+#: The longest a rollup row covers (rollup_period_minutes is at most 1440), so the
+#: period holding a time is found through the index on the period.
+ROLLUP_SECONDS_MAX = 86400
+
 #: The join a key may need; the raw table and its rollup are both t and share their
 #: columns.
 JOIN_INTERFACE = "JOIN interfaces ti ON ti.id = t.iface_id"
@@ -399,9 +403,32 @@ class _Plan:
         )
         self.parts = []
         if start < self.split:
-            self.parts.append((True, start, min(end, self.split)))
+            # A rollup holds nothing finer than its period: the range takes the whole
+            # periods it reaches into, and says so.
+            first, last = start, min(end, self.split)
+            covering = self._covering(con, first)
+            if covering is not None:
+                first = covering[0]
+            covering = self._covering(con, last - 1)
+            if covering is not None:
+                last = max(last, covering[1])
+            self.parts.append((True, first, last))
+            self.start, self.end = min(start, first), max(end, last)
         if end > self.split:
             self.parts.append((False, max(start, self.split), end))
+        self.widened = (self.start, self.end) != (start, end)
+
+    def _covering(self, con: sqlite3.Connection, t: int) -> tuple[int, int] | None:
+        """[start, end) of the rollup period that holds t, None outside any.
+
+        The rollup rows of a period share its start and seconds, and periods do not
+        overlap, so the last one starting at or before t is the only candidate.
+        """
+        row = con.execute(
+            f"SELECT period, period + seconds FROM {self.source.rollup} WHERE period <= ? AND period > ? ORDER BY period DESC LIMIT 1",
+            (t, t - ROLLUP_SECONDS_MAX),
+        ).fetchone()
+        return (row[0], row[1]) if row is not None and row[1] > t else None
 
     def key(self, dimension: Dimension, rollup: bool) -> str:
         return dimension.key_sql(rollup, self.coarse, self.ephemeral)
@@ -451,6 +478,7 @@ class _Plan:
             "end": self.end,
             "split": self.split,
             "clipped": self.clipped,
+            "widened": self.widened,
         }
 
 
@@ -538,7 +566,8 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
 
     Buckets without bytes are left out. With peak, each bucket also carries the highest
     rate of a stretch of peak seconds in it, so a spike shorter than the bucket keeps
-    its height.
+    its height; rollup periods longer than a bucket come as spans of their own, [start,
+    seconds, a, b, rate a, rate b], with their average rates.
     """
     source = _source(request)
     filters = _filters(request, source)
@@ -561,13 +590,14 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
         # A write window's rows share one time, so a stretch shorter than the window
         # would count the window's bytes as if they came in that stretch.
         result["peak"] = max(peak, settings.write_window)
+        result["spans"] = []
     if not plan.parts:
         return result
     # Buckets count from the requested start, so they stay put when a dimension clips
-    # the range.
+    # the range; a period begun before it, which the range takes whole, is in the first.
     if peak is None:
         union, params = plan.union(
-            lambda rollup: f"(t.{'period' if rollup else 'time'} - ?) / ?",
+            lambda rollup: f"MAX((t.{'period' if rollup else 'time'} - ?) / ?, 0)",
             lambda: [start, step],
         )
         for bucket, a, b in con.execute(
@@ -588,9 +618,22 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
         )
         divisor = f"MAX({length}, MAX(t.seconds))"
         from_where, part_params = plan.from_where(rollup, part_start, part_end)
+        if rollup:
+            # A period longer than a bucket comes back whole, as a span with its
+            # average rate, rather than in the one bucket it starts in.
+            result["spans"] = [
+                [period, seconds, a, b, a / seconds, b / seconds]
+                for period, seconds, a, b in con.execute(
+                    f"SELECT t.period, MAX(t.seconds), SUM(t.{a_column}), SUM(t.{b_column}) {from_where}"
+                    " AND t.seconds > ? GROUP BY t.period ORDER BY t.period",
+                    [*part_params, step],
+                )
+            ]
+            from_where += " AND t.seconds <= ?"
+            part_params = [*part_params, step]
         selects.append(
-            f"SELECT (t.{column} - ?) / ? AS k, SUM(t.{a_column}) AS a, SUM(t.{b_column}) AS b,"
-            f" SUM(t.{a_column}) * 1.0 / {divisor} AS ra, SUM(t.{b_column}) * 1.0 / {divisor} AS rb {from_where} GROUP BY k, (t.{column} - ?) / {length}"
+            f"SELECT MAX((t.{column} - ?) / ?, 0) AS k, SUM(t.{a_column}) AS a, SUM(t.{b_column}) AS b,"
+            f" SUM(t.{a_column}) * 1.0 / {divisor} AS ra, SUM(t.{b_column}) * 1.0 / {divisor} AS rb {from_where} GROUP BY k, MAX((t.{column} - ?) / {length}, 0)"
         )
         params += [start, step, *part_params, start]
     union = " UNION ALL ".join(selects)

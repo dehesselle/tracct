@@ -63,10 +63,11 @@ The filters stack up in a line above the tab. As on the live tab, that line also
 kept find and any problem with the query server, and it appears only while there is one of
 them. The plot above the table draws the highlighted row, a sum too, as a line each for sent
 and received. A point is the highest rate of
-any 10 seconds within its bucket (a whole period in the rollups), so a short spike keeps its
-height at any zoom; if the daemon writes less often than every 10 seconds, the stretch is its
-write window and the title says so. A vertical line marks where the rollups end. Hovering
-shows a bucket's bytes and peaks in the bottom border. `,` `p` gives the whole tab to the
+any 10 seconds within its bucket, so a short spike keeps its height at any zoom; if the
+daemon writes less often than every 10 seconds, the stretch is its write window and the title
+says so. In the rollups a point is a period's average, drawn flat across the period where it
+is longer than a bucket. A vertical line marks where the rollups end. Hovering shows a
+bucket's bytes and peaks in the bottom border, or a period's bytes and average. `,` `p` gives the whole tab to the
 plot, for more room to zoom and pan, and brings back the group by list and the summary when
 pressed again; it holds for every history tab.
 
@@ -87,9 +88,10 @@ values changed from their defaults. `,` `a` shows the about box. On the history 
 before.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
-forwarded flow's source, ephemeral ports as 0. Entries of the group by list marked "raw
-only" narrow the range to the raw rows. The summary's bottom border says from when, or
-where the rollups begin.
+forwarded flow's source, ephemeral ports as 0. A range that starts or ends inside a period
+takes all of it, and the summary's bottom border then gives the range the sums cover.
+Entries of the group by list marked "raw only" narrow the range to the raw rows. The
+summary's bottom border says from when, or where the rollups begin.
 
 ```text
 tracct view [--tab live|forwarded|interfaces|processes] [--events-socket PATH] [--query-socket PATH]

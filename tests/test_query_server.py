@@ -224,6 +224,50 @@ def test_a_request_reads_one_snapshot(tmp_path, monkeypatch):
     assert rows["/usr/bin/curl"] == (1111, 11022)
 
 
+def test_a_range_takes_the_rollup_periods_it_reaches_into_whole(tmp_path):
+    db = _db(tmp_path)
+    # Starting half an hour into the first period: all of it, and the answer says so.
+    response, rows = _aggregate(db, "exe", start=P0 + H // 2)
+    assert response["start"] == P0 and response["widened"]
+    assert rows == _aggregate(db, "exe")[1]
+    # Ten minutes inside a rolled-up period: that period, not nothing.
+    response, rows = _aggregate(db, "exe", start=P0 + H + 600, end=P0 + H + 1200)
+    assert (response["start"], response["end"]) == (P0 + H, P0 + 2 * H)
+    assert rows == {"/usr/bin/curl": (100, 1000), "/usr/sbin/nginx": (5000, 500)}
+    # On the periods' bounds, or inside the raw rows, nothing is widened.
+    for start in (P0, P0 + 2 * H + 5):
+        response, _ = _aggregate(db, "exe", start=start)
+        assert response["start"] == start and not response["widened"]
+
+
+def test_timeline_spans_of_periods_longer_than_a_bucket(tmp_path):
+    db = _db(tmp_path)
+    response = _ask(
+        db,
+        "timeline",
+        source="connections",
+        start=P0 + H // 2,
+        end=P0 + 4 * H,
+        step=600,
+        peak=10,
+    )
+    # Each period whole with its average rate, the first one from before the start.
+    assert response["start"] == P0 and response["spans"] == [
+        [P0, H, 1000, 10000, pytest.approx(1000 / H), pytest.approx(10000 / H)],
+        [P0 + H, H, 5100, 1500, pytest.approx(5100 / H), pytest.approx(1500 / H)],
+    ]
+    # The raw rows in buckets, counted from the start asked for.
+    assert [bucket[:3] for bucket in response["buckets"]] == [
+        [P0 + 2 * H, 1, 2],
+        [P0 + 3 * H, 310, 50],
+    ]
+    # With buckets as long as the periods, there are none.
+    response = _ask(
+        db, "timeline", source="connections", start=P0, end=P0 + 4 * H, step=H, peak=10
+    )
+    assert response["spans"] == [] and len(response["buckets"]) == 4
+
+
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
     db = _db(tmp_path)
     # Reaching into the rollups, ephemeral ports in raw rows become 0 as they are there.

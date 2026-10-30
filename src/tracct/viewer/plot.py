@@ -112,11 +112,20 @@ class TrafficPlot(Plot):
         self.update_title()
         self.clear()
         # Every bucket, the empty ones at zero, so a line drops to nothing rather than
-        # bridging a gap.
+        # bridging a gap; a span is flat across the buckets it covers.
         times = range(timeline.origin, timeline.end, timeline.step)
+        rates = dict(self.peaks)
+        for span in timeline.spans:
+            first = max(
+                timeline.origin,
+                span.start - (span.start - timeline.origin) % timeline.step,
+            )
+            for t in range(first, min(span.end, timeline.end), timeline.step):
+                out_rate, in_rate = rates.get(t, (0, 0))
+                rates[t] = (max(out_rate, span.out_rate), max(in_rate, span.in_rate))
         xs = [t + timeline.step / 2 for t in times]
-        out_rates = [self.peaks.get(t, (0, 0))[0] for t in times]
-        in_rates = [self.peaks.get(t, (0, 0))[1] for t in times]
+        out_rates = [rates.get(t, (0, 0))[0] for t in times]
+        in_rates = [rates.get(t, (0, 0))[1] for t in times]
         if len(xs) > 1:
             # In first: it is usually the larger, and the smaller line stays visible on
             # top.
@@ -167,20 +176,37 @@ class TrafficPlot(Plot):
 
     def on_mouse_move(self, event: MouseMove) -> None:
         point = self.data_at(event.screen_offset)
-        timeline = self.timeline
-        if event.button or point is None or timeline is None:
+        if event.button or point is None or self.timeline is None:
             self.border_subtitle = ""
             return
-        origin, step = timeline.origin, timeline.step
-        bucket = origin + (int(point[0]) - origin) // step * step
-        out_bytes, in_bytes = self.values.get(bucket, (0, 0))
-        out_peak, in_peak = self.peaks.get(bucket, (0, 0))
+        # Content, so the text is never read as markup.
+        self.border_subtitle = Content(self.describe(point[0]))
+
+    def describe(self, t: float) -> str:
+        """Return what the bottom border says about the time `t`: its bucket, or the
+        rollup period that holds it.
+        """
+        timeline = self.timeline
+        if timeline is None:
+            return ""
         out_label, in_label = self.value_labels
 
         def amount(n: float) -> str:
             return format_bytes(n, self.byte_unit)
 
-        self.border_subtitle = Content(
+        span = timeline.span_at(t)
+        if span is not None:
+            # A rollup period knows its average, not its peaks.
+            return (
+                f"{format_time(span.start)} +{duration(span.seconds)}"
+                f" · {out_label} {amount(span.out_bytes)} (avg {amount(span.out_rate)}/s)"
+                f" · {in_label} {amount(span.in_bytes)} (avg {amount(span.in_rate)}/s)"
+            )
+        origin, step = timeline.origin, timeline.step
+        bucket = origin + (int(t) - origin) // step * step
+        out_bytes, in_bytes = self.values.get(bucket, (0, 0))
+        out_peak, in_peak = self.peaks.get(bucket, (0, 0))
+        return (
             f"{format_time(bucket)} +{duration(step)}"
             f" · {out_label} {amount(out_bytes)} (peak {amount(out_peak)}/s)"
             f" · {in_label} {amount(in_bytes)} (peak {amount(in_peak)}/s)"

@@ -19,7 +19,7 @@ pytest.importorskip("textual")
 
 from tcoda.dialogs import AboutDialog, SettingsDialog
 from tcoda.settings import config, configure
-from test_query_server import VPN, _db
+from test_query_server import P0, VPN, H, _db
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.widgets import DataTable, OptionList, TabbedContent, TabPane
@@ -30,7 +30,7 @@ from tracct.viewer import settings
 from tracct.viewer.app import TracctApp
 from tracct.viewer.banner import Banner
 from tracct.viewer.client import access_hint
-from tracct.viewer.format import format_bytes, format_value
+from tracct.viewer.format import format_bytes, format_time, format_value
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import FeedState, LivePane, remote
 from tracct.viewer.model import Filter, Timeline
@@ -541,6 +541,44 @@ async def test_history_drill_down(tmp_path):
                 cell = str(pane.query_one(DataTable).get_cell_at((0, 1)))
                 assert pane.query_one(TrafficPlot).byte_unit == "B"
                 assert cell and not any(c.isalpha() for c in cell)
+    finally:
+        listener.close()
+
+
+async def test_history_reads_rollup_periods_whole(tmp_path):
+    """A range inside the rollups takes the periods it reaches into whole and says so,
+    and the plot shows a period longer than a bucket as one span at its average.
+    """
+    listener = _server(tmp_path)
+
+    try:
+        app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "processes")
+        app.time_range = TimeRange(0)
+        # Twenty minutes inside the second rolled-up hour.
+        app.time_range.zoom_to(P0 + H + 600, P0 + H + 1800)
+        async with app.run_test(size=(140, 45)) as pilot:
+            processes = app.query_one("#processes HistoryPane", HistoryPane)
+            await _until(pilot, lambda: bool(processes.result))
+            # Not nothing: the hour, as the table's bottom border says.
+            assert _values(processes) == ["/usr/sbin/nginx", "/usr/bin/curl"]
+            table = processes.query_one(DataTable)
+            assert table.border_subtitle == (
+                f"rollups before {format_time(P0 + 2 * H)}:"
+                f" whole periods {format_time(P0 + H)} – {format_time(P0 + 2 * H)},"
+                " no addresses, ephemeral ports as 0"
+            )
+            plot = processes.query_one(TrafficPlot)
+            await _until(
+                pilot, lambda: plot.timeline is not None and plot.timeline.spans
+            )
+            (span,) = plot.timeline.spans
+            assert (span.start, span.seconds, span.out_bytes) == (P0 + H, H, 5000)
+            # Anywhere in it the pointer finds the period, with its average.
+            assert plot.describe(P0 + H + 900) == (
+                f"{format_time(P0 + H)} +1 h"
+                f" · sent {format_bytes(5000)} (avg {format_bytes(5000 / H)}/s)"
+                f" · received {format_bytes(500)} (avg {format_bytes(500 / H)}/s)"
+            )
     finally:
         listener.close()
 

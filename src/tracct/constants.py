@@ -66,7 +66,7 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. A network namespace is
 #: interned with the name it had when the row was written, as the kernel reuses its
 #: inode. A raw row's `time` is the end of its write window, a rollup's `period` the
-#: start of its period, and `seconds` how long either is.
+#: start of what it covers, and `seconds` how long either is.
 DB_VERSION: typing.Final[int] = 8
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,

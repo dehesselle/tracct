@@ -453,8 +453,15 @@ class HistoryPane(FindablePane):
             if result.clipped:
                 subtitle = f"raw rows only: from {format_time(result.start)}"
             elif result.start < result.split:
+                # A rollup period is read whole, so the range may start, or end, beyond
+                # the one asked for.
+                whole = (
+                    f" whole periods {format_time(result.start)} – {format_time(result.end)},"
+                    if result.widened
+                    else ""
+                )
                 subtitle = (
-                    f"rollups before {format_time(result.split)}:"
+                    f"rollups before {format_time(result.split)}:{whole}"
                     " no addresses, ephemeral ports as 0"
                 )
         table.border_title = title

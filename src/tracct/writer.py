@@ -524,7 +524,9 @@ def roll_up(
                     con.execute(
                         statement,
                         {
-                            "period": start // period * period,
+                            # The start of what the rollup covers, so a partial period
+                            # is not placed over the one before it.
+                            "period": start,
                             "ephemeral": ephemeral,
                             "start": start,
                             "end": end,

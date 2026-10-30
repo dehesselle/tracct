@@ -217,7 +217,7 @@ The tables come in three kinds:
 Rows are written every `write_limit_seconds`, one row per distinct connection and window,
 plus the window's interface counters and forwarded flows; a window that reaches 65 536
 connections is written early, so memory follows connections and not events. A raw row's
-`time` is the end of its window, a rollup's `period` the start of its period, and each row
+`time` is the end of its window, a rollup's `period` the start of what it covers, and each row
 has the `seconds` it covers: measured for a window, so an early one is shorter, with its
 ends rounded rather than its length, so that the windows of a stretch add up to it; and the
 period's length for a rollup, less for the part of a period left after the period length
@@ -303,7 +303,10 @@ so a spike can be taken apart by address and port for all of `raw_retention_days
 is the first rolled-up period from the oldest raw row on: that row's own period has already
 been partly purged, and only its rollup is complete. Where the rollups begin after the
 oldest raw row, as when raw rows are kept longer than the rollups or forever, the raw rows
-alone are read. A dimension the rollups do not keep
+alone are read. A rollup holds nothing finer than its period, so a range reaching into the
+rollups takes the periods it touches whole, and the answer gives the range it covers; a
+timeline returns a period longer than its buckets as a span of its own, with its average
+rate, rather than in the one bucket it starts in. A dimension the rollups do not keep
 (the addresses of connections, the destination address and source port of forwarded flows) narrows
 the range to the raw rows. A port reaching into the rollups
 is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
