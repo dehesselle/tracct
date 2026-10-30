@@ -8,6 +8,7 @@ The last test creates real namespaces, a veth pair and a TUN device and needs ro
 """
 
 import fcntl
+import itertools
 import os
 import shutil
 import struct
@@ -38,8 +39,11 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
     monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
     snapshots = [_snapshot(1000, 500), _snapshot(1500, 500), _snapshot(10, 20)]
     reports: list[tuple[str, ...]] = []
+    # A write window of 10 s between looks.
     info = netinfo.NetInfo(
-        lambda *report: reports.append(report), query=lambda path: snapshots.pop(0)
+        lambda *report: reports.append(report),
+        query=lambda path: snapshots.pop(0),
+        clock=itertools.count(0, 10).__next__,
     )
     host = info.host
     # The first look is the baseline.
@@ -58,15 +62,16 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
         "127.255.255.255",
         "10.0.0.255",
     }
-    assert info.refresh() == [(host, "eth0", "", 500, 0)]
+    assert info.refresh() == [(host, "eth0", "", 500, 0, 10)]
     # eth0 was recreated: its counters start over.
-    assert info.refresh() == [(host, "eth0", "", 10, 20)]
+    assert info.refresh() == [(host, "eth0", "", 10, 20, 10)]
     assert reports == []
 
 
 def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
     """A namespace that cannot be queried once is reported once and keeps its owners and
-    baseline, so the next look counts from where the last one left off.
+    baseline, so the next look counts from where the last one left off, and over the
+    seconds since.
     """
     monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
     answers = [
@@ -83,13 +88,22 @@ def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
         return answer
 
     reports: list[tuple[str, ...]] = []
-    info = netinfo.NetInfo(lambda *report: reports.append(report), query=query)
+    now = [0.0]
+
+    def refresh():
+        now[0] += 10
+        return info.refresh()
+
+    info = netinfo.NetInfo(
+        lambda *report: reports.append(report), query=query, clock=lambda: now[0]
+    )
     info.refresh()
-    assert info.refresh() == [] and info.refresh() == []
+    assert refresh() == [] and refresh() == []
     [(msgid, message)] = reports
     assert msgid == "netns-unreadable" and "busy" in message
     assert info.interface_of(info.host, "10.0.0.2") == ("eth0", "")
-    assert info.refresh() == [(info.host, "eth0", "", 200, 100)]
+    # The bytes of three windows, over their seconds rather than one window's.
+    assert refresh() == [(info.host, "eth0", "", 200, 100, 30)]
 
 
 @pytest.mark.skipif(
@@ -121,7 +135,7 @@ def test_real_namespaces_and_tun():
         assert info.tun_of(os.getpid()) == "psnitun0"
         sh("ping -c 5 -i 0.05 -s 1000 -q 10.96.0.2")
         moved = {
-            (netns, name): (rx, tx) for netns, name, kind, rx, tx in info.refresh()
+            (netns, name): (rx, tx) for netns, name, kind, rx, tx, _ in info.refresh()
         }
         # 5 echo requests and replies of 1028 bytes of ICMP, plus their IP and
         # Ethernet headers.

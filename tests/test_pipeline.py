@@ -217,8 +217,9 @@ def test_window_interfaces_and_flows():
             ),
         ]
     )
+    # Collected 30 s after the collect before in its namespace, which failed once.
     flow = Flow(
-        4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40
+        4026531840, 6, "100.64.0.2", 40000, "198.51.100.7", 443, 1000, 50000, 10, 40, 30
     )
     window.add_flows([flow, flow])
     # Namespaces go with the name they have now.
@@ -244,7 +245,7 @@ def test_window_interfaces_and_flows():
             100000,
             20,
             80,
-            10,
+            30,
         )
     ]
 
@@ -290,8 +291,9 @@ class _NamedNetInfo(_FakeNetInfo):
         self.inode = inode
         self.names = {inode: name}
 
-    def refresh(self) -> list[tuple[int, str, str, int, int]]:
-        return [(self.inode, "eth0", "", 10, 20)]
+    def refresh(self) -> list[tuple[int, str, str, int, int, int]]:
+        # Over 30 s, as after a window the namespace could not be read in.
+        return [(self.inode, "eth0", "", 10, 20, 30)]
 
 
 def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
@@ -317,12 +319,13 @@ def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
         "SELECT c.sent, n.inode, n.name, i.name, i.netns_id = c.netns_id FROM connections c"
         " JOIN netns n ON n.id = c.netns_id JOIN interfaces i ON i.id = c.iface_id ORDER BY c.sent"
     ).fetchall()
-    interfaces = con.execute(
-        "SELECT count(DISTINCT iface_id) FROM interface_traffic"
-    ).fetchone()[0]
+    interfaces, seconds = con.execute(
+        "SELECT count(DISTINCT iface_id), group_concat(DISTINCT seconds) FROM interface_traffic"
+    ).fetchone()
     con.close()
     assert rows == [(1, inode, "vpn-a", "eth0", 1), (2, inode, "vpn-b", "eth0", 1)]
-    assert interfaces == 2
+    # An interface row covers the seconds since its namespace was read.
+    assert interfaces == 2 and seconds == "30"
 
 
 def test_writer_writes_full_window_early(tmp_path, monkeypatch):

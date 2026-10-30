@@ -235,24 +235,30 @@ def test_trackers_follow_the_namespaces():
         return answer
 
     reports: list[tuple[str, ...]] = []
+    # A write window of 10 s between collects.
+    now = [0.0]
+
+    def collect(namespaces):
+        now[0] += 10
+        return trackers.collect(namespaces)
+
     trackers = conntrack.Trackers(
-        lambda *report: reports.append(report), dumper=dumper, listen=False
+        lambda *report: reports.append(report),
+        dumper=dumper,
+        listen=False,
+        clock=lambda: now[0],
     )
     namespaces = {1: ("host", None, {"10.0.0.1"}), 2: ("vpn1", None, {"10.0.0.2"})}
     assert trackers.collect(namespaces) == []
-    assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [
-        (1, 50)
-    ]
-    assert [(flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)] == [
-        (1, 10)
-    ]
+    assert [(flow.netns, flow.orig_bytes) for flow in collect(namespaces)] == [(1, 50)]
+    assert [(flow.netns, flow.orig_bytes) for flow in collect(namespaces)] == [(1, 10)]
     [(msgid, message)] = reports
     assert msgid == "conntrack-unreadable" and "vpn1" in message and "busy" in message
-    # Vpn1 can be read again, counting from its baseline; then it goes away and is
-    # closed.
+    # Vpn1 can be read again, counting from its baseline, over the three windows since;
+    # then it goes away and is closed.
     assert sorted(
-        (flow.netns, flow.orig_bytes) for flow in trackers.collect(namespaces)
-    ) == [(1, 10), (2, 5)]
+        (flow.netns, flow.orig_bytes, flow.seconds) for flow in collect(namespaces)
+    ) == [(1, 10, 10), (2, 5, 30)]
     vpn1 = trackers.trackers[2]
     assert trackers.collect({1: namespaces[1]}) == []
     assert vpn1.closed.is_set() and set(trackers.trackers) == {1} and len(reports) == 1

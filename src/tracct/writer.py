@@ -192,6 +192,9 @@ class WriteWindow:
         ]
         self.connections: dict[tuple, list[int]] = {}
         self.flows: dict[tuple, list[int]] = {}
+        #: Netns -> the seconds its flows cover, longer than the window after a
+        #: collect that failed there.
+        self.flow_seconds: dict[int, int] = {}
         #: Many connections in one window share a cmdline, and this string work
         #: dominated at high cardinality.
         self.cmdlines: dict[str, str] = {}
@@ -335,6 +338,9 @@ class WriteWindow:
             ):
                 continue
             key = (flow.netns, flow.protocol, src, sport, dst, dport)
+            self.flow_seconds[flow.netns] = max(
+                self.flow_seconds.get(flow.netns, 0), flow.seconds
+            )
             counters = self.flows.get(key)
             if counters is None:
                 self.flows[key] = [
@@ -414,11 +420,13 @@ class WriteWindow:
                         dport,
                         domain,
                         *counters,
-                        seconds,
+                        # Since the namespace's collect before, else the window's.
+                        self.flow_seconds.get(inode) or seconds,
                     )
                 )
         self.connections = {}
         self.flows = {}
+        self.flow_seconds = {}
         self.cmdlines = {}
         self.details = {}
         return [
@@ -756,9 +764,17 @@ def run_writer(
             written = int(time.time())
             traffic = netinfo.refresh()
             names.update(netinfo.names)
+            # The seconds since each namespace was read, which are longer than the
+            # window after one it could not be.
             iface_rows += [
-                (written, ((inode, names.get(inode, "")), name, kind), tx, rx, seconds)
-                for inode, name, kind, rx, tx in traffic
+                (
+                    written,
+                    ((inode, names.get(inode, "")), name, kind),
+                    tx,
+                    rx,
+                    read_seconds,
+                )
+                for inode, name, kind, rx, tx, read_seconds in traffic
             ]
             window.add_flows(collect_forwarded())
         rows, flows = window.take_rows(names, seconds)

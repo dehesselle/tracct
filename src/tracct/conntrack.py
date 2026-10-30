@@ -26,6 +26,7 @@ import select
 import socket
 import struct
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 
 from tracct.messages import report
@@ -90,6 +91,9 @@ class Flow:
     reply_bytes: int
     orig_packets: int
     reply_packets: int
+    #: The seconds since the collect before, which a namespace that could not be read
+    #: makes longer than a window.
+    seconds: int = 0
 
 
 @dataclasses.dataclass
@@ -331,9 +335,11 @@ class Conntrack:
         path: str | None = None,
         dumper: Callable[[frozenset[bytes]], dict[int, Entry]] = dump,
         opener: Callable[[], socket.socket] | None = listener_socket,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.report = report
         self.dumper = dumper
+        self.clock = clock
         self.netns = netns or os.stat("/proc/self/ns/net").st_ino
         self.label = label
         #: The nsfs file to join for the dump, None for the daemon's own namespace.
@@ -353,6 +359,8 @@ class Conntrack:
         try:
             #: The counters each forwarded flow had at the last collect.
             self.seen = self._enter(lambda: self.dumper(self.local))
+            #: When seen was dumped: the start of what the next collect counts.
+            self.collected_at = clock()
         except BaseException:
             if self.listener is not None:
                 self.listener.close()
@@ -407,6 +415,11 @@ class Conntrack:
         """
         self.local = pack_addresses(local)
         current = self._enter(lambda: self.dumper(self.local))
+        # A dump that failed left seen and its time as they were, so these are the
+        # seconds the deltas cover; rounded at the ends, as a write window.
+        dumped = self.clock()
+        seconds = round(dumped) - round(self.collected_at)
+        self.collected_at = dumped
         with self.lock:
             destroyed, self.destroyed = self.destroyed, collections.deque()
             lost, self.lost = self.lost, 0
@@ -436,6 +449,7 @@ class Conntrack:
                         entry.reply_src,
                         entry.reply_sport,
                         *delta,
+                        seconds,
                     )
                 )
 
@@ -531,9 +545,11 @@ class Trackers:
         report: Callable[[str, str], object] = _report,
         dumper: Callable[[frozenset[bytes]], dict[int, Entry]] = dump,
         listen: bool = True,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.report = report
         self.dumper = dumper
+        self.clock = clock
         self.listener = Listener() if listen else None
         self.trackers: dict[int, Conntrack] = {}
         #: Namespaces whose table could not be read, reported once until it can.
@@ -563,6 +579,7 @@ class Trackers:
                         path,
                         self.dumper,
                         listener_socket if self.listener is not None else None,
+                        self.clock,
                     )
                     self.trackers[inode] = tracker
                     if self.listener is not None:

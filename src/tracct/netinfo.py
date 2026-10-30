@@ -143,6 +143,7 @@ class NetInfo:
         self,
         report: Callable[[str, str], object] = _report,
         query: Callable[[str | None], Snapshot] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.report = report
         #: query(None) answers for the daemon's own namespace, query(path) for another
@@ -170,6 +171,11 @@ class NetInfo:
         #: refresh looked at.
         self.paths: dict[int, str | None] = {}
         self.failed: set[int] = set()
+        self.clock = clock
+        #: Netns -> when its counters were last read, the start of what the next read
+        #: counts; a namespace that could not be read keeps its time, so the bytes of
+        #: the windows it missed are not taken for one window's.
+        self.read_at: dict[int, float] = {}
 
     def note(self, netns: int, pid: int) -> None:
         """Remember that pid lives in netns, as a way into a namespace that has no name."""
@@ -245,12 +251,14 @@ class NetInfo:
     def refresh(self) -> list[tuple[int, str, str, int, int]]:
         """Look at every namespace again.
 
-        Returns (netns, interface, kind, rx, tx) with the bytes each interface moved
-        since the last refresh, for the interfaces that moved any.
+        Returns (netns, interface, kind, rx, tx, seconds) with the bytes each interface
+        moved since its namespace was last read, and the seconds since, for the
+        interfaces that moved any.
         """
         owners: dict[tuple[int, str], tuple[str, str]] = {}
         loopback: dict[int, tuple[str, str]] = {}
         counters: dict[tuple[int, int, str], tuple[int, int]] = {}
+        read_at: dict[int, float] = {}
         broadcasts: dict[int, set[str]] = {}
         traffic = []
         targets = self._targets()
@@ -285,10 +293,16 @@ class NetInfo:
                 )
                 if inode in self.loopback:
                     loopback[inode] = self.loopback[inode]
+                if inode in self.read_at:
+                    read_at[inode] = self.read_at[inode]
                 if inode in self.broadcasts:
                     broadcasts[inode] = self.broadcasts[inode]
                 continue
             self.failed.discard(inode)
+            read_at[inode] = now = self.clock()
+            last_read = self.read_at.get(inode)
+            # Rounded at its ends, as a write window, so that a stretch adds up.
+            seconds = 0 if last_read is None else round(now) - round(last_read)
             broadcasts[inode] = {
                 str(network.broadcast_address)
                 for address in snapshot.addresses
@@ -328,13 +342,14 @@ class NetInfo:
                     else link.tx_bytes
                 )
                 if rx or tx:
-                    traffic.append((inode, link.name, link.kind, rx, tx))
+                    traffic.append((inode, link.name, link.kind, rx, tx, seconds))
         self.owners, self.loopback, self.counters, self.broadcasts = (
             owners,
             loopback,
             counters,
             broadcasts,
         )
+        self.read_at = read_at
         self.paths = targets
         self.tun_cache = {}
         return traffic

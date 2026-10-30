@@ -219,9 +219,11 @@ plus the window's interface counters and forwarded flows; a window that reaches 
 connections is written early, so memory follows connections and not events. A raw row's
 `time` is the end of its window, a rollup's `period` the start of what it covers, and each row
 has the `seconds` it covers: measured for a window, so an early one is shorter, with its
-ends rounded rather than its length, so that the windows of a stretch add up to it; and the
-period's length for a rollup, less for the part of a period left after the period length
-changed. Bytes are `sent` and `received` from the host's side in `connections` and
+ends rounded rather than its length, so that the windows of a stretch add up to it; for
+interface counters and forwarded flows the time since their namespace was last read, as their
+bytes are counted since then, which after a window that could not read the namespace is
+longer than one window; and the period's length for a rollup, less for the part of a period
+left after the period length changed. Bytes are `sent` and `received` from the host's side in `connections` and
 `interface_traffic`.
 
 What a row keeps of its connection is decided when the window is summed: `[record]` can
