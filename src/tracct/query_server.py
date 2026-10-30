@@ -195,6 +195,10 @@ LAYER_SUMS = (
     ("tunnel", "t.iface_id IN ({tun}) AND t.family = 17"),
 )
 IFACE_LAYER_SUMS = (("inner", "t.iface_id IN ({tunnel})"),)
+#: Where a connection's peer is: on this machine or elsewhere, '' for a row without one.
+PEER = Dimension(
+    "peer", "t.peer", "CASE {k} WHEN 1 THEN 'local' WHEN 2 THEN 'remote' ELSE '' END"
+)
 DOMAIN = _lookup("domain", "domain_id", "domains", "domain")
 PROTOCOL = Dimension("protocol", "t.protocol")
 
@@ -242,6 +246,7 @@ SOURCES = {
             "netns": NETNS,
             "iface": IFACE,
             "layer": LAYER,
+            "peer": PEER,
             "protocol": PROTOCOL,
             "lport": _port("local port", "lport", icmp=True),
             "rport": _port("remote port", "rport", icmp=True),
@@ -280,6 +285,7 @@ SOURCES = {
                 f"t.iface_id IN (SELECT i.id FROM {_IFACE_FROM} WHERE {_IFACE_NETNS} IS ?)",
             ),
             "kind": _lookup("kind", "iface_id", "interfaces", "kind"),
+            "class": _lookup("class", "iface_id", "interfaces", "class"),
             "layer": IFACE_LAYER,
         },
         "iface",

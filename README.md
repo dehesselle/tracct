@@ -11,7 +11,7 @@ tracct also comes with a [Textual](https://textual.textualize.io/)-based TUI to 
 
 ## Install
 
-You need a kernel with BTF (`/sys/kernel/btf/vmlinux`), Python 3.12 or newer with its
+You need Linux 5.14 or newer with BTF (`/sys/kernel/btf/vmlinux`), Python 3.12 or newer with its
 `venv` module (`python3-venv` on Debian and Ubuntu) and `libbpf1`; wheels exist for x86_64
 and aarch64. As root:
 

@@ -235,6 +235,12 @@ class TestShortLivedProcesses:
                 f"curl exe should be resolved, got empty for raddr={raddr} rport={rport}"
             )
             assert "curl" in exe, f"curl exe should contain 'curl', got: {exe}"
+        # example.com is elsewhere: a remote peer.
+        peers = query_db(
+            "SELECT DISTINCT c.peer FROM connections c JOIN executables e ON c.exe_id = e.id"
+            " WHERE e.name LIKE '%curl%' AND c.rport = 80"
+        )
+        assert peers == [(2,)], peers
 
     def test_wget_exe_resolved(self, tracct_session):
         """Test that wget's executable path is resolved."""
@@ -455,7 +461,7 @@ t.join()
 
         def server_rows() -> list:
             return query_db(
-                "SELECT c.family, la.addr, ra.addr, c.sent, i.name FROM connections c JOIN addresses la ON c.laddr_id = la.id"
+                "SELECT c.family, la.addr, ra.addr, c.sent, i.name, i.class, c.peer FROM connections c JOIN addresses la ON c.laddr_id = la.id"
                 " JOIN addresses ra ON c.raddr_id = ra.id JOIN interfaces i ON c.iface_id = i.id WHERE c.lport = ? AND c.sent > 0",
                 (port,),
             )
@@ -466,9 +472,11 @@ t.join()
             time.sleep(2)
             rows = server_rows()
         assert rows and sum(row[3] for row in rows) == 300000, rows
+        # lo has no parent device, and the peer is on this machine.
         assert {
-            (family, laddr, raddr, iface) for family, laddr, raddr, _, iface in rows
-        } == {(2, "127.0.0.1", "127.0.0.1", "lo")}
+            (family, laddr, raddr, iface, klass, peer)
+            for family, laddr, raddr, _, iface, klass, peer in rows
+        } == {(2, "127.0.0.1", "127.0.0.1", "lo", "virtual", 1)}
 
 
 class TestParentTracking:

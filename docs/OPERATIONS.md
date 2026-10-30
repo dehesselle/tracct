@@ -331,6 +331,8 @@ can be removed with `groupdel picosnitch-viewer`, and `/opt/picosnitch` and
   that started while it was 0 never get counters), and the journal for `conntrack:` lines.
 - **`BPF requirements not met`**: the kernel lacks BTF (`CONFIG_DEBUG_INFO_BTF=y`), the bpf
   filesystem is not mounted at `/sys/fs/bpf`, or `libbpf.so.1` is not installed.
+- **Every interface is virtual, none physical**: the kernel is older than 5.14, whose
+  rtnetlink does not report a device's parent.
 - **`view`: no access to `events.sock`**: the user is not in the viewer group (log in again
   after `usermod`), or `[viewer] group` is not set.
 - **`view`: query server unavailable**: `tracct-query.socket` is not installed or not

@@ -21,6 +21,9 @@ NLMSG_ERROR, NLMSG_DONE = 2, 3
 NLM_F_REQUEST, NLM_F_DUMP = 0x1, 0x300
 RTM_GETLINK, RTM_GETADDR = 18, 22
 IFLA_IFNAME, IFLA_LINKINFO, IFLA_STATS64 = 3, 18, 23
+#: The name of the device a network device belongs to (a PCI or USB function, a virtio
+#: device), present only where there is one; Linux 5.14 and newer.
+IFLA_PARENT_DEV_NAME = 57
 IFLA_INFO_KIND = 1
 IFA_ADDRESS, IFA_LOCAL = 1, 2
 NLA_TYPE_MASK = 0x3FFF
@@ -37,10 +40,14 @@ _STATS64_HEAD = struct.Struct("=QQQQ")
 class Link:
     index: int
     name: str
-    #: IFLA_INFO_KIND: "tun", "veth", "wireguard", ...; "" for physical devices and lo.
+    #: IFLA_INFO_KIND: "tun", "veth", "wireguard", ...; "" for physical devices, lo and
+    #: a few virtual ones (ppp).
     kind: str
     rx_bytes: int
     tx_bytes: int
+    #: Whether it has a parent device: a NIC. One without lives under
+    #: /sys/devices/virtual/net.
+    physical: bool = False
 
 
 @dataclasses.dataclass
@@ -90,24 +97,31 @@ def _dump(msg_type: int, body: bytes) -> Iterator[bytes]:
                 offset += _align(length)
 
 
+def _link(payload: bytes) -> Link:
+    """The link one RTM_NEWLINK message describes."""
+    _family, _type, index, _flags, _change = _IFINFOMSG.unpack_from(payload)
+    name, kind, rx_bytes, tx_bytes, physical = "", "", 0, 0, False
+    for attr, value in _attributes(payload, _IFINFOMSG.size):
+        if attr == IFLA_IFNAME:
+            name = value.split(b"\0", 1)[0].decode(errors="replace")
+        elif attr == IFLA_STATS64 and len(value) >= _STATS64_HEAD.size:
+            _rx_packets, _tx_packets, rx_bytes, tx_bytes = _STATS64_HEAD.unpack_from(
+                value
+            )
+        elif attr == IFLA_LINKINFO:
+            for info, info_value in _attributes(value, 0):
+                if info == IFLA_INFO_KIND:
+                    kind = info_value.split(b"\0", 1)[0].decode(errors="replace")
+        elif attr == IFLA_PARENT_DEV_NAME:
+            physical = True
+    return Link(index, name, kind, rx_bytes, tx_bytes, physical)
+
+
 def links() -> list[Link]:
-    result = []
-    for payload in _dump(RTM_GETLINK, _IFINFOMSG.pack(socket.AF_UNSPEC, 0, 0, 0, 0)):
-        _family, _type, index, _flags, _change = _IFINFOMSG.unpack_from(payload)
-        name, kind, rx_bytes, tx_bytes = "", "", 0, 0
-        for attr, value in _attributes(payload, _IFINFOMSG.size):
-            if attr == IFLA_IFNAME:
-                name = value.split(b"\0", 1)[0].decode(errors="replace")
-            elif attr == IFLA_STATS64 and len(value) >= _STATS64_HEAD.size:
-                _rx_packets, _tx_packets, rx_bytes, tx_bytes = (
-                    _STATS64_HEAD.unpack_from(value)
-                )
-            elif attr == IFLA_LINKINFO:
-                for info, info_value in _attributes(value, 0):
-                    if info == IFLA_INFO_KIND:
-                        kind = info_value.split(b"\0", 1)[0].decode(errors="replace")
-        result.append(Link(index, name, kind, rx_bytes, tx_bytes))
-    return result
+    return [
+        _link(payload)
+        for payload in _dump(RTM_GETLINK, _IFINFOMSG.pack(socket.AF_UNSPEC, 0, 0, 0, 0))
+    ]
 
 
 def addresses() -> list[Address]:

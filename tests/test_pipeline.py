@@ -118,10 +118,12 @@ def test_window_process_rules():
     by_exe = {row[4][0]: row for row in rows}
     assert len(rows) == 3
     torrent_row = by_exe["/usr/bin/transmission-daemon"]
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _seconds = torrent_row
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _seconds = (
+        torrent_row
+    )
     assert torrent_row[1:4] == (300, 6000, 12)
     assert (lport, rport, raddr, domain) == (0, 0, "", "")
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _seconds = by_exe[
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _seconds = by_exe[
         "/usr/bin/curl"
     ]
     assert (lport, rport, raddr, domain) == (50000, 443, "93.184.215.14", "com.example")
@@ -169,7 +171,7 @@ def test_window_fills_domains_at_write():
     rows, _ = window.take_rows()
     assert [
         (send, recv, n_events, domain)
-        for _, send, recv, n_events, *_, domain, _, _, _ in rows
+        for _, send, recv, n_events, *_, domain, _, _, _, _ in rows
     ] == [(201, 4001, 9, "com.example")]
 
 
@@ -177,8 +179,12 @@ class _FakeNetInfo:
     def __init__(self) -> None:
         self.noted: list[tuple[int, int]] = []
 
-    def interface_of(self, netns: int, laddr: str) -> tuple[str, str]:
-        return ("eth0", "") if laddr == "10.0.0.2" else ("", "")
+    def interface_of(self, netns: int, laddr: str) -> tuple[str, str, str]:
+        return ("eth0", "", "physical") if laddr == "10.0.0.2" else ("", "", "")
+
+    def is_local(self, address: str) -> bool:
+        # This host and a container on it.
+        return address in ("10.0.0.2", "172.17.0.2", "127.0.0.1")
 
     def tun_of(self, pid: int) -> str:
         return "tailscale0" if pid == 77 else ""
@@ -226,10 +232,10 @@ def test_window_interfaces_and_flows():
     rows, flows = window.take_rows({4026531840: "host"}, 10)
     host = (4026531840, "host")
     assert {row[-1] for row in rows} == {10}
-    assert sorted(row[-2] for row in rows) == [
+    assert sorted(row[-3] for row in rows) == [
         writer.NO_INTERFACE,
-        (host, "eth0", ""),
-        (host, "tailscale0", "tun"),
+        (host, "eth0", "", "physical"),
+        (host, "tailscale0", "tun", "virtual"),
     ]
     assert netinfo.noted == [(4026531840, 4242)] * 2 + [(4026531840, 77)]
     assert [flow_row[1:] for flow_row in flows] == [
@@ -247,6 +253,47 @@ def test_window_interfaces_and_flows():
             80,
             30,
         )
+    ]
+
+
+def test_window_peers():
+    """A row's peer is local when its remote address is on this machine, remote
+    otherwise, and none for a raw row; it is decided from the address the program used,
+    also where the record leaves the address out.
+    """
+    from tracct.netinfo import NetInfo
+
+    events = [
+        _event(),
+        _event(raddr="198.51.100.7", rport=80),
+        _event(raddr="172.17.0.2", rport=8080),
+        _event(raddr="127.0.0.1", rport=5432),
+        _event(family=17, protocol=0, laddr="", raddr="", lport=0, rport=0, domain=""),
+    ]
+
+    def peers(config: Config) -> list[tuple[str, int, int]]:
+        window = writer.WriteWindow(
+            config, netinfo=typing.cast(NetInfo, _FakeNetInfo())
+        )
+        window.add(events)
+        rows, _ = window.take_rows()
+        return sorted((row[13], row[-2], row[1]) for row in rows)
+
+    assert peers(Config()) == [
+        ("", writer.PEER_NONE, 100),
+        ("127.0.0.1", writer.PEER_LOCAL, 100),
+        ("172.17.0.2", writer.PEER_LOCAL, 100),
+        ("198.51.100.7", writer.PEER_REMOTE, 100),
+        ("93.184.215.14", writer.PEER_REMOTE, 100),
+    ]
+    # Without addresses and ports, the rows apart only by their peer stay apart, and
+    # the rest are merged.
+    config = Config()
+    config.record.addresses = config.record.ports = False
+    assert peers(config) == [
+        ("", writer.PEER_NONE, 100),
+        ("", writer.PEER_LOCAL, 200),
+        ("", writer.PEER_REMOTE, 200),
     ]
 
 
@@ -291,9 +338,9 @@ class _NamedNetInfo(_FakeNetInfo):
         self.inode = inode
         self.names = {inode: name}
 
-    def refresh(self) -> list[tuple[int, str, str, int, int, int]]:
+    def refresh(self) -> list[tuple[int, str, str, str, int, int, int]]:
         # Over 30 s, as after a window the namespace could not be read in.
-        return [(self.inode, "eth0", "", 10, 20, 30)]
+        return [(self.inode, "eth0", "", "physical", 10, 20, 30)]
 
 
 def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
@@ -336,7 +383,7 @@ def test_a_window_has_one_time(tmp_path, monkeypatch):
     inode = 4026531840
 
     class SlowNetInfo(_NamedNetInfo):
-        def refresh(self) -> list[tuple[int, str, str, int, int, int]]:
+        def refresh(self) -> list[tuple[int, str, str, str, int, int, int]]:
             time.sleep(1.1)
             return super().refresh()
 

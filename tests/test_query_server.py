@@ -50,15 +50,15 @@ def _db(tmp_path):
     )
     con.execute("INSERT INTO domains VALUES (1, 'com.example')")
     con.execute(
-        f"INSERT INTO interfaces VALUES (1, {HOST_ID}, 'eth0', ''), (2, {HOST_ID}, 'tailscale0', 'tun'), (3, {VPN_ID}, 'tun0', 'tun')"
+        f"INSERT INTO interfaces VALUES (1, {HOST_ID}, 'eth0', '', 'physical'), (2, {HOST_ID}, 'tailscale0', 'tun', 'virtual'), (3, {VPN_ID}, 'tun0', 'tun', 'virtual')"
     )
     con.execute(
         f"INSERT INTO netns VALUES ({HOST_ID}, {HOST}, 'host'), ({VPN_ID}, {VPN}, '')"
     )
     # Time, sent, received, events, exe, pexe, unit, uid, family, protocol, lport, rport,
-    # laddr, raddr, domain, netns_id, iface, seconds.
+    # laddr, raddr, domain, netns_id, iface, peer (remote), seconds.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 2, 10)",
         [
             (
                 P0 + H + 100,
@@ -79,9 +79,9 @@ def _db(tmp_path):
         ],
     )
     # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns_id,
-    # iface, sent, received, events, rows, seconds.
+    # iface, peer (remote), sent, received, events, rows, seconds.
     con.executemany(
-        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, ?, ?, 1, 1, 3600)",
+        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, 2, ?, ?, 1, 1, 3600)",
         [
             (P0, 1, 0, 0, 443, 1, HOST_ID, 1000, 10000),
             (P0 + H, 1, 0, 0, 443, 1, HOST_ID, 100, 1000),
@@ -351,13 +351,15 @@ def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     """
     db = _db(tmp_path)
     con = sqlite3.connect(db)
-    con.execute(f"INSERT INTO interfaces VALUES (4, {HOST_ID}, 'wg0', 'wireguard')")
-    # A socket on wg0, and a raw row on tailscale0.
+    con.execute(
+        f"INSERT INTO interfaces VALUES (4, {HOST_ID}, 'wg0', 'wireguard', 'virtual')"
+    )
+    # A socket on wg0 to a remote peer, and a raw row on tailscale0, without one.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 10)",
         [
-            (P0 + 3 * H + 30, 7, 8, 1, 2, 6, 50004, 443, 1, 2, HOST_ID, 4),
-            (P0 + 3 * H + 40, 5, 6, 3, 17, 0, 0, 0, 0, 0, HOST_ID, 2),
+            (P0 + 3 * H + 30, 7, 8, 1, 2, 6, 50004, 443, 1, 2, HOST_ID, 4, 2),
+            (P0 + 3 * H + 40, 5, 6, 3, 17, 0, 0, 0, 0, 0, HOST_ID, 2, 0),
         ],
     )
     con.execute(
@@ -379,6 +381,31 @@ def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     assert response["parts"] == [["outer", 670, 6700], ["inner", 13, 130]]
 
 
+def test_peers_and_interface_classes(tmp_path):
+    """A peer groups and filters raw rows and rollups alike; interfaces group by their
+    class.
+    """
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    # bash talking to a local database, raw and rolled up.
+    con.execute(
+        "INSERT INTO connections VALUES (?, 3, 4, 1, 2, 2, 0, 1000, 2, 6, 50005, 5432, 1, 1, 0, ?, 1, 1, 10)",
+        (P0 + 3 * H + 50, HOST_ID),
+    )
+    con.execute(
+        "INSERT INTO connections_rollup VALUES (?, 2, 2, 0, 1000, 2, 6, 0, 5432, 0, ?, 1, 1, 30, 40, 1, 1, 3600)",
+        (P0, HOST_ID),
+    )
+    con.commit()
+    con.close()
+    _, rows = _aggregate(db, "peer")
+    assert rows == {"remote": (6411, 11552), "local": (33, 44)}
+    _, rows = _aggregate(db, "exe", filters=[["peer", "local", False]])
+    assert rows == {"/usr/bin/bash": (33, 44)}
+    _, rows = _aggregate(db, "class", source="interfaces")
+    assert rows == {"physical": (670, 6700), "virtual": (4, 40)}
+
+
 def test_namespaces_keep_the_name_of_their_rows(tmp_path):
     """A reused inode named anew leaves the older rows their name, and one name over
     several inodes (a namespace made again after a reboot) is one value.
@@ -388,10 +415,10 @@ def test_namespaces_keep_the_name_of_their_rows(tmp_path):
     con = sqlite3.connect(db)
     con.execute(f"INSERT INTO netns VALUES (3, {VPN}, 'vpn'), (4, {other}, 'vpn')")
     con.execute(
-        "INSERT INTO interfaces VALUES (4, 3, 'tun0', 'tun'), (5, 4, 'tun0', 'tun')"
+        "INSERT INTO interfaces VALUES (4, 3, 'tun0', 'tun', 'virtual'), (5, 4, 'tun0', 'tun', 'virtual')"
     )
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?, 2, 10)",
         [(P0 + 3 * H + 30, 5, 6, 3, 4), (P0 + 3 * H + 40, 7, 8, 4, 5)],
     )
     con.commit()
@@ -627,7 +654,7 @@ def test_slow_query_is_interrupted(tmp_path, monkeypatch):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     con.executemany(
-        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1, 10)",
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1, 2, 10)",
         [(P0 + 3 * H + i % 3000, HOST_ID) for i in range(20000)],
     )
     con.commit()

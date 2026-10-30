@@ -44,6 +44,13 @@ NETNS_QUERY_TIMEOUT = 5.0
 HOST_NETNS_NAME = "host"
 
 
+def link_class(link: rtnetlink.Link) -> str:
+    """An interface's class: "physical" for a device with a parent (a NIC), else
+    "virtual", as the kernel's /sys/devices/virtual/net and Netdata tell them apart.
+    """
+    return "physical" if link.physical else "virtual"
+
+
 @dataclasses.dataclass
 class Snapshot:
     links: list[rtnetlink.Link]
@@ -158,10 +165,12 @@ class NetInfo:
         self.unnamed: collections.OrderedDict[int, tuple[int, float]] = (
             collections.OrderedDict()
         )
-        #: (netns, address) -> (interface name, kind) for the exact addresses; loopback
-        #: holds the loopback networks.
-        self.owners: dict[tuple[int, str], tuple[str, str]] = {}
-        self.loopback: dict[int, tuple[str, str]] = {}
+        #: (netns, address) -> (interface name, kind, class) for the exact addresses;
+        #: loopback holds the loopback networks.
+        self.owners: dict[tuple[int, str], tuple[str, str, str]] = {}
+        self.loopback: dict[int, tuple[str, str, str]] = {}
+        #: The addresses of every namespace, for telling a local peer from a remote one.
+        self.local: set[str] = set()
         #: Netns -> the broadcast addresses of its IPv4 networks.
         self.broadcasts: dict[int, set[str]] = {}
         #: (netns, ifindex) -> (rx, tx) at the last refresh; by index, so a renamed
@@ -187,9 +196,9 @@ class NetInfo:
         while len(self.unnamed) > UNNAMED_NETNS_MAX:
             self.unnamed.popitem(last=False)
 
-    def interface_of(self, netns: int, laddr: str) -> tuple[str, str]:
-        """(name, kind) of the interface that holds laddr in netns, ("", "") if none
-        does.
+    def interface_of(self, netns: int, laddr: str) -> tuple[str, str, str]:
+        """(name, kind, class) of the interface that holds laddr in netns, ("", "", "")
+        if none does.
         """
         owner = self.owners.get((netns, laddr))
         if owner is not None:
@@ -200,7 +209,19 @@ class NetInfo:
                     return self.loopback[netns]
             except ValueError:
                 pass
-        return "", ""
+        return "", "", ""
+
+    def is_local(self, address: str) -> bool:
+        """Whether a peer is on this machine: an address of any namespace read, or a
+        loopback or unspecified one, which Linux delivers locally.
+        """
+        if address in self.local:
+            return True
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return False
+        return ip.is_loopback or ip.is_unspecified
 
     def local_addresses(self, netns: int | None = None) -> set[str]:
         """The addresses of a namespace (by default the daemon's own) and the broadcast
@@ -249,15 +270,15 @@ class NetInfo:
                 targets[inode] = path
         return targets
 
-    def refresh(self) -> list[tuple[int, str, str, int, int]]:
+    def refresh(self) -> list[tuple[int, str, str, str, int, int, int]]:
         """Look at every namespace again.
 
-        Returns (netns, interface, kind, rx, tx, seconds) with the bytes each interface
-        moved since its namespace was last read, and the seconds since, for the
-        interfaces that moved any.
+        Returns (netns, interface, kind, class, rx, tx, seconds) with the bytes each
+        interface moved since its namespace was last read, and the seconds since, for
+        the interfaces that moved any.
         """
-        owners: dict[tuple[int, str], tuple[str, str]] = {}
-        loopback: dict[int, tuple[str, str]] = {}
+        owners: dict[tuple[int, str], tuple[str, str, str]] = {}
+        loopback: dict[int, tuple[str, str, str]] = {}
         counters: dict[tuple[int, int], tuple[int, int]] = {}
         read_at: dict[int, float] = {}
         broadcasts: dict[int, set[str]] = {}
@@ -320,9 +341,13 @@ class NetInfo:
                 link = by_index.get(address.index)
                 if link is None:
                     continue
-                owners[(inode, address.addr)] = (link.name, link.kind)
+                owners[(inode, address.addr)] = (
+                    link.name,
+                    link.kind,
+                    link_class(link),
+                )
                 if address.addr in ("127.0.0.1", "::1"):
-                    loopback[inode] = (link.name, link.kind)
+                    loopback[inode] = owners[(inode, address.addr)]
             for link in snapshot.links:
                 key = (inode, link.index)
                 counters[key] = (link.rx_bytes, link.tx_bytes)
@@ -349,13 +374,17 @@ class NetInfo:
                     else link.tx_bytes
                 )
                 if rx or tx:
-                    traffic.append((inode, link.name, link.kind, rx, tx, seconds))
+                    traffic.append(
+                        (inode, link.name, link.kind, link_class(link), rx, tx, seconds)
+                    )
         self.owners, self.loopback, self.counters, self.broadcasts = (
             owners,
             loopback,
             counters,
             broadcasts,
         )
+        # A namespace that could not be read keeps its addresses in owners.
+        self.local = {address for _, address in owners}
         self.read_at = read_at
         self.paths = targets
         self.tun_cache = {}

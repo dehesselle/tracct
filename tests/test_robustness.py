@@ -395,7 +395,9 @@ def _purge_db(tmp_path):
     con.execute(
         "INSERT INTO netns VALUES (1, 4026531840, 'host'), (2, 4026532500, 'old')"
     )
-    con.execute("INSERT INTO interfaces VALUES (1, 1, 'eth0', ''), (2, 2, 'eth0', '')")
+    con.execute(
+        "INSERT INTO interfaces VALUES (1, 1, 'eth0', '', 'physical'), (2, 2, 'eth0', '', 'physical')"
+    )
     con.execute(f"PRAGMA user_version = {DB_VERSION}")
     con.commit()
     return con
@@ -403,9 +405,9 @@ def _purge_db(tmp_path):
 
 def _insert_connections(con, *rows):
     # Each row (time, ref[, lport, rport]) refers to ref as exe, parent, both
-    # addresses, domain, namespace and interface.
+    # addresses, domain, namespace and interface; its peer is remote.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 10)",
         [
             (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
             for row in rows
@@ -457,6 +459,27 @@ def test_roll_up_sums_closed_periods(tmp_path):
         == now // hour * hour
     )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    con.close()
+
+
+def test_roll_up_keeps_peers_apart(tmp_path):
+    """Rows apart only by their peer stay apart in the rollup, each summed."""
+    from tracct import writer
+
+    con = _purge_db(tmp_path)
+    hour = 3600
+    now = int(time.time())
+    first = now // hour * hour - 2 * hour
+    # Two remote rows and a local one in a closed period; the newest row's period waits.
+    _insert_connections(con, (first + 10, 1), (first + 20, 1), (now, 1))
+    _insert_connections(con, (first + 30, 1))
+    con.execute("UPDATE connections SET peer = 1 WHERE time = ?", (first + 30,))
+    con.commit()
+    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 1
+    rows = con.execute(
+        "SELECT peer, sent, rows FROM connections_rollup ORDER BY peer"
+    ).fetchall()
+    assert rows == [(1, 10, 1), (2, 20, 2)]
     con.close()
 
 
@@ -670,7 +693,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     # went back.
     _insert_connections(con, (ahead + 10, 1), (now, 2))
     con.execute(
-        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 10, 20, 1, 1, 3600",
+        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 2, 10, 20, 1, 1, 3600",
         (ahead,),
     )
     con.execute(

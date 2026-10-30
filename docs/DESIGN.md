@@ -58,7 +58,8 @@ traffic come from netlink.
   last values read per pid answer for a process that has exited before its last bytes were
   drained.
 - **Interfaces** (`netinfo.py`, `rtnetlink.py`). Once per write window the writer lists every
-  interface with its kind and byte counters (`RTM_GETLINK`, `IFLA_STATS64`) and every address
+  interface with its kind, whether it has a parent device (`IFLA_PARENT_DEV_NAME`, Linux
+  5.14) and its byte counters (`RTM_GETLINK`, `IFLA_STATS64`) and every address
   (`RTM_GETADDR`), in the daemon's namespace, the named ones (`/run/netns`,
   `/run/docker/netns`) and those a recorded process lives in. Another namespace is queried
   from a short-lived thread that joins it (`setns`), so no other thread changes namespace and
@@ -115,8 +116,12 @@ counters and namespaces that cannot be queried are detected and logged, not sile
 
 ### Layers, peers and interface classes
 
-A *layer* says whether adding bytes up would count the same transfer twice. Totals never
-add across layers.
+Two separate questions decide what a number means:
+
+- A *layer* says whether adding bytes up would count the same transfer twice.
+- A connection's *peer* and an interface's *class* say whether bytes leave the machine.
+
+Totals never add across layers.
 
 The terms are those of tunneling (RFC 2003, and VXLAN, GRE and Geneve after it). The
 *outer* packet carries another one between the tunnel's endpoints, and the *inner* packet
@@ -156,6 +161,44 @@ The layers follow these choices:
 - **The `tunnel` layer.** The name is tracct's own. Elsewhere, the VPN client's TUN read is
   still the inner packet, seen at the tunnel's endpoint. tracct keeps it apart because it
   is a second process's count of the same bytes.
+
+A connection's **peer** says where its remote address is. The writer decides it once per
+window, from the address the program used, so it is right also where `[record]` leaves the
+address out. It is stored with the row (`peer`):
+
+- **local**: an address that an interface holds in any namespace the writer reads, or a
+  loopback or unspecified (`0.0.0.0`, `::`) address. These are the cases Linux delivers on
+  the machine: localhost, the host's own addresses, and traffic between the host and its
+  containers.
+- **remote**: any other address, broadcast and multicast included.
+- **none** (`''`): a row without a remote address, such as an `AF_PACKET` row or a socket
+  that has no peer.
+
+An interface's **class** says whether it is a network card:
+
+- **physical**: the device has a parent device (a PCI or USB function, a virtio device),
+  which rtnetlink reports as `IFLA_PARENT_DEV_NAME`;
+- **virtual**: everything else, `lo`, veth, bridge, bond, vlan, tun, wireguard and ppp
+  included.
+
+The peer and the class follow these choices and terms:
+
+- **Local.** The word is Linux's: ip-route(8) calls an address *local* when it is
+  "assigned to this host", and delivers packets to it on the machine. Linux keeps that
+  per namespace. tracct takes it to the whole machine, as Kubernetes does with
+  "node-local" traffic (any pod namespace on the same node). A remote host that has the
+  same address as a container counts as local.
+- **Peer, not scope.** The attribute is named after ss(8)'s "Peer Address". Linux already
+  uses *scope* for an address's reach (`host`, `link`, `global`), which is a different
+  thing.
+- **Physical and virtual.** The kernel puts every network device without a parent under
+  `/sys/devices/virtual/net`, and Netdata uses that directory to tell `real` from `virtual`
+  interfaces. rtnetlink fills `IFLA_PARENT_DEV_NAME` from the same parent, so the class
+  is the same in every namespace, where sysfs only shows the daemon's own. There are two
+  classes, as there; `lo` is virtual and is easy to find by its name.
+- **Raw rows outside a TUN.** An `AF_PACKET` row that is not on a `tun` is outer and has
+  no peer. It is either a capture's copy (tcpdump), which is not traffic, or a frame a
+  program injects (arping, DHCP), which leaves the NIC. The row cannot tell the two apart.
 
 ## Threads
 
@@ -243,15 +286,16 @@ The tables come in three kinds:
   run with other arguments gets a new one. `domains` holds names in reversed notation
   (`com.example.www`): the name the program looked up, else the reverse DNS name, else the
   address itself. `units` holds the innermost systemd unit of a process's cgroup, `addresses`
-  the canonical text of an address. `interfaces` is keyed by (namespace, name, kind), as
-  every namespace has its own `lo` and several may have a `tun0`. `netns` holds a
+  the canonical text of an address. `interfaces` is keyed by (namespace, name, kind,
+  class), as every namespace has its own `lo` and several may have a `tun0`. `netns` holds a
   namespace as (inode, name) with the name it had when the row was written: those found in
   `/run/netns` and `/run/docker/netns`, the daemon's own as `host`, and none for the rest.
   The kernel hands a namespace's inode to the next one once it is gone, so the same inode
   under another name is another entry, and the older rows and their interfaces keep theirs;
   unnamed namespaces that shared an inode cannot be told apart.
 - **Raw tables**, a row per write window, one per kind of byte (principle 4):
-  `connections` holds socket bytes per process and peer, `interface_traffic` interface bytes
+  `connections` holds socket bytes per process and peer, with where the peer is (`peer`:
+  0 none, 1 local, 2 remote; kept by the rollup too), `interface_traffic` interface bytes
   per interface, `forwarded` IP bytes per routed flow. In `forwarded`, `src` is the side that
   opened the flow and `dst` the side that answered (after any destination NAT); `orig` counts
   src to dst, `reply` the other way.

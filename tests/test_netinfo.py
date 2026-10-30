@@ -16,14 +16,69 @@ import subprocess
 
 import pytest
 
-from tracct import netinfo
+from tracct import netinfo, rtnetlink
 from tracct.rtnetlink import Address, Link
+
+
+def _rtattr(kind: int, value: bytes) -> bytes:
+    length = 4 + len(value)
+    return struct.pack("=HH", length, kind) + value + b"\0" * (-length % 4)
+
+
+def test_link_parses_kind_counters_and_parent():
+    """A device with a parent device is physical, one without virtual."""
+    stats = struct.pack("=QQQQ", 1, 2, 300, 400) + b"\0" * 32
+    header = struct.pack("=BxHiII", 0, 1, 2, 0, 0)
+    nic = rtnetlink._link(
+        header
+        + _rtattr(rtnetlink.IFLA_IFNAME, b"eth0\0")
+        + _rtattr(rtnetlink.IFLA_STATS64, stats)
+        + _rtattr(rtnetlink.IFLA_PARENT_DEV_NAME, b"virtio0\0")
+    )
+    assert nic == Link(2, "eth0", "", 300, 400, physical=True)
+    wg = rtnetlink._link(
+        header
+        + _rtattr(rtnetlink.IFLA_IFNAME, b"wg0\0")
+        + _rtattr(
+            rtnetlink.IFLA_LINKINFO,
+            _rtattr(rtnetlink.IFLA_INFO_KIND, b"wireguard\0"),
+        )
+    )
+    assert wg == Link(2, "wg0", "wireguard", 0, 0)
+    assert netinfo.link_class(nic) == "physical"
+    assert netinfo.link_class(wg) == "virtual"
+
+
+def test_is_local_covers_every_namespace(monkeypatch, tmp_path):
+    """A peer is local when any namespace holds its address, or when it is a loopback
+    or unspecified one; a broadcast address is not.
+    """
+    monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
+    other = tmp_path / "container"
+    other.touch()
+    inode = os.stat(other).st_ino
+    container = netinfo.Snapshot(
+        [Link(1, "lo", "", 0, 0), Link(2, "eth0", "veth", 0, 0)],
+        [Address(1, "127.0.0.1", 8), Address(2, "172.17.0.2", 16)],
+    )
+    info = netinfo.NetInfo(
+        lambda *report: None,
+        query=lambda path: _snapshot(0, 0) if path is None else container,
+    )
+    info.refresh()
+    assert inode in info.paths
+    for address in ("10.0.0.2", "100.64.0.1", "172.17.0.2", "127.0.0.53", "::1"):
+        assert info.is_local(address), address
+    for address in ("0.0.0.0", "::"):
+        assert info.is_local(address), address
+    for address in ("10.0.0.3", "10.0.0.255", "255.255.255.255", "224.0.0.251", ""):
+        assert not info.is_local(address), address
 
 
 def _snapshot(eth0_rx: int, eth0_tx: int) -> netinfo.Snapshot:
     links = [
         Link(1, "lo", "", 100, 100),
-        Link(2, "eth0", "", eth0_rx, eth0_tx),
+        Link(2, "eth0", "", eth0_rx, eth0_tx, physical=True),
         Link(3, "tailscale0", "tun", 0, 0),
     ]
     addresses = [
@@ -49,10 +104,10 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
     # The first look is the baseline.
     assert info.refresh() == []
     assert info.names == {host: "host"}
-    assert info.interface_of(host, "10.0.0.2") == ("eth0", "")
-    assert info.interface_of(host, "100.64.0.1") == ("tailscale0", "tun")
-    assert info.interface_of(host, "127.0.0.53") == ("lo", "")
-    assert info.interface_of(host, "192.0.2.1") == ("", "")
+    assert info.interface_of(host, "10.0.0.2") == ("eth0", "", "physical")
+    assert info.interface_of(host, "100.64.0.1") == ("tailscale0", "tun", "virtual")
+    assert info.interface_of(host, "127.0.0.53") == ("lo", "", "virtual")
+    assert info.interface_of(host, "192.0.2.1") == ("", "", "")
     # With the broadcast addresses of the IPv4 networks.
     assert info.local_addresses() == {
         "127.0.0.1",
@@ -62,9 +117,9 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
         "127.255.255.255",
         "10.0.0.255",
     }
-    assert info.refresh() == [(host, "eth0", "", 500, 0, 10)]
+    assert info.refresh() == [(host, "eth0", "", "physical", 500, 0, 10)]
     # eth0 was recreated: its counters start over.
-    assert info.refresh() == [(host, "eth0", "", 10, 20, 10)]
+    assert info.refresh() == [(host, "eth0", "", "physical", 10, 20, 10)]
     assert reports == []
 
 
@@ -85,8 +140,8 @@ def test_new_interfaces_count_from_zero(monkeypatch, tmp_path):
         clock=itertools.count(0, 10).__next__,
     )
     assert info.refresh() == []
-    assert info.refresh() == [(info.host, "wg0", "wireguard", 300, 400, 10)]
-    assert info.refresh() == [(info.host, "vpn0", "wireguard", 50, 50, 10)]
+    assert info.refresh() == [(info.host, "wg0", "wireguard", "virtual", 300, 400, 10)]
+    assert info.refresh() == [(info.host, "vpn0", "wireguard", "virtual", 50, 50, 10)]
 
 
 def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
@@ -122,9 +177,9 @@ def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
     assert refresh() == [] and refresh() == []
     [(msgid, message)] = reports
     assert msgid == "netns-unreadable" and "busy" in message
-    assert info.interface_of(info.host, "10.0.0.2") == ("eth0", "")
+    assert info.interface_of(info.host, "10.0.0.2") == ("eth0", "", "physical")
     # The bytes of three windows, over their seconds rather than one window's.
-    assert refresh() == [(info.host, "eth0", "", 200, 100, 30)]
+    assert refresh() == [(info.host, "eth0", "", "physical", 200, 100, 30)]
 
 
 @pytest.mark.skipif(
@@ -150,13 +205,19 @@ def test_real_namespaces_and_tun():
         info.refresh()
         inode = os.stat("/run/netns/psni").st_ino
         assert info.names[inode] == "psni"
-        assert info.interface_of(inode, "10.96.0.2") == ("psni1", "veth")
-        assert info.interface_of(inode, "127.0.0.1") == ("lo", "")
-        assert info.interface_of(info.host, "10.96.0.1") == ("psni0", "veth")
+        assert info.interface_of(inode, "10.96.0.2") == ("psni1", "veth", "virtual")
+        assert info.interface_of(inode, "127.0.0.1") == ("lo", "", "virtual")
+        assert info.interface_of(info.host, "10.96.0.1") == ("psni0", "veth", "virtual")
         assert info.tun_of(os.getpid()) == "psnitun0"
+        # A device has a parent exactly when sysfs does not put it under
+        # /sys/devices/virtual/net, the test Netdata makes.
+        for link in rtnetlink.links():
+            virtual = os.path.exists(f"/sys/devices/virtual/net/{link.name}")
+            assert link.physical is not virtual, link.name
         sh("ping -c 5 -i 0.05 -s 1000 -q 10.96.0.2")
         moved = {
-            (netns, name): (rx, tx) for netns, name, kind, rx, tx, _ in info.refresh()
+            (netns, name): (rx, tx)
+            for netns, name, _kind, _class, rx, tx, _ in info.refresh()
         }
         # 5 echo requests and replies of 1028 bytes of ICMP, plus their IP and
         # Ethernet headers.

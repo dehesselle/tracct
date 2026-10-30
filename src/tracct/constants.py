@@ -66,8 +66,11 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: IPPROTO_* value (TCP=6, UDP=17, ...) or 0 when unknown. A network namespace is
 #: interned with the name it had when the row was written, as the kernel reuses its
 #: inode. A raw row's `time` is the end of its write window, a rollup's `period` the
-#: start of what it covers, and `seconds` how long either is.
-DB_VERSION: typing.Final[int] = 8
+#: start of what it covers, and `seconds` how long either is. A connection's `peer` is
+#: 0 for none (a raw row, a socket without a remote address), 1 for local (on this
+#: machine) and 2 for remote; an interface's `class` is 'physical' or 'virtual', '' for
+#: the unknown one.
+DB_VERSION: typing.Final[int] = 9
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -93,7 +96,8 @@ SCHEMA_INTERFACES: typing.Final[str] = """
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
-    UNIQUE(netns_id, name, kind)"""
+    class TEXT NOT NULL,
+    UNIQUE(netns_id, name, kind, class)"""
 SCHEMA_CONNECTIONS: typing.Final[str] = """
     time INTEGER NOT NULL,
     sent INTEGER NOT NULL,
@@ -112,6 +116,7 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     domain_id INTEGER NOT NULL REFERENCES domains(id),
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    peer INTEGER NOT NULL,
     seconds INTEGER NOT NULL"""
 SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,
@@ -126,6 +131,7 @@ SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     domain_id INTEGER NOT NULL REFERENCES domains(id),
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
+    peer INTEGER NOT NULL,
     sent INTEGER NOT NULL,
     received INTEGER NOT NULL,
     events INTEGER NOT NULL,
@@ -196,7 +202,7 @@ SENTINELS: typing.Final[tuple[str, ...]] = (
     "INSERT INTO addresses(id, addr) VALUES (0, '')",
     "INSERT INTO units(id, unit) VALUES (0, '')",
     "INSERT INTO netns(id, inode, name) VALUES (0, 0, '')",
-    "INSERT INTO interfaces(id, netns_id, name, kind) VALUES (0, 0, '', '')",
+    "INSERT INTO interfaces(id, netns_id, name, kind, class) VALUES (0, 0, '', '', '')",
 )
 #: Time, and the lookups a drill-down filters by most: executable, parent, unit and
 #: domain (see "Indexes" in docs/performance.md). There is no ANALYZE: with its

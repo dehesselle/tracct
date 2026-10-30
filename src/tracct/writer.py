@@ -49,8 +49,11 @@ ID_CACHE_MAX = 65536
 #: A namespace as the database keeps it: its inode and the name it has now, "" for
 #: none; the namespace of a row whose namespace is unknown.
 NO_NETNS = (0, "")
-#: The interface of a row whose interface is unknown: namespace, name, kind.
-NO_INTERFACE = (NO_NETNS, "", "")
+#: The interface of a row whose interface is unknown: namespace, name, kind, class.
+NO_INTERFACE = (NO_NETNS, "", "", "")
+#: A connection's peer, see "Layers, peers and interface classes" in docs/DESIGN.md:
+#: none (a raw row, a socket without a remote address), on this machine, elsewhere.
+PEER_NONE, PEER_LOCAL, PEER_REMOTE = 0, 1, 2
 #: Free pages past this share of the file are given back to the filesystem; fewer wait
 #: to be reused, as the next windows would only grow the file again.
 RELEASE_FREE_FRACTION = 0.25
@@ -66,13 +69,13 @@ RELEASE_CHUNK_PAGES = 2560
 ROLLUPS = (
     # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     (
-        "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, sent, received, events, rows, seconds)"
+        "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, rows, seconds)"
         " SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
         " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
         " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
-        " domain_id, netns_id, iface_id, SUM(sent), SUM(received), SUM(events), COUNT(*), :end - :start"
+        " domain_id, netns_id, iface_id, peer, SUM(sent), SUM(received), SUM(events), COUNT(*), :end - :start"
         " FROM connections WHERE time >= :start AND time < :end"
-        " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id"
+        " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id, peer"
     ),
     (
         "INSERT INTO interface_traffic_rollup(period, iface_id, sent, received, seconds)"
@@ -86,8 +89,8 @@ ROLLUPS = (
     ),
 )
 INSERT_CONNECTIONS = (
-    "INSERT INTO connections(time, sent, received, events, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, seconds)"
-    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO connections(time, sent, received, events, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 INSERT_INTERFACE_TRAFFIC = "INSERT INTO interface_traffic(time, iface_id, sent, received, seconds) VALUES (?, ?, ?, ?, ?)"
 INSERT_FORWARDED = (
@@ -250,7 +253,7 @@ class WriteWindow:
 
     def interface(
         self, netns: tuple[int, str], laddr: str, tun: str
-    ) -> tuple[tuple[int, str], str, str]:
+    ) -> tuple[tuple[int, str], str, str, str]:
         """The interface a row was counted on.
 
         The TUN device of a process's TUN reads and writes, else the interface holding
@@ -258,8 +261,22 @@ class WriteWindow:
         """
         if self.netinfo is None:
             return NO_INTERFACE
-        name, kind = (tun, "tun") if tun else self.netinfo.interface_of(netns[0], laddr)
-        return (netns, name, kind) if name else NO_INTERFACE
+        name, kind, klass = (
+            (tun, "tun", "virtual")
+            if tun
+            else self.netinfo.interface_of(netns[0], laddr)
+        )
+        return (netns, name, kind, klass) if name else NO_INTERFACE
+
+    def peer(self, family: int, address: str) -> int:
+        """Where a row's peer is, from its remote address as the program used it, which
+        the record may leave out.
+        """
+        if family == socket.AF_PACKET or not address:
+            return PEER_NONE
+        if self.netinfo is not None and self.netinfo.is_local(address):
+            return PEER_LOCAL
+        return PEER_REMOTE
 
     def add(self, events: list[BpfEvent]) -> None:
         record = self.config.record
@@ -308,6 +325,9 @@ class WriteWindow:
                 domain,
                 netns,
                 tun,
+                # The peer is decided in take_rows, from the namespaces as they are then;
+                # rows apart only by it are merged there.
+                proc["raddr"],
             )
             counters = self.connections.get(key)
             if counters is None:
@@ -385,7 +405,8 @@ class WriteWindow:
         written = int(time.time()) if written is None else written
         rows: dict[tuple, list[int]] = {}
         for key, (send, recv, n_events) in self.connections.items():
-            *identity, laddr, raddr, domain, inode, tun = key
+            *identity, laddr, raddr, domain, inode, tun, peer = key
+            _exe, _pexe, _unit, _uid, family, *_ = identity
             if not domain:
                 domain = self.domain_of(raddr)
             netns = (inode, names.get(inode, ""))
@@ -396,6 +417,7 @@ class WriteWindow:
                 domain,
                 netns,
                 self.interface(netns, laddr, tun),
+                self.peer(family, peer),
             )
             if self.is_ignored_domain(domain):
                 continue
@@ -703,14 +725,16 @@ def run_writer(
     addresses = Interned("addresses", ("addr",), ("",))
     units = Interned("units", ("unit",), ("",))
     namespaces = Interned("netns", ("inode", "name"), NO_NETNS)
-    interfaces = Interned("interfaces", ("netns_id", "name", "kind"), (0, "", ""))
+    interfaces = Interned(
+        "interfaces", ("netns_id", "name", "kind", "class"), (0, "", "", "")
+    )
     interned = (executables, domains, addresses, units, namespaces, interfaces)
 
     def interface_id(
-        con: sqlite3.Connection, iface: tuple[tuple[int, str], str, str]
+        con: sqlite3.Connection, iface: tuple[tuple[int, str], str, str, str]
     ) -> int:
-        netns, name, kind = iface
-        return interfaces.id(con, (namespaces.id(con, netns), name, kind))
+        netns, name, kind, klass = iface
+        return interfaces.id(con, (namespaces.id(con, netns), name, kind, klass))
 
     record = config.record
     reverse_dns = (
@@ -780,12 +804,12 @@ def run_writer(
             iface_rows += [
                 (
                     written,
-                    ((inode, names.get(inode, "")), name, kind),
+                    ((inode, names.get(inode, "")), name, kind, klass),
                     tx,
                     rx,
                     read_seconds,
                 )
-                for inode, name, kind, rx, tx, read_seconds in traffic
+                for inode, name, kind, klass, rx, tx, read_seconds in traffic
             ]
             window.add_flows(collect_forwarded())
         rows, flows = window.take_rows(names, seconds, written)
@@ -817,6 +841,7 @@ def run_writer(
                         domain,
                         netns,
                         iface,
+                        peer,
                         seconds,
                     ) in transaction:
                         conn_rows.append(
@@ -838,6 +863,7 @@ def run_writer(
                                 domains.id(con, (domain,)),
                                 namespaces.id(con, netns),
                                 interface_id(con, iface),
+                                peer,
                                 seconds,
                             )
                         )
