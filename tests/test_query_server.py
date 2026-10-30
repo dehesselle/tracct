@@ -202,6 +202,28 @@ def test_without_rollups_the_raw_rows_are_read(tmp_path):
     assert rows["/usr/bin/curl"] == (100011, 100022)
 
 
+def test_a_request_reads_one_snapshot(tmp_path, monkeypatch):
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA journal_mode = WAL")
+    con.close()
+    split_point = query_server.split_point
+
+    def purged_meanwhile(con, source):
+        split = split_point(con, source)
+        # The writer purges raw rows past the split while the request runs.
+        writer = sqlite3.connect(db)
+        with writer:
+            writer.execute("DELETE FROM connections WHERE time < ?", (P0 + 3 * H,))
+        writer.close()
+        return split
+
+    monkeypatch.setattr(query_server, "split_point", purged_meanwhile)
+    response, rows = _aggregate(db, "exe")
+    assert response["split"] == P0 + 2 * H
+    assert rows["/usr/bin/curl"] == (1111, 11022)
+
+
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
     db = _db(tmp_path)
     # Reaching into the rollups, ephemeral ports in raw rows become 0 as they are there.

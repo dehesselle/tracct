@@ -704,6 +704,10 @@ class QueryServer:
         deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
         con.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
         try:
+            # One snapshot for all the statements of a request, so a purge or rollup the
+            # writer commits in between cannot move rows across the split; closing the
+            # connection ends it.
+            con.execute("BEGIN")
             return {"ok": True, **op(con, request, self.settings)}
         except RequestError as e:
             return {"ok": False, "error": str(e)}

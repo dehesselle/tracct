@@ -293,7 +293,9 @@ history written with a longer window or period does not peak higher than it was.
 dimensions are a fixed table mapped to SQL in `query_server.py`; values are
 bound, so a request carries no SQL. Each part of a request groups by the lookup ids and
 filters by id sets, so the indexes of the executable, parent, unit and domain with the time
-serve a drill-down; the text is looked up once per group. Requests are bounded in size, filters, rows, buckets, response bytes, run
+serve a drill-down; the text is looked up once per group. Each request reads one snapshot
+of the database, so a purge or rollup committed while it runs cannot move rows across the
+split. Requests are bounded in size, filters, rows, buckets, response bytes, run
 time (30 s) and concurrent viewers (8).
 
 A range is read from the raw rows wherever they still exist and from the rollups before that,
