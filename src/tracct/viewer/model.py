@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 
-#: The name of the row of sums of a source without layers.
+#: The name of the row of sums of a source with one sum.
 ALL = "(all)"
 
 
@@ -81,14 +81,19 @@ class Filter:
 class Total:
     """The value of a row of sums over all rows.
 
-    There is one per layer where the source has layers, which are never added up, else
-    one, whose layer is None.
+    A source has one per layer, and per peer or class within it, none of them adding
+    up the same bytes twice; or one, whose name is None. The filters keep the rows it
+    sums.
     """
 
-    layer: str | None
+    name: str | None
+    filters: tuple[Filter, ...] = ()
 
     def label(self) -> str:
-        return f"(all · {self.layer})" if self.layer else ALL
+        return f"(all · {self.name})" if self.name else ALL
+
+    def dimensions(self) -> set[str]:
+        return {f.dimension for f in self.filters}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -106,10 +111,8 @@ class Aggregate:
 
     #: Largest first, at most as many as were asked for.
     rows: tuple[Row, ...]
-    #: The sums over all values, one per layer, largest first; the values are Totals.
+    #: The sums over all values, largest first; the values are Totals.
     totals: tuple[Row, ...]
-    #: The dimension the layers are values of, or None for a source without layers.
-    layers_by: str | None
     #: How many values there are, shown or not.
     groups: int
     #: Whether there are more values than rows.
@@ -129,8 +132,14 @@ class Aggregate:
     def parse(cls, raw: dict) -> Aggregate:
         return cls(
             rows=tuple(Row(value, a, b) for value, a, b in raw["rows"]),
-            totals=tuple(Row(Total(layer), a, b) for layer, a, b in raw["parts"]),
-            layers_by=raw["totals_by"],
+            totals=tuple(
+                Row(
+                    Total(name, tuple(Filter(d, v) for d, v in filters)),
+                    a,
+                    b,
+                )
+                for name, a, b, filters in raw["parts"]
+            ),
             groups=raw["groups"],
             truncated=raw["truncated"],
             start=raw["start"],

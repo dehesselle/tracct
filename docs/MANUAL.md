@@ -47,16 +47,28 @@ another:
   Processes, headings the highlight skips (process, parent, network, connection) group
   the list. The three kinds of bytes are never added together.
 
-A history table starts with the sums over all its rows: one per layer, as a tunnel's
-traffic shows once per layer and adding them up would count it two or three times.
+A history table starts with the sums over all its rows. No two of them hold the same bytes:
+a tunnel's traffic shows once per layer, so adding the layers up would count it two or
+three times.
 
-- **Processes**: `(all · inner)`, `(all · tunnel)` and `(all · outer)`.
-- **Interfaces**: `(all · inner)` and `(all · outer)`.
+- **Processes**:
+  - `(all · inner)`: what goes through a tunnel (a VPN, WireGuard in the kernel, GRE,
+    VXLAN, …), at the program's socket;
+  - `(all · tunnel)`: the same, at a VPN client's TUN device;
+  - `(all · outer · local)`: everything else whose peer is on this machine (localhost, its
+    own addresses, its containers);
+  - `(all · outer · remote)`: everything else whose peer is elsewhere;
+  - `(all · outer · no peer)`: raw frames outside a VPN, such as a capture's copies.
+- **Interfaces**:
+  - `(all · inner)`: the tunnel devices;
+  - `(all · physical)`: the network cards.
+  - Bridges, veths, bonds, VLANs and `lo` are in no sum, as they carry the same bytes as
+    others.
 - **Forwarded**: one `(all)`.
 
-Inner is what goes through a tunnel (a VPN, WireGuard in the kernel, GRE, VXLAN, …), seen at
-the program's socket or the tunnel device. Tunnel is the same seen at a VPN client's TUN
-device. Outer is everything not inside a tunnel. The reasons are in
+What left the machine through its network cards is `(all · physical)` on Interfaces. On
+Processes it is `(all · outer · remote)`, without headers, without a kernel tunnel's
+encrypted traffic (which has no socket) and without forwarded traffic. The reasons are in
 [DESIGN.md](DESIGN.md#layers-peers-and-interface-classes). The highlight starts
 on the largest row below them; a find hides them, as they sum up the rows it hides too. The
 table, the summary, counts the rows in its title while a find hides some or there are more

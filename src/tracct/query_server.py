@@ -186,21 +186,62 @@ IFACE_LAYER = Dimension(
     f"CASE WHEN ti.kind IN ({_TUNNEL_KINDS_SQL}) THEN 'inner' ELSE 'outer' END",
     join=True,
 )
-#: The layers as conditions on a row, for the sums per layer every request adds up
-#: alongside its rows; {tun} and {tunnel} are the ids of the tun devices and of all
-#: tunnel devices, read once per request rather than joined per row. Outer is what the
-#: others leave, so it needs no sum of its own.
-LAYER_SUMS = (
-    ("inner", "t.iface_id IN ({tunnel}) AND t.family IS NOT 17"),
-    ("tunnel", "t.iface_id IN ({tun}) AND t.family = 17"),
-)
-IFACE_LAYER_SUMS = (("inner", "t.iface_id IN ({tunnel})"),)
 #: Where a connection's peer is: on this machine or elsewhere, '' for a row without one.
 PEER = Dimension(
     "peer", "t.peer", "CASE {k} WHEN 1 THEN 'local' WHEN 2 THEN 'remote' ELSE '' END"
 )
 DOMAIN = _lookup("domain", "domain_id", "domains", "domain")
 PROTOCOL = Dimension("protocol", "t.protocol")
+
+
+@dataclasses.dataclass(frozen=True)
+class Total:
+    """A sum over all rows that every request adds up alongside its rows.
+
+    The sum is over the rows that meet the condition, or, without one, over the rows the
+    others leave. The condition may name {tun}, {tunnel} and {physical}, the ids of the
+    tun devices, of all tunnel devices and of the physical ones, read once per request
+    rather than joined per row. The filters keep the same rows, for the viewer's plot.
+    """
+
+    label: str | None
+    condition: str | None = None
+    filters: tuple[tuple[str, str], ...] = ()
+
+
+#: See "Layers, peers and interface classes" in docs/DESIGN.md: never two totals of
+#: the same bytes, as no total adds up layers or peers.
+_INNER = (
+    "t.iface_id IN ({tunnel}) AND (t.family IS NOT 17 OR t.iface_id NOT IN ({tun}))"
+)
+_OUTER = "t.iface_id NOT IN ({tunnel})"
+CONNECTION_TOTALS = (
+    Total("inner", _INNER, (("layer", "inner"),)),
+    Total(
+        "tunnel",
+        "t.iface_id IN ({tun}) AND t.family = 17",
+        (("layer", "tunnel"),),
+    ),
+    Total(
+        "outer · local",
+        f"{_OUTER} AND t.peer = 1",
+        (("layer", "outer"), ("peer", "local")),
+    ),
+    Total(
+        "outer · remote",
+        f"{_OUTER} AND t.peer = 2",
+        (("layer", "outer"), ("peer", "remote")),
+    ),
+)
+CONNECTION_TOTALS_REST = Total(
+    "outer · no peer", None, (("layer", "outer"), ("peer", ""))
+)
+#: The virtual devices other than tunnels get no total, as theirs would add the same
+#: bytes several times (a veth, its bridge, a bond and its VLAN).
+INTERFACE_TOTALS = (
+    Total("inner", "t.iface_id IN ({tunnel})", (("layer", "inner"),)),
+    Total("physical", "t.iface_id IN ({physical})", (("class", "physical"),)),
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -215,12 +256,9 @@ class Source:
     value_labels: tuple[str, str]
     dimensions: dict[str, Dimension]
     default: str
-    #: The dimension the sums over all values are given per, so that layers are never
-    #: added up: its values with the condition a row meets for each, and the value of
-    #: the rows left over; None for one sum.
-    totals_by: str | None = None
-    totals: tuple[tuple[str, str], ...] = ()
-    totals_rest: str | None = None
+    #: The sums over all values, and the one over the rows they leave, if any.
+    totals: tuple[Total, ...] = ()
+    totals_rest: Total | None = Total(None)
     #: The viewer's headings in the list of dimensions, by the dimension each comes
     #: before; only a long list has them.
     headings: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -259,9 +297,8 @@ SOURCES = {
             "domain": DOMAIN,
         },
         "exe",
-        "layer",
-        LAYER_SUMS,
-        "outer",
+        CONNECTION_TOTALS,
+        CONNECTION_TOTALS_REST,
         headings={
             "exe": "process",
             "pexe": "parent",
@@ -289,9 +326,8 @@ SOURCES = {
             "layer": IFACE_LAYER,
         },
         "iface",
-        "layer",
-        IFACE_LAYER_SUMS,
-        "outer",
+        INTERFACE_TOTALS,
+        None,
     ),
     "forwarded": Source(
         "Forwarded",
@@ -512,9 +548,9 @@ class _Plan:
 
 
 def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """The byte sums per value of one dimension, largest first, and the sums over all
-    values per value of the source's totals_by (one sum without), whose sum is only
-    right where it does not add up layers.
+    """The byte sums per value of one dimension, largest first, and the source's sums
+    over all values, as parts: [label, out, in, filters], largest first. The total
+    over all parts is only right where it does not add up layers.
     """
     source = _source(request)
     group = source.dimensions.get(request.get("group_by") or source.default)
@@ -530,30 +566,28 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
         **plan.info(),
         "rows": [],
         "totals": [0, 0],
-        "totals_by": source.totals_by,
         "parts": [],
         "groups": 0,
         "truncated": False,
     }
     if not plan.parts:
         return result
-    # Without a tunnel device every row is left over, and no sum is needed.
-    tun, tunnel = [], []
-    for row_id, kind in con.execute(
-        f"SELECT id, kind FROM interfaces WHERE kind IN ({_TUNNEL_KINDS_SQL})"
+    ids: dict[str, list[str]] = {"tun": [], "tunnel": [], "physical": []}
+    for row_id, kind, klass in con.execute(
+        f"SELECT id, kind, class FROM interfaces WHERE kind IN ({_TUNNEL_KINDS_SQL}) OR class = 'physical'"
     ):
-        tunnel.append(str(row_id))
         if kind == "tun":
-            tun.append(str(row_id))
-    totals = (
-        tuple(
-            (name, condition.format(tun=", ".join(tun), tunnel=", ".join(tunnel)))
-            for name, condition in source.totals
-        )
-        if tunnel
-        else ()
+            ids["tun"].append(str(row_id))
+        if kind in TUNNEL_KINDS:
+            ids["tunnel"].append(str(row_id))
+        if klass == "physical":
+            ids["physical"].append(str(row_id))
+    # An empty list is fine: IN () holds for no row.
+    lists = {name: ", ".join(values) for name, values in ids.items()}
+    totals = source.totals
+    conditions = tuple(
+        (total.condition or "").format(**lists) for total in source.totals
     )
-    conditions = tuple(condition for _, condition in totals)
     union, params = plan.union(lambda rollup: plan.key(group, rollup), sums=conditions)
     sums = "".join(
         f", SUM(SUM(u.a{i})) OVER (), SUM(SUM(u.b{i})) OVER ()"
@@ -573,16 +607,24 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
             # there.
             result["totals"], result["groups"] = [total_a, total_b], groups
             parts = [
-                [name, per_value[2 * i] or 0, per_value[2 * i + 1] or 0]
-                for i, (name, _) in enumerate(totals)
+                [total.label, per_value[2 * i] or 0, per_value[2 * i + 1] or 0]
+                for i, total in enumerate(totals)
             ]
-            parts.append(
-                [
-                    source.totals_rest,
-                    total_a - sum(part[1] for part in parts),
-                    total_b - sum(part[2] for part in parts),
-                ]
-            )
+            if source.totals_rest is not None:
+                parts.append(
+                    [
+                        source.totals_rest.label,
+                        total_a - sum(part[1] for part in parts),
+                        total_b - sum(part[2] for part in parts),
+                    ]
+                )
+            filters = [
+                [list(pair) for pair in total.filters]
+                for total in (*totals, source.totals_rest)
+                if total is not None
+            ]
+            for part, part_filters in zip(parts, filters, strict=True):
+                part.append(part_filters)
             result["parts"] = sorted(
                 (part for part in parts if part[1] or part[2]),
                 key=lambda part: -(part[1] + part[2]),
@@ -705,7 +747,6 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
             "oldest": oldest,
             "newest": newest,
             "split": split_point(con, source),
-            "totals_by": source.totals_by,
         }
     return {
         "now": int(time.time()),

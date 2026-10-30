@@ -370,15 +370,18 @@ def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     _, rows = _aggregate(db, "layer", start=P0 + 2 * H)
     assert rows == {"outer": (11, 22), "inner": (307, 38), "tunnel": (5, 6)}
     response, _ = _aggregate(db, "exe")
-    assert response["parts"] == [
-        ["outer", 6111, 11522],
+    assert [part[:3] for part in response["parts"]] == [
+        ["outer · remote", 6111, 11522],
         ["inner", 307, 38],
         ["tunnel", 5, 6],
     ]
     _, rows = _aggregate(db, "layer", source="interfaces")
     assert rows == {"outer": (670, 6700), "inner": (13, 130)}
     response, _ = _aggregate(db, "iface", source="interfaces")
-    assert response["parts"] == [["outer", 670, 6700], ["inner", 13, 130]]
+    assert [part[:3] for part in response["parts"]] == [
+        ["physical", 670, 6700],
+        ["inner", 13, 130],
+    ]
 
 
 def test_peers_and_interface_classes(tmp_path):
@@ -435,22 +438,62 @@ def test_namespaces_keep_the_name_of_their_rows(tmp_path):
     assert rows == {"/usr/sbin/nginx": (12, 14)}
 
 
-def test_totals_per_layer(tmp_path):
+def test_totals_per_layer_and_peer(tmp_path):
     db = _db(tmp_path)
-    # The sums over all rows never add up layers: one per layer, largest first.
+    con = sqlite3.connect(db)
+    # A connection to a local peer, a raw row outside a tun (a capture), and a bridge's
+    # counters.
+    con.executemany(
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 2, 2, 0, 1000, ?, 6, 0, 0, 0, 0, 0, ?, ?, ?, 10)",
+        [
+            (P0 + 3 * H + 50, 3, 4, 2, HOST_ID, 1, 1),
+            (P0 + 3 * H + 50, 1, 2, 17, HOST_ID, 0, 0),
+        ],
+    )
+    con.execute(
+        f"INSERT INTO interfaces VALUES (4, {HOST_ID}, 'docker0', 'bridge', 'virtual')"
+    )
+    con.execute(
+        f"INSERT INTO interface_traffic VALUES ({P0 + 3 * H + 10}, 4, 500, 500, 10)"
+    )
+    con.commit()
+    con.close()
+    # The sums over all rows never add up layers or peers, largest first, with the
+    # filters that keep their rows.
     response, _ = _aggregate(db, "exe")
-    assert response["totals_by"] == "layer" and response["parts"] == [
-        ["outer", 6111, 11522],
-        ["inner", 300, 30],
+    assert response["parts"] == [
+        ["outer · remote", 6111, 11522, [["layer", "outer"], ["peer", "remote"]]],
+        ["inner", 300, 30, [["layer", "inner"]]],
+        ["outer · local", 3, 4, [["layer", "outer"], ["peer", "local"]]],
+        ["outer · no peer", 1, 2, [["layer", "outer"], ["peer", ""]]],
     ]
+    # The bridge is in no sum: virtual devices other than tunnels carry the same bytes
+    # several times.
     response, _ = _aggregate(db, "iface", source="interfaces")
-    assert response["parts"] == [["outer", 670, 6700], ["inner", 4, 40]]
-    # Forwarded bytes have no layers: one sum.
+    assert response["parts"] == [
+        ["physical", 670, 6700, [["class", "physical"]]],
+        ["inner", 4, 40, [["layer", "inner"]]],
+    ]
+    # Each sum is what its filters keep.
+    for source, group_by in (("connections", "exe"), ("interfaces", "iface")):
+        response, _ = _aggregate(db, group_by, source=source)
+        for label, a, b, filters in response["parts"]:
+            _, rows = _aggregate(
+                db,
+                group_by,
+                source=source,
+                filters=[[d, v, False] for d, v in filters],
+            )
+            assert (
+                sum(row[0] for row in rows.values()),
+                sum(row[1] for row in rows.values()),
+            ) == (a, b), label
+    # Forwarded bytes have neither: one sum.
     response, _ = _aggregate(db, "src", source="forwarded")
-    assert response["totals_by"] is None and response["parts"] == [[None, 2050, 105000]]
+    assert response["parts"] == [[None, 2050, 105000, []]]
     # A filter narrows them as it does the rows.
     response, rows = _aggregate(db, "exe", filters=[["layer", "inner", False]])
-    assert response["parts"] == [["inner", 300, 30]] and rows == {
+    assert response["parts"] == [["inner", 300, 30, [["layer", "inner"]]]] and rows == {
         "/usr/sbin/nginx": (300, 30)
     }
 

@@ -369,11 +369,11 @@ async def test_history_drill_down(tmp_path):
             await pilot.pause(0.3)
             assert app.query_one(TabbedContent).active == "processes"
             assert _values(processes) == ["/usr/bin/curl", "/usr/sbin/nginx"]
-            # Above them the sums over all rows, one per layer, which are never added
-            # up.
+            # Above them the sums over all rows, per layer and peer, which are never
+            # added up.
             table = processes.query_one(DataTable)
             assert [str(table.get_row_at(i)[0]) for i in range(table.row_count)] == [
-                "(all · outer)",
+                "(all · outer · remote)",
                 "(all · inner)",
                 "/usr/bin/curl",
                 "/usr/sbin/nginx",
@@ -397,11 +397,24 @@ async def test_history_drill_down(tmp_path):
                     and sum(a for a, _ in plot.values.values()) == 300
                 ),
             )
+            # One of a layer and a peer plots the rows of both.
+            await pilot.press("up")
+            await _until(
+                pilot,
+                lambda: (
+                    plot.row_label == "(all · outer · remote)"
+                    and sum(a for a, _ in plot.values.values()) == 6111
+                ),
+            )
+            assert processes.plot_filters() == [
+                Filter("layer", "outer"),
+                Filter("peer", "remote"),
+            ]
             # It has no value to filter on.
             await pilot.press("comma", "f", "i")
             await pilot.pause(0.3)
             assert not processes.filters
-            await pilot.press("down")
+            await pilot.press("down", "down")
             # ,f i keeps the highlighted row, ,f e excludes it, ,f p pops the last
             # filter.
             processes.query_one(DataTable).focus()
@@ -462,6 +475,12 @@ async def test_history_drill_down(tmp_path):
                     and len(_values(processes)) == 2
                 ),
             )
+            # Grouped by a dimension the sums are made of, the rows are the sums
+            # already.
+            processes.select_dimension("peer")
+            processes.reload()
+            await _until(pilot, lambda: _values(processes) == ["remote"])
+            assert len(processes.table_rows) == 1
             # Another dimension.
             processes.select_dimension("netns")
             processes.reload()
@@ -499,6 +518,11 @@ async def test_history_drill_down(tmp_path):
             interfaces = app.query_one("#interfaces HistoryPane", HistoryPane)
             await _until(pilot, lambda: bool(interfaces.result))
             assert _values(interfaces) == ["host/eth0", f"{VPN}/tun0"]
+            # Its sums: the tunnels' and the network cards'.
+            assert [row.value.label() for row in interfaces.table_rows[:2]] == [
+                "(all · physical)",
+                "(all · inner)",
+            ]
             # Zooming the plot narrows every tab to what it shows; z returns to the
             # span.
             plot = interfaces.query_one(TrafficPlot)

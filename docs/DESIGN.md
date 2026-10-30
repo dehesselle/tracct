@@ -121,7 +121,7 @@ Two separate questions decide what a number means:
 - A *layer* says whether adding bytes up would count the same transfer twice.
 - A connection's *peer* and an interface's *class* say whether bytes leave the machine.
 
-Totals never add across layers.
+Totals never add across layers, nor across peers.
 
 The terms are those of tunneling (RFC 2003, and VXLAN, GRE and Geneve after it). The
 *outer* packet carries another one between the tunnel's endpoints, and the *inner* packet
@@ -199,6 +199,26 @@ The peer and the class follow these choices and terms:
 - **Raw rows outside a TUN.** An `AF_PACKET` row that is not on a `tun` is outer and has
   no peer. It is either a capture's copy (tcpdump), which is not traffic, or a frame a
   program injects (arping, DHCP), which leaves the NIC. The row cannot tell the two apart.
+
+The **totals** are built from these, so that no two hold the same bytes:
+
+- **Processes**: inner, tunnel, outer · local, outer · remote, and outer · no peer for the
+  rest. Together they hold every socket byte, a tunnel's traffic once per layer, so only
+  each on its own means one thing.
+- **Interfaces**: inner (the tunnel devices) and physical. The other virtual devices get
+  no total, as theirs would add the same bytes several times (a veth and its bridge, a
+  bond and its VLAN). Netdata's aggregate is the physical interfaces only, and vnstat
+  adds no interfaces unless asked to.
+- The labels `tunnel` and `outer · no peer` are tracct's own names; the rest are the terms
+  above.
+
+**What leaves the network cards** is two of these totals: `outer · remote` on Processes,
+`physical` on Interfaces. They differ where a socket does not see what the card carries:
+
+- headers and retransmits, which socket bytes leave out;
+- a kernel tunnel's encrypted packets, which have no socket and are only in the
+  interface's counters;
+- forwarded traffic, which has no process and is on Interfaces and the Forwarded tab.
 
 ## Threads
 
@@ -372,10 +392,12 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
 The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
 source (connections, interfaces or forwarded flows) grouped by one dimension, narrowed by a
 list of include and exclude filters and a time range, and the same sums per time bucket for a
-timeline. The sums over all values come per layer for connections and interfaces, never added
-up across layers, and computed in the same pass: a condition per layer on each row (the ids of
-the tunnel devices are read first, so no row joins the interfaces), with outer as what the
-others leave. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
+timeline. The sums over all values are the totals of
+[Layers, peers and interface classes](#layers-peers-and-interface-classes), never added up
+across layers or peers, and computed in the same pass: a condition per total on each row
+(the ids of the tun, tunnel and physical devices are read first, so no row joins the
+interfaces), with outer · no peer on Processes as what the others leave. Each total comes
+with the filters that keep its rows, which the viewer plots it by. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
 given length within it, never shorter than the current write window, whose rows share one
 `time`; a rollup counts as one stretch of its period. A wide bucket averages a short spike
 away, its peak does not. A stretch is never shorter than the `seconds` of its rows either, so
@@ -406,9 +428,11 @@ is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on 
 `tracct view` (`viewer/`, built on Textual, installed with the `viewer` extra) shows a
 live tab from `events.sock` and a history tab per source with one time range shared
 between them. A tab's table starts
-with the sums over all rows, one row per layer, then the rows themselves, and its plot
+with the totals, a row each, then the rows themselves, and its plot
 (tcoda.plot) draws the highlighted row, a sum only once the highlight is moved to it, so
-interfaces are not added up unless asked for, and layers never are. It draws peaks, not
+interfaces are not added up unless asked for, and layers never are. Grouped by a dimension
+the totals are made of (layer, peer, class), the rows are the totals already, and the
+totals are left out. It draws peaks, not
 averages, except in the rollups, which know only their periods' averages and say so in
 the title; no bucket is shorter than the write window. Its time
 axis is the shared range: what it shows after zooming or panning comes to rest is exactly
@@ -439,7 +463,8 @@ to picosnitch's for the same reason.
    inode match the event, and caches are keyed by (device, inode); an event without an
    inode is never cached. Holding fds would pin deleted binaries' disk space.
 3. **Layers are never summed.** Inner, tunnel and outer rows of the same transfer are each
-   right for their layer; any total or rollup keeps them apart.
+   right for their layer; any total or rollup keeps them apart, and keeps local peers
+   apart from remote ones.
 4. **Socket bytes are labelled as such.** Wherever wire bytes (interface counters,
    conntrack) are added, the two kinds stay separate columns or tables.
 5. **The BPF program and `bpf_wrapper.py` stay identical to picosnitch's** apart from

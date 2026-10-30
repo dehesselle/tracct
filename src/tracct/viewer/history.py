@@ -115,7 +115,7 @@ class HistoryPane(FindablePane):
         self._timeline_timer = None
         #: The row the plot was last asked for, so refilling the table does not ask
         #: again.
-        self._plot_filter: Filter | None = None
+        self._plot_filters: list[Filter] = []
         #: Marks the plot busy once a fetch has taken a moment.
         self._busy_timer = None
 
@@ -209,17 +209,15 @@ class HistoryPane(FindablePane):
             else None
         )
 
-    def plot_filter(self) -> Filter | None:
-        """Return the filter that narrows the plot to the highlighted row.
+    def plot_filters(self) -> list[Filter]:
+        """Return the filters that narrow the plot to the highlighted row.
 
-        None draws all rows.
+        None draw all rows.
         """
         value = self.highlighted()
         if isinstance(value, Total):
-            if value.layer is None or self.result is None:
-                return None
-            return Filter(self.result.layers_by, value.layer)
-        return None if value is None else Filter(self.group_by, value)
+            return list(value.filters)
+        return [] if value is None else [Filter(self.group_by, value)]
 
     def reload(self) -> None:
         if self.info is None:
@@ -251,14 +249,15 @@ class HistoryPane(FindablePane):
         origin, step = bucket_grid(
             start, end, self.query_one(TrafficPlot).points(), self.info.write_window
         )
-        plot_filter = self._plot_filter = self.plot_filter()
-        filters = self.filters + ([plot_filter] if plot_filter else [])
+        plot_filters = self._plot_filters = self.plot_filters()
+        filters = self.filters + plot_filters
         value = self.highlighted()
         if isinstance(value, Total):
             row_label = value.label()
-        elif plot_filter is None:
+        elif not plot_filters:
             row_label = ALL
         else:
+            [plot_filter] = plot_filters
             row_label = (
                 f"{self.info.dimension_label(plot_filter.dimension)}"
                 f" = {format_value(plot_filter.dimension, plot_filter.value)}"
@@ -380,10 +379,16 @@ class HistoryPane(FindablePane):
             if needle in format_value(self.group_by, row.value).lower()
         ]
         # The sums come from all rows, so a find, which hides some, hides them too;
-        # grouped by the layer, the rows are the sums already.
+        # grouped by a dimension they are made of (the layer, the peer), the rows are
+        # the sums already.
         totals = (
             list(self.result.totals)
-            if not needle and self.group_by != self.result.layers_by
+            if not needle
+            and not any(
+                self.group_by in row.value.dimensions()
+                for row in self.result.totals
+                if isinstance(row.value, Total)
+            )
             else []
         )
         self.table_rows = totals + shown
@@ -481,7 +486,7 @@ class HistoryPane(FindablePane):
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         # Refilling the table highlights the row again; only another row needs another
         # plot.
-        if self.plot_filter() != self._plot_filter:
+        if self.plot_filters() != self._plot_filters:
             self.schedule_timeline()
 
     def action_filter(self, exclude: bool) -> None:
