@@ -152,26 +152,49 @@ IFACE = Dimension(
     f"(SELECT {_IFACE_NAME} FROM {_IFACE_FROM} WHERE i.id = {{k}})",
     f"t.iface_id IN (SELECT i.id FROM {_IFACE_FROM} WHERE {_IFACE_NAME} IS ?)",
 )
-#: See "Layers" in docs/DESIGN.md: a socket on a tun is inside the tunnel, a raw row on
-#: a tun is the VPN client's.
+#: The interface kinds (IFLA_INFO_KIND) that wrap what they carry into packets of
+#: another interface: TUN devices, whose VPN client does it, and the kernel's own
+#: tunnels and encapsulations. See "Layers, peers and interface classes" in
+#: docs/DESIGN.md.
+TUNNEL_KINDS = (
+    "tun",
+    "wireguard",
+    "gre",
+    "gretap",
+    "ip6gre",
+    "ip6gretap",
+    "ipip",
+    "sit",
+    "ip6tnl",
+    "vxlan",
+    "geneve",
+    "xfrm",
+    "vti",
+    "vti6",
+)
+_TUNNEL_KINDS_SQL = ", ".join(f"'{kind}'" for kind in TUNNEL_KINDS)
+#: A socket on a tunnel is inside it, a raw row on a tun is the VPN client's.
 LAYER = Dimension(
     "layer",
-    "CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END",
+    f"CASE WHEN ti.kind = 'tun' AND t.family = 17 THEN 'tunnel' WHEN ti.kind IN ({_TUNNEL_KINDS_SQL}) THEN 'inner' ELSE 'outer' END",
     join=True,
 )
-#: The same on an interface's counters: a tun device carries what goes through the
+#: The same on an interface's counters: a tunnel device carries what goes through the
 #: tunnel.
 IFACE_LAYER = Dimension(
-    "layer", "CASE WHEN ti.kind = 'tun' THEN 'inner' ELSE 'outer' END", join=True
+    "layer",
+    f"CASE WHEN ti.kind IN ({_TUNNEL_KINDS_SQL}) THEN 'inner' ELSE 'outer' END",
+    join=True,
 )
 #: The layers as conditions on a row, for the sums per layer every request adds up
-#: alongside its rows; {tun} is the ids of the tun devices, read once per request rather
-#: than joined per row. Outer is what the others leave, so it needs no sum of its own.
+#: alongside its rows; {tun} and {tunnel} are the ids of the tun devices and of all
+#: tunnel devices, read once per request rather than joined per row. Outer is what the
+#: others leave, so it needs no sum of its own.
 LAYER_SUMS = (
-    ("inner", "t.iface_id IN ({tun}) AND t.family IS NOT 17"),
+    ("inner", "t.iface_id IN ({tunnel}) AND t.family IS NOT 17"),
     ("tunnel", "t.iface_id IN ({tun}) AND t.family = 17"),
 )
-IFACE_LAYER_SUMS = (("inner", "t.iface_id IN ({tun})"),)
+IFACE_LAYER_SUMS = (("inner", "t.iface_id IN ({tunnel})"),)
 DOMAIN = _lookup("domain", "domain_id", "domains", "domain")
 PROTOCOL = Dimension("protocol", "t.protocol")
 
@@ -508,14 +531,20 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     }
     if not plan.parts:
         return result
-    # Without a tun device every row is left over, and no sum is needed.
-    tun = ", ".join(
-        str(row[0])
-        for row in con.execute("SELECT id FROM interfaces WHERE kind = 'tun'")
-    )
+    # Without a tunnel device every row is left over, and no sum is needed.
+    tun, tunnel = [], []
+    for row_id, kind in con.execute(
+        f"SELECT id, kind FROM interfaces WHERE kind IN ({_TUNNEL_KINDS_SQL})"
+    ):
+        tunnel.append(str(row_id))
+        if kind == "tun":
+            tun.append(str(row_id))
     totals = (
-        tuple((name, condition.format(tun=tun)) for name, condition in source.totals)
-        if tun
+        tuple(
+            (name, condition.format(tun=", ".join(tun), tunnel=", ".join(tunnel)))
+            for name, condition in source.totals
+        )
+        if tunnel
         else ()
     )
     conditions = tuple(condition for _, condition in totals)

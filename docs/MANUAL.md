@@ -47,12 +47,17 @@ another:
   Processes, headings the highlight skips (process, parent, network, connection) group
   the list. The three kinds of bytes are never added together.
 
-A history table starts with the sums over all its rows. On Processes and Interfaces there is
-one per layer, `(all · inner)`, `(all · tunnel)` and `(all · outer)`, as a VPN's traffic shows
-once per layer and adding them up would count it two or three times: inner is what goes
-through a VPN, seen at the program's socket or the `tun` device; tunnel the same at the VPN
-client; outer everything else, which is what leaves the network card (the VPN's own
-encrypted traffic too) and localhost. On Forwarded there is one `(all)`. The highlight starts
+A history table starts with the sums over all its rows: one per layer, as a tunnel's
+traffic shows once per layer and adding them up would count it two or three times.
+
+- **Processes**: `(all · inner)`, `(all · tunnel)` and `(all · outer)`.
+- **Interfaces**: `(all · inner)` and `(all · outer)`.
+- **Forwarded**: one `(all)`.
+
+Inner is what goes through a tunnel (a VPN, WireGuard in the kernel, GRE, VXLAN, …), seen at
+the program's socket or the tunnel device. Tunnel is the same seen at a VPN client's TUN
+device. Outer is everything not inside a tunnel. The reasons are in
+[DESIGN.md](DESIGN.md#layers-peers-and-interface-classes). The highlight starts
 on the largest row below them; a find hides them, as they sum up the rows it hides too. The
 table, the summary, counts the rows in its title while a find hides some or there are more
 than it shows (up to 1000).

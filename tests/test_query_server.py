@@ -345,6 +345,40 @@ def test_interfaces_and_layers(tmp_path):
     assert rows == {"outer": (670, 6700), "inner": (4, 40)}
 
 
+def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
+    """A socket on a kernel tunnel is inside it, as are the tunnel device's counters;
+    a raw row on a tun is the VPN client's, the tunnel layer.
+    """
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute(f"INSERT INTO interfaces VALUES (4, {HOST_ID}, 'wg0', 'wireguard')")
+    # A socket on wg0, and a raw row on tailscale0.
+    con.executemany(
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, 10)",
+        [
+            (P0 + 3 * H + 30, 7, 8, 1, 2, 6, 50004, 443, 1, 2, HOST_ID, 4),
+            (P0 + 3 * H + 40, 5, 6, 3, 17, 0, 0, 0, 0, 0, HOST_ID, 2),
+        ],
+    )
+    con.execute(
+        f"INSERT INTO interface_traffic VALUES ({P0 + 3 * H + 10}, 4, 9, 90, 10)"
+    )
+    con.commit()
+    con.close()
+    _, rows = _aggregate(db, "layer", start=P0 + 2 * H)
+    assert rows == {"outer": (11, 22), "inner": (307, 38), "tunnel": (5, 6)}
+    response, _ = _aggregate(db, "exe")
+    assert response["parts"] == [
+        ["outer", 6111, 11522],
+        ["inner", 307, 38],
+        ["tunnel", 5, 6],
+    ]
+    _, rows = _aggregate(db, "layer", source="interfaces")
+    assert rows == {"outer": (670, 6700), "inner": (13, 130)}
+    response, _ = _aggregate(db, "iface", source="interfaces")
+    assert response["parts"] == [["outer", 670, 6700], ["inner", 13, 130]]
+
+
 def test_namespaces_keep_the_name_of_their_rows(tmp_path):
     """A reused inode named anew leaves the older rows their name, and one name over
     several inodes (a namespace made again after a reboot) is one value.

@@ -43,7 +43,7 @@ As root or as a member of `tracct-viewer`:
 - Accounting, not security: programs are identified by their path, and anything running as
   root can evade or alter the record.
 - Bytes are counted at the socket, without headers or retransmits, and traffic through a
-  VPN tunnel appears once per layer; see
+  tunnel appears once per layer; see
   [DESIGN.md](https://github.com/dehesselle/tracct/blob/master/docs/DESIGN.md).
 
 ## Documentation

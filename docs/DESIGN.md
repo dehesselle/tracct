@@ -93,14 +93,9 @@ counters and namespaces that cannot be queried are detected and logged, not sile
 - **TUN devices.** Reads and writes on a TUN device (WireGuard in userspace such as
   tailscaled, OpenConnect) are counted per process and namespace, without addresses, and
   stored with `family = AF_PACKET` (17).
-- **Layers.** On a VPN host the same download can appear up to three times: the program's
-  socket inside the tunnel (inner), the VPN client's TUN read (tunnel), and the VPN client's
-  encrypted socket (outer). Each row is correct for its layer; totals must not add layers.
-  Every row carries its interface, which tells the layers apart: a socket whose local address
-  is on a `tun` interface is inner, an `AF_PACKET` row on a `tun` interface is tunnel, the
-  rest is outer: everything not inside a tunnel, which is what leaves the network card (a VPN's
-  carrier included, and all traffic of a host without one), and localhost too. An interface's
-  counters have the same layers: a `tun` device's are inner, the rest outer.
+- **Layers.** On a VPN host the same download can appear up to three times, once per layer;
+  totals must not add layers. See
+  [Layers, peers and interface classes](#layers-peers-and-interface-classes).
 - **Forwarded traffic** that the kernel routes through the host (an exit node, NAT for
   containers) or through one of its namespaces (a VPN namespace routing for others) touches
   no local socket. It is recorded from connection tracking, as IP bytes, in its own table,
@@ -110,12 +105,57 @@ counters and namespaces that cannot be queried are detected and logged, not sile
 - **No socket, no attribution.** In-kernel tunnels and encapsulation (the WireGuard kernel
   module, VXLAN, GRE, IPsec) send and receive without a socket call, as do receives through
   `TCP_ZEROCOPY_RECEIVE`, AF_XDP zero-copy sends and, unless `mmap_ring_rx` is on, mmap-ring
-  receives. Their bytes show only in the interface totals.
+  receives. Their bytes show only in the interface totals; a kernel tunnel's carrier in
+  the counters of the interface it leaves by.
 - **Interface totals.** Per-interface counters are the baseline every other number can be
   held against: socket bytes attributed to processes, the remainder that no socket explains
   (forwarding, kernel traffic), per namespace.
 - **Network namespaces.** Every row carries the namespace inode, so processes in separate
   namespaces stay apart; named namespaces get their name in `netns`.
+
+### Layers, peers and interface classes
+
+A *layer* says whether adding bytes up would count the same transfer twice. Totals never
+add across layers.
+
+The terms are those of tunneling (RFC 2003, and VXLAN, GRE and Geneve after it). The
+*outer* packet carries another one between the tunnel's endpoints, and the *inner* packet
+is the one carried. Outer means "not inside a tunnel" and nothing more; it is not "what
+leaves the network card". On a VPN host the same download can appear three times:
+
+- the program's socket inside the tunnel (inner);
+- the VPN client's TUN read (tunnel);
+- the VPN client's encrypted socket (outer).
+
+Each row is correct for its layer.
+
+A *tunnel device* is an interface of a kind (the kernel's `IFLA_INFO_KIND`) that wraps
+what it carries into packets sent by another interface (`TUNNEL_KINDS` in
+`query_server.py`):
+
+- `tun`, whose VPN client does the wrapping;
+- the kernel's own tunnels and encapsulations: `wireguard`, `gre`, `gretap`, `ip6gre`,
+  `ip6gretap`, `ipip`, `sit`, `ip6tnl`, `vxlan`, `geneve`, `xfrm`, `vti`, `vti6`.
+
+Every row carries its interface, which gives its layer:
+
+- **Processes**:
+  - **inner**: a socket whose local address is on a tunnel device;
+  - **tunnel**: an `AF_PACKET` row on a `tun` device;
+  - **outer**: every other row, localhost and traffic between namespaces included.
+- **Interfaces**:
+  - **inner**: a tunnel device's counters;
+  - **outer**: every other device's.
+
+The layers follow these choices:
+
+- **Kernel tunnels.** A kernel tunnel's sockets are inner, because their packets are the
+  ones being wrapped. The kernel sends the wrapping packets itself, without a socket, so on
+  Processes a kernel tunnel's traffic has no outer row. Its carrier bytes are in the
+  counters of the interface they leave by.
+- **The `tunnel` layer.** The name is tracct's own. Elsewhere, the VPN client's TUN read is
+  still the inner packet, seen at the tunnel's endpoint. tracct keeps it apart because it
+  is a second process's count of the same bytes.
 
 ## Threads
 
@@ -290,7 +330,7 @@ source (connections, interfaces or forwarded flows) grouped by one dimension, na
 list of include and exclude filters and a time range, and the same sums per time bucket for a
 timeline. The sums over all values come per layer for connections and interfaces, never added
 up across layers, and computed in the same pass: a condition per layer on each row (the ids of
-the `tun` devices are read first, so no row joins the interfaces), with outer as what the
+the tunnel devices are read first, so no row joins the interfaces), with outer as what the
 others leave. A timeline can also carry each bucket's peak: the highest rate of any stretch of a
 given length within it, never shorter than the current write window, whose rows share one
 `time`; a rollup counts as one stretch of its period. A wide bucket averages a short spike
