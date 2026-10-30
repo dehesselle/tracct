@@ -218,7 +218,8 @@ Rows are written every `write_limit_seconds`, one row per distinct connection an
 plus the window's interface counters and forwarded flows; a window that reaches 65 536
 connections is written early, so memory follows connections and not events. A raw row's
 `time` is the end of its window, a rollup's `period` the start of its period, and each row
-has the `seconds` it covers: measured for a window, so an early one is shorter, and the
+has the `seconds` it covers: measured for a window, so an early one is shorter, with its
+ends rounded rather than its length, so that the windows of a stretch add up to it; and the
 period's length for a rollup, less for the part of a period left after the period length
 changed. Bytes are `sent` and `received` from the host's side in `connections` and
 `interface_traffic`.

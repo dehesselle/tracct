@@ -427,6 +427,16 @@ class WriteWindow:
         ], flow_rows
 
 
+def window_seconds(started: float, ended: float) -> int:
+    """The seconds a window lasted, for its rows.
+
+    Its ends are rounded rather than its length: a window runs a fraction past its due
+    time, which rounding the length would drop every time, so a stretch of windows would
+    add up to less than the stretch.
+    """
+    return round(ended) - round(started)
+
+
 def _chunked_delete(
     con: sqlite3.Connection,
     table: str,
@@ -733,7 +743,7 @@ def run_writer(
     def write() -> None:
         nonlocal transaction, iface_rows, flow_rows, window_start
         started, window_start = window_start, time.monotonic()
-        seconds = round(window_start - started)
+        seconds = window_seconds(started, window_start)
         names: dict[int, str] = {}
         if netinfo is not None:
             # A namespace removed since the last refresh keeps its name for the rows of

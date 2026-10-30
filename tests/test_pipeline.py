@@ -8,6 +8,7 @@ No root or BPF needed.
 """
 
 import copy
+import itertools
 import sqlite3
 import threading
 import time
@@ -363,6 +364,15 @@ def test_writer_writes_full_window_early(tmp_path, monkeypatch):
     # The early window lasted until the bound was reached, the last one until the stop.
     assert seconds[0] == seconds[1] <= 1
     assert 1 <= seconds[2] <= 3
+
+
+def test_window_seconds_add_up():
+    # A 2 s window is written about 2.4 s after the last: rounding each length would
+    # give 2 every time, a sixth short of the stretch.
+    ends = [1000.3 + 2.4 * i for i in range(101)]
+    seconds = [writer.window_seconds(a, b) for a, b in itertools.pairwise(ends)]
+    assert set(seconds) == {2, 3}
+    assert sum(seconds) == 240
 
 
 def test_writer_quarantines_unusable_db(tmp_path, monkeypatch):
