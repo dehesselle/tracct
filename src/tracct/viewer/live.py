@@ -30,9 +30,21 @@ from textual.worker import get_current_worker
 
 from tracct.live_feed import LiveFeedSubscriber
 from tracct.viewer.client import feed_closed, feed_unavailable
-from tracct.viewer.format import bytes_cell, clean, format_clock
+from tracct.viewer.format import (
+    bytes_cell,
+    clean,
+    format_clock,
+    shorten_end,
+    shorten_host,
+    shorten_path,
+)
 from tracct.viewer.pane import FindablePane
-from tracct.viewer.settings import LIVE_EVENTS, LIVE_SUMMARY_ROWS, config
+from tracct.viewer.settings import (
+    LIVE_COLUMN_WIDTH,
+    LIVE_EVENTS,
+    LIVE_SUMMARY_ROWS,
+    config,
+)
 
 #: Events waiting between the feed thread and the next redraw; fills only while the UI
 #: stalls.
@@ -60,15 +72,20 @@ def _replace_rows(table: DataTable, rows: list[tuple[str, tuple]]) -> None:
         table.move_cursor(row=min(cursor, len(rows) - 1))
 
 
+def _cursor_key(table: DataTable) -> RowKey | None:
+    """The key of the row under the cursor, or None for an empty table."""
+    if 0 <= table.cursor_row < table.row_count:
+        return table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+    return None
+
+
 def _update_rows(table: DataTable, rows: list[tuple[str, tuple]]) -> None:
     """The rows in place, so the table stays scrolled where it was.
 
     They take the table's sort order at once rather than on the next idle, and the
     cursor follows its row by key.
     """
-    followed: RowKey | None = None
-    if 0 <= table.cursor_row < table.row_count:
-        followed = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+    followed = _cursor_key(table)
     wanted = dict(rows)
     for row_key in [key for key in table.rows if key.value not in wanted]:
         table.remove_row(row_key)
@@ -88,6 +105,11 @@ def _update_rows(table: DataTable, rows: list[tuple[str, tuple]]) -> None:
 
 def _int(value: object) -> int:
     return value if isinstance(value, int) else 0
+
+
+def _full(text: str, shortened: str) -> list[str]:
+    """`text` when its cell shows it shortened, for the bottom border."""
+    return [text] if shortened != text else []
 
 
 def remote(event: dict) -> str:
@@ -125,6 +147,12 @@ class LiveEvent:
     #: Read or written raw (AF_PACKET, family 17): a TUN device's packets or frames,
     #: a layer apart from the socket bytes of the same process.
     raw: bool = False
+    #: The remote port, or 0 for none.
+    rport: int = 0
+
+    @property
+    def host(self) -> str:
+        return self.domain or self.raddr
 
     @classmethod
     def parse(cls, seq: int, arrived: float, event: dict) -> LiveEvent:
@@ -143,6 +171,7 @@ class LiveEvent:
             domain=event.get("domain") or "",
             raddr=event.get("raddr") or "",
             raw=event.get("family") == 17,
+            rport=max(_int(event.get("rport")), 0),
         )
 
     @property
@@ -211,19 +240,22 @@ class LivePane(FindablePane):
         self.state_message = ""
         self._dirty = True
         self._seq = 0
+        #: The text columns' width the tables were last drawn with.
+        self._width = config.get(LIVE_COLUMN_WIDTH)
 
     def compose_content(self) -> ComposeResult:
         yield DataTable(id="summary", cursor_type="row", zebra_stripes=True)
         yield DataTable(id="events", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self) -> None:
-        # The columns of numbers sort by the number, not by its text; the tables only
-        # ever show rows that are in the models, so every key is there to look up.
+        # The columns of numbers sort by the number, not by its text, and the columns
+        # that can be shortened by their full text; the tables only ever show rows that
+        # are in the models, so every key is there to look up.
         summary = self.query_one("#summary", DataTable)
         for key, label, sort_key in (
-            ("exe", "executable", None),
+            ("exe", "executable", lambda k: self.summary[k.value].exe.casefold()),
             ("name", "name", None),
-            ("unit", "unit", None),
+            ("unit", "unit", lambda k: self.summary[k.value].unit.casefold()),
             # Socket or raw bytes, never summed together.
             ("kind", "kind", None),
             ("events", _right("events"), lambda k: self.summary[k.value].events),
@@ -237,9 +269,9 @@ class LivePane(FindablePane):
             ("time", "time", lambda k: self.events[k.value].seq),
             ("name", "name", None),
             ("parent", "parent", None),
-            ("unit", "unit", None),
+            ("unit", "unit", lambda k: self.events[k.value].unit.casefold()),
             ("lport", _right("lport"), lambda k: self.events[k.value].lport),
-            ("remote", "remote", None),
+            ("remote", "remote", lambda k: self.events[k.value].remote.casefold()),
             ("sent", _right("sent"), lambda k: self.events[k.value].sent),
             ("received", _right("received"), lambda k: self.events[k.value].received),
         ):
@@ -308,6 +340,10 @@ class LivePane(FindablePane):
         if not self.paused:
             self.events.update((event.key, event) for event in arrived)
         self.apply_limits()
+        # A width changed in the settings applies on the next redraw, traffic or not.
+        if self._width != config.get(LIVE_COLUMN_WIDTH):
+            self._width = config.get(LIVE_COLUMN_WIDTH)
+            self._dirty = True
         if arrived or self._dirty:
             self._dirty = False
             self.render_tables(events=not self.paused)
@@ -340,13 +376,14 @@ class LivePane(FindablePane):
         return not needle or any(needle in str(field or "").lower() for field in fields)
 
     def render_tables(self, events: bool = True) -> None:
+        width = config.get(LIVE_COLUMN_WIDTH)
         rows = [
             (
                 key,
                 (
-                    Text(clean(total.exe)),
+                    Text(shorten_path(clean(total.exe), width)),
                     Text(clean(total.name)),
-                    Text(clean(total.unit)),
+                    Text(shorten_end(clean(total.unit), width)),
                     Text("raw" if total.raw else "socket"),
                     Text(str(total.events), justify="right"),
                     bytes_cell(total.sent),
@@ -368,9 +405,9 @@ class LivePane(FindablePane):
                     format_clock(event.arrived),
                     Text(clean(event.name)),
                     Text(clean(event.parent)),
-                    Text(clean(event.unit)),
+                    Text(shorten_end(clean(event.unit), width)),
                     Text(str(event.lport) if event.lport else "", justify="right"),
-                    Text(clean(event.remote)),
+                    Text(shorten_host(clean(event.host), event.rport, width)),
                     bytes_cell(event.sent),
                     bytes_cell(event.received),
                 ),
@@ -410,14 +447,44 @@ class LivePane(FindablePane):
             if count
         ]
         summary = f"summary ({', '.join(lacking)})" if lacking else "summary"
-        self.query_one(
-            "#summary", DataTable
-        ).border_title = f"{summary} · {int(time.time() - self.since)} s"
+        table = self.query_one("#summary", DataTable)
+        table.border_title = f"{summary} · {int(time.time() - self.since)} s"
+        # Text, not markup: a path may hold brackets.
+        width = config.get(LIVE_COLUMN_WIDTH)
+        table.border_subtitle = Text(" · ".join(self.shortened(table, width)))
         events = self.query_one("#events", DataTable)
         events.border_title = (
             f"last {config.get(LIVE_EVENTS)} events · {self.event_count} total"
         )
-        events.border_subtitle = "updates are paused" if self.paused else ""
+        notes = self.shortened(events, width)
+        if self.paused:
+            notes.append("updates are paused")
+        events.border_subtitle = Text(" · ".join(notes))
+
+    def shortened(self, table: DataTable, width: int) -> list[str]:
+        """The full values of the selected row that its cells show shortened."""
+        key = _cursor_key(table)
+        if key is None:
+            return []
+        if table.id == "summary":
+            total = self.summary.get(key.value)
+            if total is None:
+                return []
+            exe, unit = clean(total.exe), clean(total.unit)
+            return _full(exe, shorten_path(exe, width)) + _full(
+                unit, shorten_end(unit, width)
+            )
+        event = self.events.get(key.value)
+        if event is None:
+            return []
+        host, unit = clean(event.host), clean(event.unit)
+        return _full(
+            clean(event.remote), shorten_host(host, event.rport, width)
+        ) + _full(unit, shorten_end(unit, width))
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        # The bottom borders follow the cursor at once, not at the next redraw.
+        self.update_titles()
 
     def action_pause(self) -> None:
         self.paused = not self.paused

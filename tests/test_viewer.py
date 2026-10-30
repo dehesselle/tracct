@@ -30,7 +30,14 @@ from tracct.viewer import settings
 from tracct.viewer.app import TracctApp
 from tracct.viewer.banner import Banner
 from tracct.viewer.client import access_hint
-from tracct.viewer.format import format_bytes, format_time, format_value
+from tracct.viewer.format import (
+    format_bytes,
+    format_time,
+    format_value,
+    shorten_end,
+    shorten_host,
+    shorten_path,
+)
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import FeedState, LivePane, remote
 from tracct.viewer.model import Filter, Timeline
@@ -62,6 +69,10 @@ def test_settings():
     for text in ("5", "100001", "x"):
         with pytest.raises(ValueError):
             settings._limit(text)
+    assert settings._width("10") == 10
+    for text in ("9", "201", "x"):
+        with pytest.raises(ValueError):
+            settings._width(text)
     config.set(settings.LIVE_EVENTS, 20)
     configure(path=config.path)
     assert (
@@ -958,6 +969,77 @@ async def test_live_summary_keeps_raw_bytes_apart(tmp_path, monkeypatch):
             pilot,
             lambda: str(summary.border_title).startswith("summary (1 events lost) · "),
         )
+
+
+def test_shorten():
+    path = "/opt/very/long/lib/firefox/firefox"
+    assert shorten_path(path, len(path)) == path
+    # Cut at a slash, so no directory shows in part.
+    assert shorten_path(path, len(path) - 1) == "…/very/long/lib/firefox/firefox"
+    assert shorten_path(path, 22) == "…/lib/firefox/firefox"
+    # A name longer than the width keeps its end.
+    assert shorten_path("/bin/" + "x" * 30 + "end", 10) == "…xxxxxxend"
+    assert shorten_path("x" * 30 + "end", 10) == "…xxxxxxend"
+    # Wide characters count twice.
+    assert shorten_path("/ü/日本語", 7) == "…日本語"
+    assert shorten_end("snap.firefox.firefox-0d8f.scope", 31) == (
+        "snap.firefox.firefox-0d8f.scope"
+    )
+    assert shorten_end("snap.firefox.firefox-0d8f.scope", 12) == "snap.firefo…"
+    assert shorten_end("日本語日本語", 6) == "日本…"
+    host = "lhr48s27-in-f14.1e100.net"
+    assert shorten_host(host, 443, 40) == host + ":443"
+    assert shorten_host(host, 443, 14) == "…1e100.net:443"
+    assert shorten_host(host, 0, 10) == "…1e100.net"
+    # An IPv6 address keeps its own colons.
+    assert shorten_host("2001:db8:85a3::8a2e:370:7334", 443, 16) == "…2e:370:7334:443"
+
+
+async def test_live_shortened(tmp_path):
+    """Long executables, units and remotes are shortened to the width setting; the
+    selected row's show in full in the bottom border, and sorting follows them.
+    """
+    config.set(settings.LIVE_COLUMN_WIDTH, 20)
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "live")
+    async with app.run_test(size=(140, 45)) as pilot:
+        pane = app.query_one(LivePane)
+        summary = pane.query_one("#summary", DataTable)
+        events = pane.query_one("#events", DataTable)
+        deep = "/opt/zz/very/deep/directory/bin/app"
+        unit = "app-gnome-org.example.App-12345.scope"
+        pane.receive(
+            {
+                "name": "app",
+                "exe": deep,
+                "unit": unit,
+                "send": 1,
+                "rport": 443,
+                "domain": "lhr48s27-in-f14.1e100.net",
+            }
+        )
+        pane.receive({"name": "curl", "exe": "/usr/bin/curl", "send": 1})
+        await _until(pilot, lambda: summary.row_count == 2 and events.row_count == 2)
+        deep_key = f"app\0{deep}\0{unit}"
+        assert summary.get_cell(deep_key, "exe").plain == "…/directory/bin/app"
+        assert summary.get_cell(deep_key, "unit").plain == "app-gnome-org.examp…"
+        assert events.get_cell("1", "remote").plain == "…n-f14.1e100.net:443"
+        # By the full path: /opt/zz before /usr, where "…" would rank after "/".
+        assert _keys(summary) == [deep_key, "curl\0/usr/bin/curl\0"]
+        summary.move_cursor(row=0)
+        await _until(pilot, lambda: summary.border_subtitle == f"{deep} · {unit}")
+        # A row shown in full has nothing to add.
+        summary.move_cursor(row=1)
+        await _until(pilot, lambda: summary.border_subtitle == "")
+        # The events table, newest first: the long one is second.
+        events.move_cursor(row=1)
+        await _until(
+            pilot,
+            lambda: events.border_subtitle == f"lhr48s27-in-f14.1e100.net:443 · {unit}",
+        )
+        # A wider setting applies without new traffic.
+        config.set(settings.LIVE_COLUMN_WIDTH, 60)
+        await _until(pilot, lambda: summary.get_cell(deep_key, "exe").plain == deep)
+        await _until(pilot, lambda: events.border_subtitle == "")
 
 
 async def test_live_summary_scroll(tmp_path, monkeypatch):

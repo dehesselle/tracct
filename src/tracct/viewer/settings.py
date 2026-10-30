@@ -18,7 +18,13 @@ from tcoda.settings import Setting, config, configure
 
 configure("tracct")
 
-__all__ = ["LIVE_EVENTS", "LIVE_SUMMARY_ROWS", "Setting", "config"]
+__all__ = [
+    "LIVE_COLUMN_WIDTH",
+    "LIVE_EVENTS",
+    "LIVE_SUMMARY_ROWS",
+    "Setting",
+    "config",
+]
 
 LIMIT_MIN = 10
 LIMIT_MAX = 100000
@@ -52,4 +58,28 @@ LIVE_EVENTS = Setting(
     group="Live",
     default=500,
     parse=_limit,
+)
+
+WIDTH_MIN = 10
+WIDTH_MAX = 200
+
+
+def _width(text: str) -> int:
+    value = int(text)
+    if not WIDTH_MIN <= value <= WIDTH_MAX:
+        raise ValueError(f"not between {WIDTH_MIN} and {WIDTH_MAX}: {value}")
+    return value
+
+
+LIVE_COLUMN_WIDTH = Setting(
+    key="live_column_width",
+    label="widest text column",
+    description=(
+        "Characters an executable, unit or remote takes at most. Longer ones are"
+        " shortened, and the selected row's are shown in full in the table's bottom"
+        f" border. {WIDTH_MIN} to {WIDTH_MAX}."
+    ),
+    group="Live",
+    default=40,
+    parse=_width,
 )

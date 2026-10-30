@@ -40,7 +40,10 @@ another:
   lost while the viewer stalled. The events table's title counts all events; a line above
   the tables appears only for a problem with the feed or an active find. Clicking a column's header sorts by
   it, clicking it again reverses; the summary starts sorted by executable path, the events
-  newest first. `Space` pauses the events table, `r` resets both.
+  newest first. Executables, units and remotes longer than 40 characters (a setting) are
+  shortened, a path and a host name at their start, a unit at its end; the selected row's
+  are shown in full in its table's bottom border, and sorting goes by the full text.
+  `Space` pauses the events table, `r` resets both.
 - **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and
   **Processes** (socket bytes): the history, grouped by the dimension chosen in the group
   by list on the left, over the time range named at the start of the plot's title. On
@@ -104,7 +107,8 @@ refreshes. A range that ends now refreshes every 10 seconds. While a tab waits m
 moment for the query server, `↻` ends the plot's title.
 
 Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
-opens the viewer's settings, such as the live tab's limits. They are kept per user in
+opens the viewer's settings, such as the live tab's limits and the width of its text
+columns. They are kept per user in
 `~/.config/tracct/settings.json` (under `$XDG_CONFIG_HOME` if set), which holds only the
 values changed from their defaults. `,` `a` shows the about box. On the history tabs, `,`
 `b` picks the byte unit from a list, where `b` pressed again goes back to the unit

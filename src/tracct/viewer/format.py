@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: 0BSD
 
-"""Text for the viewer's cells: byte counts, users, protocols, times and durations."""
+"""Text for the viewer's cells: byte counts, users, protocols, times and durations, and
+long values shortened."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import functools
 import pwd
 import time
 
+from rich.cells import cell_len, get_character_cell_size, set_cell_size
 from rich.text import Text
 
 from tracct.utils import sanitize_log_line
@@ -70,6 +72,53 @@ def clean(value: object) -> str:
         .replace("\r", " ")
     )
     return sanitize_log_line(text)
+
+
+def _head(text: str, width: int) -> str:
+    """The longest start of `text` that fits in `width` cells."""
+    return set_cell_size(text, width).rstrip() if width > 0 else ""
+
+
+def _tail(text: str, width: int) -> str:
+    """The longest end of `text` that fits in `width` cells."""
+    start, used = len(text), 0
+    while start > 0:
+        used += get_character_cell_size(text[start - 1])
+        if used > width:
+            break
+        start -= 1
+    return text[start:]
+
+
+def shorten_path(text: str, width: int) -> str:
+    """`text` in `width` cells at most, keeping its end: `…/lib/firefox/firefox`.
+
+    Cut at a slash where one is left, so no directory shows only in part.
+    """
+    if cell_len(text) <= width:
+        return text
+    tail = _tail(text, width - 1)
+    if "/" in tail:
+        tail = tail[tail.index("/") :]
+    return "…" + tail
+
+
+def shorten_end(text: str, width: int) -> str:
+    """`text` in `width` cells at most, keeping its start."""
+    if cell_len(text) <= width:
+        return text
+    return _head(text, width - 1) + "…"
+
+
+def shorten_host(host: str, port: int, width: int) -> str:
+    """`host:port` in `width` cells at most, keeping the port and the host's end.
+
+    The end of a domain says more than its start. Without a port (0), the host alone.
+    """
+    suffix = f":{port}" if port > 0 else ""
+    if cell_len(host) + len(suffix) <= width:
+        return host + suffix
+    return "…" + _tail(host, width - 1 - len(suffix)) + suffix
 
 
 def format_value(dimension: str, value: object) -> str:
