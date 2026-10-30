@@ -68,6 +68,27 @@ def test_refresh_reports_deltas_and_owners(monkeypatch, tmp_path):
     assert reports == []
 
 
+def test_new_interfaces_count_from_zero(monkeypatch, tmp_path):
+    """In a namespace read before, an interface created since counts all it moved, and
+    one renamed goes on from its counters; a namespace's first look is the baseline.
+    """
+    monkeypatch.setattr(netinfo, "NETNS_DIRS", (str(tmp_path),))
+    lo = Link(1, "lo", "", 5000, 5000)
+    snapshots = [
+        netinfo.Snapshot([lo], []),
+        netinfo.Snapshot([lo, Link(7, "wg0", "wireguard", 300, 400)], []),
+        netinfo.Snapshot([lo, Link(7, "vpn0", "wireguard", 350, 450)], []),
+    ]
+    info = netinfo.NetInfo(
+        lambda *report: None,
+        query=lambda path: snapshots.pop(0),
+        clock=itertools.count(0, 10).__next__,
+    )
+    assert info.refresh() == []
+    assert info.refresh() == [(info.host, "wg0", "wireguard", 300, 400, 10)]
+    assert info.refresh() == [(info.host, "vpn0", "wireguard", 50, 50, 10)]
+
+
 def test_refresh_survives_a_failed_look(monkeypatch, tmp_path):
     """A namespace that cannot be queried once is reported once and keeps its owners and
     baseline, so the next look counts from where the last one left off, and over the

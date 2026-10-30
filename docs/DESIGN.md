@@ -62,7 +62,9 @@ traffic come from netlink.
   (`RTM_GETADDR`), in the daemon's namespace, the named ones (`/run/netns`,
   `/run/docker/netns`) and those a recorded process lives in. Another namespace is queried
   from a short-lived thread that joins it (`setns`), so no other thread changes namespace and
-  the query keeps no file descriptor that would hold the namespace alive. The counter deltas become `interface_traffic`;
+  the query keeps no file descriptor that would hold the namespace alive. The counter deltas become `interface_traffic`:
+  a namespace's first read only sets its baseline, while an interface that appears in a
+  namespace read before counts from zero, and one renamed goes on counting;
   the addresses tell which interface each connection's local address is on, and a process's
   `/dev/net/tun` descriptors which TUN device its raw reads and writes went through.
 - **Forwarded flows** (`conntrack.py`). Once per write window the writer dumps the kernel's

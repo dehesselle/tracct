@@ -164,8 +164,9 @@ class NetInfo:
         self.loopback: dict[int, tuple[str, str]] = {}
         #: Netns -> the broadcast addresses of its IPv4 networks.
         self.broadcasts: dict[int, set[str]] = {}
-        #: (netns, ifindex, name) -> (rx, tx) at the last refresh.
-        self.counters: dict[tuple[int, int, str], tuple[int, int]] = {}
+        #: (netns, ifindex) -> (rx, tx) at the last refresh; by index, so a renamed
+        #: interface goes on counting.
+        self.counters: dict[tuple[int, int], tuple[int, int]] = {}
         self.tun_cache: dict[int, str] = {}
         #: Inode -> path to join (None for the daemon's own) of the namespaces the last
         #: refresh looked at.
@@ -257,7 +258,7 @@ class NetInfo:
         """
         owners: dict[tuple[int, str], tuple[str, str]] = {}
         loopback: dict[int, tuple[str, str]] = {}
-        counters: dict[tuple[int, int, str], tuple[int, int]] = {}
+        counters: dict[tuple[int, int], tuple[int, int]] = {}
         read_at: dict[int, float] = {}
         broadcasts: dict[int, set[str]] = {}
         traffic = []
@@ -323,12 +324,18 @@ class NetInfo:
                 if address.addr in ("127.0.0.1", "::1"):
                     loopback[inode] = (link.name, link.kind)
             for link in snapshot.links:
-                key = (inode, link.index, link.name)
+                key = (inode, link.index)
                 counters[key] = (link.rx_bytes, link.tx_bytes)
                 previous = self.counters.get(key)
                 if previous is None:
-                    # The first look only sets the baseline.
-                    continue
+                    if last_read is None:
+                        # A namespace's first look only sets the baseline: what its
+                        # interfaces moved before is no window's.
+                        continue
+                    # Created since the namespace was last read, so all it moved is in
+                    # this window (one moved in from another namespace brings what it
+                    # moved there).
+                    previous = (0, 0)
                 # A counter that went back was reset (device recreated): count from
                 # zero.
                 rx = (
