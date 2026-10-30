@@ -176,7 +176,9 @@ The messages, warnings unless marked:
   [Failure and recovery](#failure-and-recovery)
 - `clock-went-back`: the clock had run ahead while periods were rolled up; they are rolled
   up again
-- `retention-skipped` (error): the clock is ahead of the newest row, so nothing is purged
+- `retention-skipped` (error): the clock is ahead of the newest row by more than the
+  retention, so nothing is purged; also once at the first start after the daemon was down
+  that long, until the next pass
 - `conntrack-unreadable`: no `nf_conntrack` module, no `CAP_NET_ADMIN`, or the namespace
   cannot be joined; its forwarded traffic goes unrecorded until the table can be read,
   while the rest of each window is written

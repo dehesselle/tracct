@@ -371,15 +371,18 @@ class WriteWindow:
         )
 
     def take_rows(
-        self, names: dict[int, str] | None = None, seconds: int = 0
+        self,
+        names: dict[int, str] | None = None,
+        seconds: int = 0,
+        written: int | None = None,
     ) -> tuple[list[tuple], list[tuple]]:
         """The window as connection and forwarded rows for the database, with domains
         from reverse DNS where the program looked up none, each namespace as (inode,
-        name) by names, and the seconds the window lasted last; the next window starts
-        empty.
+        name) by names, the seconds the window lasted and the time it was written at,
+        by default now; the next window starts empty.
         """
         names = names or {}
-        written = int(time.time())
+        written = int(time.time()) if written is None else written
         rows: dict[tuple, list[int]] = {}
         for key, (send, recv, n_events) in self.connections.items():
             *identity, laddr, raddr, domain, inode, tun = key
@@ -435,6 +438,13 @@ class WriteWindow:
         ], flow_rows
 
 
+def newest_row(con: sqlite3.Connection) -> int | None:
+    """The time of the newest raw row of any table, None in an empty database."""
+    return con.execute(
+        "SELECT MAX(t) FROM (SELECT MAX(time) AS t FROM connections UNION ALL SELECT MAX(time) FROM interface_traffic UNION ALL SELECT MAX(time) FROM forwarded)"
+    ).fetchone()[0]
+
+
 def window_seconds(started: float, ended: float) -> int:
     """The seconds a window lasted, for its rows.
 
@@ -487,8 +497,7 @@ def roll_up(
     # the data.
     now = int(time.time())
     current = closed = now // period * period
-    newest_sql = "SELECT MAX(t) FROM (SELECT MAX(time) AS t FROM connections UNION ALL SELECT MAX(time) FROM interface_traffic UNION ALL SELECT MAX(time) FROM forwarded)"
-    newest = con.execute(newest_sql).fetchone()[0]
+    newest = newest_row(con)
     if newest is not None:
         closed = min(closed, newest // period * period)
     row = con.execute(
@@ -574,14 +583,14 @@ def purge_database(
     now = int(time.time())
     # A cutoff past the newest row means a future clock (booted before NTP), which would
     # wipe the db.
-    newest = con.execute("SELECT MAX(time) FROM connections").fetchone()[0]
+    newest = newest_row(con)
     raw_seconds, rollup_seconds = retention_seconds(config)
     shortest = raw_seconds or rollup_seconds
     if newest is not None and shortest > 0 and now - shortest > newest:
         report(
             logger,
             "retention-skipped",
-            "skipping retention purge, wall clock is ahead of the newest logged connection (clock not synced?); no rows deleted",
+            "skipping retention purge, the wall clock is ahead of the newest row by more than the retention (clock not synced, or the daemon was down that long); no rows deleted",
         )
         return periods, 0
     watermark_row = con.execute(
@@ -754,6 +763,9 @@ def run_writer(
         nonlocal transaction, iface_rows, flow_rows, window_start
         started, window_start = window_start, time.monotonic()
         seconds = window_seconds(started, window_start)
+        # One time for all the rows of the window, however long reading the namespaces
+        # takes, so their tables agree on it and on its rollup period.
+        written = int(time.time())
         names: dict[int, str] = {}
         if netinfo is not None:
             # A namespace removed since the last refresh keeps its name for the rows of
@@ -761,7 +773,6 @@ def run_writer(
             names = dict(netinfo.names)
             # First, so the window's rows find the namespaces and addresses as they are
             # now.
-            written = int(time.time())
             traffic = netinfo.refresh()
             names.update(netinfo.names)
             # The seconds since each namespace was read, which are longer than the
@@ -777,7 +788,7 @@ def run_writer(
                 for inode, name, kind, rx, tx, read_seconds in traffic
             ]
             window.add_flows(collect_forwarded())
-        rows, flows = window.take_rows(names, seconds)
+        rows, flows = window.take_rows(names, seconds, written)
         transaction += rows
         flow_rows += flows
         if any(len(table.ids) > ID_CACHE_MAX for table in interned):

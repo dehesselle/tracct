@@ -262,8 +262,8 @@ Maintenance follows the wall clock, which can be wrong:
 
 - a pass is skipped when the wall clock moved more than a minute apart from the boot clock
   since the last pass, so a clock set wrong for less than an interval deletes nothing;
-- the purge is skipped while the wall clock is ahead of the newest row by more than the
-  retention, as after booting before NTP, which would otherwise wipe the database;
+- the purge is skipped while the wall clock is ahead of the newest row of any table by more
+  than the retention, as after booting before NTP, which would otherwise wipe the database;
 - the rollup never passes the newest row's period, and a watermark ahead of the clock (rolled
   up while the clock ran ahead) moves back to the current period, deleting the rollups from
   there on, so the rows written since are rolled up too.

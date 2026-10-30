@@ -328,6 +328,35 @@ def test_writer_keeps_the_name_a_namespace_had(tmp_path, monkeypatch):
     assert interfaces == 2 and seconds == "30"
 
 
+def test_a_window_has_one_time(tmp_path, monkeypatch):
+    """The interface and connection rows of a window carry the same time, however long
+    reading the namespaces takes.
+    """
+    db = _init_database(tmp_path, monkeypatch)
+    inode = 4026531840
+
+    class SlowNetInfo(_NamedNetInfo):
+        def refresh(self) -> list[tuple[int, str, str, int, int, int]]:
+            time.sleep(1.1)
+            return super().refresh()
+
+    monkeypatch.setattr(writer, "NetInfo", lambda: SlowNetInfo(inode, "host"))
+    config = Config()
+    config.monitoring.conntrack = False
+    config.record.reverse_dns = False
+    batches: DropOldestQueue[BpfEvent] = DropOldestQueue(1000)
+    batches.put([_event(netns=inode)])
+    stop = threading.Event()
+    stop.set()
+    writer.run_writer(config, batches, stop)
+    con = sqlite3.connect(db)
+    times = con.execute(
+        "SELECT time FROM connections UNION SELECT time FROM interface_traffic"
+    ).fetchall()
+    con.close()
+    assert len(times) == 1
+
+
 def test_writer_writes_full_window_early(tmp_path, monkeypatch):
     db = _init_database(tmp_path, monkeypatch)
     monkeypatch.setattr(writer, "WINDOW_CONNECTIONS_MAX", 2)

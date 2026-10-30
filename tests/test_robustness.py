@@ -638,6 +638,22 @@ def test_purge_database_guards(tmp_path, monkeypatch):
     con.close()
 
 
+def test_purge_database_guard_reads_every_table(tmp_path):
+    """The clock guard looks at the newest row of any table, as the rollup does: a host
+    whose processes recorded nothing lately still purges.
+    """
+    from tracct import writer
+
+    con = _purge_db(tmp_path)
+    now = int(time.time())
+    _insert_connections(con, (now - 10 * 86400, 2))
+    con.execute("INSERT INTO interface_traffic VALUES (?, 1, 10, 20, 10)", (now - 60,))
+    con.commit()
+    assert writer.purge_database(con, _config(7, 0), lambda: False)[1] == 1
+    assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 0
+    con.close()
+
+
 def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     """A watermark ahead of the clock (rolled up while it ran ahead) moves back to the
     current period; rollups from then on go, and the rows written since are rolled up
