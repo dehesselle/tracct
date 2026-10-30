@@ -255,12 +255,25 @@ class TestShortLivedProcesses:
         last_wget_err = ""
         connections: list = []
         for attempt in range(5):
-            result = subprocess.run(
-                ["wget", "-q", "http://example.com", "-O", "/dev/null"],
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "wget",
+                        "-q",
+                        "--tries=1",
+                        "--timeout=10",
+                        "http://example.com",
+                        "-O",
+                        "/dev/null",
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                last_wget_err = "timed out"
+                time.sleep(1)
+                continue
             if result.returncode != 0:
                 last_wget_err = result.stderr.decode(errors="replace").strip()
                 time.sleep(1)
@@ -376,7 +389,10 @@ class TestSpliceRecvAccounting:
 
     def test_splice_recv_bytes_exact(self, tracct_session):
         total = 4 * 1024 * 1024
-        port = 42813  # fixed server port so the receiver's connection row is queryable by rport
+        # A fixed server port, so the receiver's row is queryable by rport. It is below
+        # the ephemeral range (32768-60999), so no other client on 127.0.0.1 gets it as
+        # its source port and adds a row of its own.
+        port = 24813
         script = f"""
 import os, socket, threading
 total, port = {total}, {port}
@@ -441,7 +457,7 @@ class TestDualStackServer:
     """
 
     def test_ipv4_client_of_dual_stack_server(self, tracct_session):
-        port = 42814
+        port = 24814  # below the ephemeral range, like the splice test's
         script = f"""
 import socket, threading
 srv = socket.create_server(("::", {port}), family=socket.AF_INET6, dualstack_ipv6=True)
