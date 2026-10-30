@@ -32,11 +32,13 @@ highlighted in their title (`l`, `f`, `i`, `p`). It opens on Live unless `--tab`
 another:
 
 - **Live**: connections as the daemon drains them, with totals per executable and unit
-  since the tab started, so each instance of a template unit has its own. It keeps the
-  newest 500 events and 100 summary rows; past that, the rows idle the longest are
-  dropped, and the summary's title counts them along with the seconds since the tab
-  started. The events table's title counts all events; a line above the tables appears
-  only for a problem with the feed or an active find. Clicking a column's header sorts by
+  since the tab started, so each instance of a template unit has its own. A process's raw
+  bytes (TUN packets, AF_PACKET frames) are a row of the kind "raw", apart from its socket
+  bytes: for a VPN client the two are the same transfer twice. It keeps the newest 500
+  events and 100 summary rows; past that, the rows idle the longest are dropped, and the
+  summary's title counts them along with the seconds since the tab started, and any events
+  lost while the viewer stalled. The events table's title counts all events; a line above
+  the tables appears only for a problem with the feed or an active find. Clicking a column's header sorts by
   it, clicking it again reverses; the summary starts sorted by executable path, the events
   newest first. `Space` pauses the events table, `r` resets both.
 - **Forwarded** (IP bytes of routed flows), **Interfaces** (interface bytes) and

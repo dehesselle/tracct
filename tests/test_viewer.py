@@ -894,6 +894,48 @@ async def test_live_tab(tmp_path, monkeypatch):
         publisher.stop()
 
 
+async def test_live_summary_keeps_raw_bytes_apart(tmp_path, monkeypatch):
+    """A process's raw bytes, a VPN client's TUN packets, sum on a row of their own,
+    never with its socket bytes; events lost while the UI stalled are counted.
+    """
+    monkeypatch.setattr("tracct.viewer.live.INCOMING_MAX", 3)
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "query.sock", "live")
+    async with app.run_test(size=(140, 45)) as pilot:
+        pane = app.query_one(LivePane)
+        event = {
+            "name": "tailscaled",
+            "exe": "/usr/sbin/tailscaled",
+            "unit": "tailscaled.service",
+            "send": 1000,
+            "recv": 2000,
+            "family": 2,
+        }
+        # Taken between two redraws: the fourth pushes the first out.
+        for received in (
+            event,
+            {**event, "family": 17, "send": 900, "recv": 1900},
+            event,
+            event,
+        ):
+            pane.receive(received)
+        assert pane.lost == 1
+        await _until(pilot, lambda: pane.event_count == 3)
+        key = "tailscaled\0/usr/sbin/tailscaled\0tailscaled.service"
+        assert (pane.summary[key].sent, pane.summary[key].received) == (2000, 4000)
+        raw = pane.summary[key + "\0raw"]
+        assert (raw.sent, raw.received, raw.raw) == (900, 1900, True)
+        summary = pane.query_one("#summary", DataTable)
+        await _until(pilot, lambda: summary.row_count == 2)
+        assert {str(summary.get_cell(row, "kind")) for row in summary.rows} == {
+            "socket",
+            "raw",
+        }
+        await _until(
+            pilot,
+            lambda: str(summary.border_title).startswith("summary (1 events lost) · "),
+        )
+
+
 async def test_live_summary_scroll(tmp_path, monkeypatch):
     socket_path = tmp_path / "events.sock"
     monkeypatch.setattr(live_feed, "EVENTS_SOCKET_PATH", socket_path)

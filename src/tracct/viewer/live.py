@@ -122,6 +122,9 @@ class LiveEvent:
     #: What a find looks in.
     domain: str
     raddr: str
+    #: Read or written raw (AF_PACKET, family 17): a TUN device's packets or frames,
+    #: a layer apart from the socket bytes of the same process.
+    raw: bool = False
 
     @classmethod
     def parse(cls, seq: int, arrived: float, event: dict) -> LiveEvent:
@@ -139,6 +142,7 @@ class LiveEvent:
             received=_int(event.get("recv")),
             domain=event.get("domain") or "",
             raddr=event.get("raddr") or "",
+            raw=event.get("family") == 17,
         )
 
     @property
@@ -151,20 +155,22 @@ class LiveTotal:
     """The sums of one executable, under one name, in one unit, since the tab started.
 
     Instances of a template unit run the same executable, as do units sharing an
-    interpreter; each gets its own sums.
+    interpreter; each gets its own sums. Raw bytes are summed apart from socket bytes,
+    as a VPN client's TUN packets and its encrypted socket are the same transfer.
     """
 
     name: str
     exe: str
     unit: str
+    raw: bool = False
     sent: int = 0
     received: int = 0
     events: int = 0
     last_seen: float = 0.0
 
     @staticmethod
-    def key_of(name: str, exe: str, unit: str) -> str:
-        return f"{name}\0{exe}\0{unit}"
+    def key_of(name: str, exe: str, unit: str, raw: bool = False) -> str:
+        return f"{name}\0{exe}\0{unit}" + ("\0raw" if raw else "")
 
     def add(self, event: LiveEvent) -> None:
         self.sent += event.sent
@@ -194,6 +200,9 @@ class LivePane(FindablePane):
         #: Rows dropped from the summary for the limit, since the tab started or was
         #: reset.
         self.dropped = 0
+        #: Events lost while the UI stalled and the incoming queue was full, which the
+        #: sums then lack; since the tab started or was reset.
+        self.lost = 0
         self.event_count = 0
         self.since = time.time()
         self.paused = False
@@ -215,6 +224,8 @@ class LivePane(FindablePane):
             ("exe", "executable", None),
             ("name", "name", None),
             ("unit", "unit", None),
+            # Socket or raw bytes, never summed together.
+            ("kind", "kind", None),
             ("events", _right("events"), lambda k: self.summary[k.value].events),
             ("sent", _right("sent"), lambda k: self.summary[k.value].sent),
             ("received", _right("received"), lambda k: self.summary[k.value].received),
@@ -258,14 +269,22 @@ class LivePane(FindablePane):
                         self._set_state(FeedState.DOWN, feed_closed(self.events_socket))
                         break
                     if isinstance(event, dict) and event:
-                        with self._lock:
-                            self._incoming.append((time.time(), event))
+                        self.receive(event)
             finally:
                 sub.close()
             self._dirty = True
             deadline = time.monotonic() + RECONNECT_SECONDS
             while not worker.is_cancelled and time.monotonic() < deadline:
                 time.sleep(0.2)
+
+    def receive(self, event: dict) -> None:
+        """Queue an event from the feed for the next redraw, counting it lost when the
+        queue is full and the oldest has to make room.
+        """
+        with self._lock:
+            if len(self._incoming) == self._incoming.maxlen:
+                self.lost += 1
+            self._incoming.append((time.time(), event))
 
     def _set_state(self, state: FeedState, message: str = "") -> None:
         # The message first: the redraw reads the state, then the message.
@@ -277,13 +296,13 @@ class LivePane(FindablePane):
             incoming = list(self._incoming)
             self._incoming.clear()
         arrived = []
-        for t, raw in incoming:
+        for t, received in incoming:
             self._seq += 1
-            event = LiveEvent.parse(self._seq, t, raw)
+            event = LiveEvent.parse(self._seq, t, received)
             arrived.append(event)
-            key = LiveTotal.key_of(event.name, event.exe, event.unit)
+            key = LiveTotal.key_of(event.name, event.exe, event.unit, event.raw)
             self.summary.setdefault(
-                key, LiveTotal(event.name, event.exe, event.unit)
+                key, LiveTotal(event.name, event.exe, event.unit, event.raw)
             ).add(event)
         self.event_count += len(arrived)
         if not self.paused:
@@ -328,6 +347,7 @@ class LivePane(FindablePane):
                     Text(clean(total.exe)),
                     Text(clean(total.name)),
                     Text(clean(total.unit)),
+                    Text("raw" if total.raw else "socket"),
                     Text(str(total.events), justify="right"),
                     bytes_cell(total.sent),
                     bytes_cell(total.received),
@@ -376,8 +396,20 @@ class LivePane(FindablePane):
         self.banner.say(notes, "press c to clear" if kept else "", error=down)
 
     def update_titles(self) -> None:
-        """Count the tables' rows and the time since the tab started in their titles."""
-        summary = f"summary ({self.dropped} dropped)" if self.dropped else "summary"
+        """Count the tables' rows and the time since the tab started in their titles.
+
+        The summary's says what its sums lack: rows dropped for the limit, events lost
+        while the UI stalled.
+        """
+        lacking = [
+            note
+            for count, note in (
+                (self.dropped, f"{self.dropped} dropped"),
+                (self.lost, f"{self.lost} events lost"),
+            )
+            if count
+        ]
+        summary = f"summary ({', '.join(lacking)})" if lacking else "summary"
         self.query_one(
             "#summary", DataTable
         ).border_title = f"{summary} · {int(time.time() - self.since)} s"
@@ -396,6 +428,7 @@ class LivePane(FindablePane):
         self.summary.clear()
         self.events.clear()
         self.dropped = 0
+        self.lost = 0
         self.event_count = 0
         self.since = time.time()
         # Paused too: the frozen events would be gone from the model behind them.
