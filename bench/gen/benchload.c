@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: 0BSD
 
-/* benchload — load for lib/loadtest.py, all to 127.0.0.1.
+/* benchload — load for lib/loadtest.py and soak/traffic.py, all to 127.0.0.1 but spray.
  *
  *   benchload tcp <port> <interval_ms> <seconds> <tag>
  *       one TCP connection, 8 bytes every <interval_ms> (a long-lived, mostly idle client)
@@ -11,6 +11,11 @@
  *       so every port is a connection of its own (connection cardinality)
  *   benchload once <port> <tag>
  *       one 32-byte UDP datagram, then exit (a short-lived process, for exec storms)
+ *   benchload spray <net> <naddrs> <port> <nports> <per_sec> <seconds> <tag>
+ *       32-byte UDP datagrams to <naddrs> consecutive addresses from <net>, then the
+ *       next of <nports> ports from <port>, <per_sec> in all: a scan's address
+ *       cardinality, without a resolver call per datagram; prints "PROGRESS sent=<bytes>"
+ *       every second
  *
  * <tag> marks the command line so the load test finds its rows; pad it to make argv long.
  * Prints one "RESULT sent=<bytes>" line with the application bytes actually sent.
@@ -76,6 +81,37 @@ static int churn(int port, int nports, long per_sec, double seconds) {
     return 0;
 }
 
+static int spray(const char *net, long naddrs, int port, int nports, long per_sec,
+                 double seconds) {
+    struct in_addr base;
+    if (inet_pton(AF_INET, net, &base) != 1) { fprintf(stderr, "bad net %s\n", net); return 2; }
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    char buf[32] = {0};
+    long long sent = 0;
+    long i = 0;
+    long per_slice = per_sec / 100 > 0 ? per_sec / 100 : 1;
+    double start = now(), end = start + seconds, next = start, report = start + 1;
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    while (now() < end) {
+        for (long k = 0; k < per_slice; k++, i++) {
+            struct sockaddr_in a = addr(port + (int)((i / naddrs) % nports));
+            a.sin_addr.s_addr = htonl(ntohl(base.s_addr) + (unsigned)(i % naddrs));
+            ssize_t n = sendto(fd, buf, sizeof buf, 0, (struct sockaddr *)&a, sizeof a);
+            if (n > 0) sent += n;
+        }
+        if (now() >= report) {
+            printf("PROGRESS sent=%lld\n", sent);
+            report += 1;
+        }
+        next += 0.01;
+        double wait = next - now();
+        if (wait > 0) usleep((useconds_t)(wait * 1e6));
+    }
+    close(fd);
+    printf("RESULT sent=%lld\n", sent);
+    return 0;
+}
+
 static int once(int port) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     char buf[32] = {0};
@@ -90,8 +126,12 @@ int main(int argc, char **argv) {
     if (argc == 6 && !strcmp(argv[1], "tcp")) return tcp(atoi(argv[2]), atoi(argv[3]), atof(argv[4]));
     if (argc == 7 && !strcmp(argv[1], "churn")) return churn(atoi(argv[2]), atoi(argv[3]), atol(argv[4]), atof(argv[5]));
     if (argc == 4 && !strcmp(argv[1], "once")) return once(atoi(argv[2]));
+    if (argc == 9 && !strcmp(argv[1], "spray"))
+        return spray(argv[2], atol(argv[3]), atoi(argv[4]), atoi(argv[5]), atol(argv[6]),
+                     atof(argv[7]));
     fprintf(stderr, "usage: benchload tcp <port> <interval_ms> <seconds> <tag>\n"
                     "       benchload churn <port> <nports> <per_sec> <seconds> <tag>\n"
-                    "       benchload once <port> <tag>\n");
+                    "       benchload once <port> <tag>\n"
+                    "       benchload spray <net> <naddrs> <port> <nports> <per_sec> <seconds> <tag>\n");
     return 2;
 }

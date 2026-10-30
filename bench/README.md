@@ -202,3 +202,10 @@ the kernel maps are drained; bytes from a client's last second, drained after it
 carry the command line the daemon read last for that process, so they are counted too. Exec
 counts by destination port instead and also shows which executable the bytes were
 attributed to.
+
+## Soak run
+
+`soak/` drives the database through what it does in months, rollups, purges, the
+cleanup of unreferenced lookup entries and free pages given back, in under an hour on
+disposable boxes, and checks the unit and the database every minute; see
+[soak/README.md](soak/README.md).

@@ -155,3 +155,9 @@ adapter builds the checked-out tree into `/opt/tracct` and runs the unit, replac
 any existing install and its database, so run it on a disposable machine. Running only
 tracct (`--tools tracct`) regenerates `bench/reports/` with that tool alone; keep
 those files out of commits unless the full matrix ran.
+
+`bench/soak/` runs the database through rollups, purges, the cleanup of unreferenced
+lookup entries and free pages given back within an hour, with shortened intervals and
+a check of the unit and the database every minute; see
+[bench/soak/README.md](../bench/soak/README.md). It too replaces the install, so it runs
+on disposable boxes.
