@@ -34,7 +34,9 @@ systemd-run --unit soak-traffic --collect /usr/bin/python3 \
     /root/tracct/bench/soak/traffic.py run --scenario burst --minutes 40
 ```
 
-`reset --raw-min 2 --rollup-min 4` shortens the retention for a smoke run. From the
+`reset --raw-min 2 --rollup-min 4` shortens the retention for a smoke run; `reset
+--raw-min 0 --rollup-min 10` keeps the raw rows forever and the rollups shorter, where the
+viewer reads the raw rows alone and the checker works out that split itself. From the
 machine the boxes are reached from, `fleet.sh watch 300` looks at every box each 30 s
 and returns early on a FAIL or ERR, else prints each box's last check after 5 minutes;
 `fleet.sh tick` prints it at once. `SOAK_HOSTS` names the ssh hosts.

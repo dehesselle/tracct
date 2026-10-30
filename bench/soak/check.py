@@ -112,6 +112,29 @@ def read_jsonl(path: Path) -> list[dict]:
     return out
 
 
+def expected_split(con: sqlite3.Connection, raw: str, rollup: str) -> int:
+    """Where the raw rows take over from the rollups, by "Viewers" in DESIGN.md.
+
+    0 (the raw rows alone) without rollups or with rollups beginning after the oldest
+    raw row; else the first rolled-up period from the oldest raw row on, or without raw
+    rows the watermark.
+    """
+    oldest_rollup = con.execute(f"SELECT MIN(period) FROM {rollup}").fetchone()[0]
+    oldest_raw = con.execute(f"SELECT MIN(time) FROM {raw}").fetchone()[0]
+    if oldest_rollup is None or (oldest_raw is not None and oldest_rollup > oldest_raw):
+        return 0
+    if oldest_raw is not None:
+        first = con.execute(
+            f"SELECT MIN(period) FROM {rollup} WHERE period >= ?", (oldest_raw,)
+        ).fetchone()[0]
+        if first is not None:
+            return first
+    row = con.execute(
+        "SELECT value FROM meta WHERE key = 'rollup_watermark'"
+    ).fetchone()
+    return row[0] if row is not None else 0
+
+
 class Checker:
     def __init__(self) -> None:
         self.runs = 0
@@ -672,6 +695,17 @@ class Checker:
                 continue
             age = self.now - oldest
             self.metrics[f"oldest_{table}"] = round(age)
+            if keep == 0:
+                # Kept forever: the oldest row is about as old as the run.
+                if age < elapsed - slack and table != "connections":
+                    out.append(
+                        (
+                            "FAIL",
+                            "retention",
+                            f"{table}: kept forever, but its oldest row is only {age:.0f} s old",
+                        )
+                    )
+                continue
             limit = keep + slack + (max(self.periods_seen) if "rollup" in table else 0)
             # A daemon that is down (or just back) has not purged yet.
             if age > limit and not self.is_disrupted(self.now - slack - 60, self.now):
@@ -898,7 +932,9 @@ class Checker:
                         )
                         continue
                     took = time.monotonic() - started
-                    split = answer["split"]
+                    # Worked out here, as DESIGN.md defines it, rather than taken from the
+                    # server, so a split that hides rows fails.
+                    split = expected_split(con, "connections", "connections_rollup")
                     expected = con.execute(
                         "SELECT (SELECT TOTAL(sent) FROM connections_rollup WHERE period >= :s AND period < :m),"
                         " (SELECT TOTAL(sent) FROM connections WHERE time >= :n AND time < :e)",
@@ -913,6 +949,16 @@ class Checker:
                         expected[1] if end > split else 0
                     )
                     got = answer["totals"][0]
+                    if answer["split"] != split:
+                        if attempt == 2:
+                            out.append(
+                                (
+                                    "FAIL",
+                                    "query-split",
+                                    f"server split {answer['split']}, expected {split}",
+                                )
+                            )
+                        continue
                     self.metrics[f"query_{group}_s"] = round(took, 2)
                     if took > 2:
                         out.append(
