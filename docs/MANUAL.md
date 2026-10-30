@@ -66,7 +66,7 @@ and received. A point is the highest rate of
 any 10 seconds within its bucket, so a short spike keeps its height at any zoom; if the
 daemon writes less often than every 10 seconds, the stretch is its write window and the title
 says so. In the rollups a point is a period's average, drawn flat across the period where it
-is longer than a bucket. A vertical line marks where the rollups end. Hovering shows a
+is longer than a bucket, and the title says so. A vertical line marks where the rollups end. Hovering shows a
 bucket's bytes and peaks in the bottom border, or a period's bytes and average. `,` `p` gives the whole tab to the
 plot, for more room to zoom and pan, and brings back the group by list and the summary when
 pressed again; it holds for every history tab.

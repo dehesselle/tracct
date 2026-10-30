@@ -289,7 +289,9 @@ others leave. A timeline can also carry each bucket's peak: the highest rate of 
 given length within it, never shorter than the current write window, whose rows share one
 `time`; a rollup counts as one stretch of its period. A wide bucket averages a short spike
 away, its peak does not. A stretch is never shorter than the `seconds` of its rows either, so
-history written with a longer window or period does not peak higher than it was. The
+history written with a longer window or period does not peak higher than it was. Its
+buckets may start before the range, on the plot's grid, while its rows are read from the
+range's start, as the table's are. The
 dimensions are a fixed table mapped to SQL in `query_server.py`; values are
 bound, so a request carries no SQL. Each part of a request groups by the lookup ids and
 filters by id sets, so the indexes of the executable, parent, unit and domain with the time
@@ -317,7 +319,8 @@ between them. A tab's table starts
 with the sums over all rows, one row per layer, then the rows themselves, and its plot
 (tcoda.plot) draws the highlighted row, a sum only once the highlight is moved to it, so
 interfaces are not added up unless asked for, and layers never are. It draws peaks, not
-averages. Its time
+averages, except in the rollups, which know only their periods' averages and say so in
+the title; no bucket is shorter than the write window. Its time
 axis is the shared range: what it shows after zooming or panning comes to rest is exactly
 the range every tab then asks for, empty time included, and the plot's own limits (a minute
 to ten years, nothing before 1970) keep it within what the query server answers. Only the

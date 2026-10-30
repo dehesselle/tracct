@@ -154,23 +154,45 @@ class TrafficPlot(Plot):
         glyph comes and goes at its end, where it moves nothing. The highlighted row, a
         row of sums too, says which row is drawn. The stretch of the peaks is named only
         when the daemon's write window made it longer than asked for, and is the first
-        thing to go when the title does not fit.
+        thing to go when the title does not fit; where the range reaches into the rollups,
+        it says their points are averages, which goes next.
         """
         out_label, in_label = self.value_labels
         head = Content(f"{self.heading} · " if self.heading else "")
         key = Content.assemble(
             ("━━", OUT_STYLE), f" {out_label} ", ("━━", IN_STYLE), f" {in_label}"
         )
-        peak = self.timeline.peak if self.timeline is not None else PEAK_SECONDS
+        timeline = self.timeline
+        peak = timeline.peak if timeline is not None else PEAK_SECONDS
         rate = Content(f" · peak {duration(peak)} rate" if peak != PEAK_SECONDS else "")
+        # The rollups know their periods' averages, not peaks; the vertical line is
+        # where they end.
+        average = ""
+        if timeline is not None and timeline.start < timeline.split:
+            average = (
+                " · averages before the line"
+                if timeline.split < timeline.end
+                else " · period averages"
+            )
+        averages = Content(average)
         busy = Content(f" · {BUSY}" if self.busy else "")
-        # The corners and a border cell either side.
-        if (
-            head.cell_length + key.cell_length + rate.cell_length + busy.cell_length
-            > self.size.width - 4
-        ):
-            rate = Content("")
-        self.border_title = Content.assemble(head, key, rate, busy)
+        # The corners and a border cell either side; the stretch goes first, then the
+        # averages.
+        for dropped in ("rate", "averages"):
+            if (
+                head.cell_length
+                + key.cell_length
+                + rate.cell_length
+                + averages.cell_length
+                + busy.cell_length
+                <= self.size.width - 4
+            ):
+                break
+            if dropped == "rate":
+                rate = Content("")
+            else:
+                averages = Content("")
+        self.border_title = Content.assemble(head, key, rate, averages, busy)
 
     # ── the bucket under the pointer, in the bottom border ──
 

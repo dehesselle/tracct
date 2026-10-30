@@ -562,7 +562,8 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
 
 
 def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """The byte sums per bucket of step seconds from start.
+    """The byte sums per bucket of step seconds from origin (by default start), of the
+    rows from start on.
 
     Buckets without bytes are left out. With peak, each bucket also carries the highest
     rate of a stretch of peak seconds in it, so a spike shorter than the bucket keeps
@@ -572,12 +573,15 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
     source = _source(request)
     filters = _filters(request, source)
     start, end = _range(request)
+    # The buckets may start before the rows: a plot's grid of whole steps of local time
+    # puts its first bucket at or before the start.
+    origin = _int(request, "origin", start, 0, start)
     step = (
         _int(request, "step", None, 1, 2**53)
         if request.get("step") is not None
         else max(1, (end - start) // 100)
     )
-    if (end - start + step - 1) // step > MAX_BUCKETS:
+    if (end - origin + step - 1) // step > MAX_BUCKETS:
         raise RequestError(f"at most {MAX_BUCKETS} buckets, make step larger")
     peak = (
         _int(request, "peak", None, 1, step)
@@ -593,17 +597,17 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
         result["spans"] = []
     if not plan.parts:
         return result
-    # Buckets count from the requested start, so they stay put when a dimension clips
+    # Buckets count from the origin asked for, so they stay put when a dimension clips
     # the range; a period begun before it, which the range takes whole, is in the first.
     if peak is None:
         union, params = plan.union(
             lambda rollup: f"MAX((t.{'period' if rollup else 'time'} - ?) / ?, 0)",
-            lambda: [start, step],
+            lambda: [origin, step],
         )
         for bucket, a, b in con.execute(
             f"SELECT k, SUM(a), SUM(b) FROM ({union}) GROUP BY k ORDER BY k", params
         ):
-            result["buckets"].append([start + bucket * step, a, b])
+            result["buckets"].append([origin + bucket * step, a, b])
         return result
     a_column, b_column = source.values
     selects, params = [], []
@@ -635,13 +639,13 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
             f"SELECT MAX((t.{column} - ?) / ?, 0) AS k, SUM(t.{a_column}) AS a, SUM(t.{b_column}) AS b,"
             f" SUM(t.{a_column}) * 1.0 / {divisor} AS ra, SUM(t.{b_column}) * 1.0 / {divisor} AS rb {from_where} GROUP BY k, MAX((t.{column} - ?) / {length}, 0)"
         )
-        params += [start, step, *part_params, start]
+        params += [origin, step, *part_params, origin]
     union = " UNION ALL ".join(selects)
     for bucket, a, b, rate_a, rate_b in con.execute(
         f"SELECT k, SUM(a), SUM(b), MAX(ra), MAX(rb) FROM ({union}) GROUP BY k ORDER BY k",
         params,
     ):
-        result["buckets"].append([start + bucket * step, a, b, rate_a, rate_b])
+        result["buckets"].append([origin + bucket * step, a, b, rate_a, rate_b])
     return result
 
 
@@ -668,7 +672,13 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
             "split": split_point(con, source),
             "totals_by": source.totals_by,
         }
-    return {"now": int(time.time()), "sources": sources}
+    return {
+        "now": int(time.time()),
+        "sources": sources,
+        # The shortest a timeline's bucket is worth, and the rollups' period today.
+        "write_window": settings.write_window,
+        "rollup_period": settings.rollup_period,
+    }
 
 
 OPS: dict[str, Callable[[sqlite3.Connection, dict, Settings], dict]] = {

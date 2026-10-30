@@ -42,9 +42,11 @@ class SourceInfo:
     oldest: int | None
     #: The headings in the list of dimensions, by the dimension each comes before.
     headings: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: The daemon's write window, the shortest bucket worth asking for; 0 if unknown.
+    write_window: int = 0
 
     @classmethod
-    def parse(cls, raw: dict) -> SourceInfo:
+    def parse(cls, raw: dict, write_window: int = 0) -> SourceInfo:
         out_label, in_label = raw["values"]
         return cls(
             label=raw["label"],
@@ -56,6 +58,7 @@ class SourceInfo:
             ),
             oldest=raw["oldest"],
             headings=raw.get("headings", {}),
+            write_window=write_window,
         )
 
     def dimension_label(self, name: str) -> str:

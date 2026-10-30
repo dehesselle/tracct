@@ -80,8 +80,11 @@ class HistoryClient:
 
     def describe(self) -> dict[str, SourceInfo]:
         """Return the sources by name."""
-        sources = self.ask("describe")["sources"]
-        return {name: SourceInfo.parse(raw) for name, raw in sources.items()}
+        answer = self.ask("describe")
+        return {
+            name: SourceInfo.parse(raw, answer.get("write_window", 0))
+            for name, raw in answer["sources"].items()
+        }
 
     def aggregate(
         self,
@@ -120,7 +123,8 @@ class HistoryClient:
             "timeline",
             source=source,
             filters=[f.to_request() for f in filters],
-            start=origin,
+            start=start,
+            origin=origin,
             end=end,
             step=step,
             peak=peak,

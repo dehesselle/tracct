@@ -268,6 +268,32 @@ def test_timeline_spans_of_periods_longer_than_a_bucket(tmp_path):
     assert response["spans"] == [] and len(response["buckets"]) == 4
 
 
+def test_timeline_buckets_from_an_origin_before_the_start(tmp_path):
+    db = _db(tmp_path)
+    # The plot's grid starts on the hour; the rows only from 15 s past it, as the table's.
+    response = _ask(
+        db,
+        "timeline",
+        source="connections",
+        start=P0 + 3 * H + 15,
+        origin=P0 + 3 * H,
+        end=P0 + 4 * H,
+        step=H,
+    )
+    assert response["buckets"] == [[P0 + 3 * H, 300, 30]]
+    # An origin after the start would lose rows.
+    with pytest.raises(AssertionError, match="origin"):
+        _ask(
+            db,
+            "timeline",
+            source="connections",
+            start=P0,
+            origin=P0 + 1,
+            end=P0 + 4 * H,
+            step=H,
+        )
+
+
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
     db = _db(tmp_path)
     # Reaching into the rollups, ephemeral ports in raw rows become 0 as they are there.
@@ -472,7 +498,10 @@ def test_timeline_peaks_of_history_written_with_longer_windows(tmp_path):
 
 def test_describe(tmp_path):
     db = _db(tmp_path)
-    sources = _ask(db, "describe")["sources"]
+    response = _ask(db, "describe")
+    # The daemon's write window, the shortest bucket a viewer asks for, and its period.
+    assert (response["write_window"], response["rollup_period"]) == (10, H)
+    sources = response["sources"]
     assert set(sources) == {"connections", "interfaces", "forwarded"}
     connections = sources["connections"]
     assert connections["kind"] == "socket bytes" and connections["split"] == P0 + 2 * H

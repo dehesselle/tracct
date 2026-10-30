@@ -61,20 +61,27 @@ def align(t: int, seconds: int) -> int:
     return t - (t + time.localtime(t).tm_gmtoff) % seconds
 
 
-def bucket_step(span: int, columns: int) -> int:
-    """Return the shortest bucket length that fits `span` seconds into `columns`."""
+def bucket_step(span: int, columns: int, shortest: int = 0) -> int:
+    """Return the shortest bucket length that fits `span` seconds into `columns`.
+
+    It is at least `shortest`: a bucket shorter than the daemon's write window leaves the
+    ones between its rows empty.
+    """
     return next(
-        (step for step in BUCKET_STEPS if span <= step * columns), BUCKET_STEPS[-1]
+        (step for step in BUCKET_STEPS if step >= shortest and span <= step * columns),
+        BUCKET_STEPS[-1],
     )
 
 
-def bucket_grid(start: int, end: int, columns: int) -> tuple[int, int]:
+def bucket_grid(
+    start: int, end: int, columns: int, shortest: int = 0
+) -> tuple[int, int]:
     """Return the (origin, step) of the buckets that show `start` to `end` in `columns`.
 
     Buckets up to a day long start on whole steps of local time; longer ones start at
-    `start`.
+    `start`. A step is at least `shortest` seconds.
     """
-    step = bucket_step(end - start, columns)
+    step = bucket_step(end - start, columns, shortest)
     return (align(start, step) if step <= DAY else start), step
 
 

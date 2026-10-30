@@ -248,7 +248,9 @@ class HistoryPane(FindablePane):
             return
         self.plot_loading = True
         start, end = self.bounds()
-        origin, step = bucket_grid(start, end, self.query_one(TrafficPlot).points())
+        origin, step = bucket_grid(
+            start, end, self.query_one(TrafficPlot).points(), self.info.write_window
+        )
         plot_filter = self._plot_filter = self.plot_filter()
         filters = self.filters + ([plot_filter] if plot_filter else [])
         value = self.highlighted()

@@ -282,6 +282,10 @@ def test_bucket_step():
     assert bucket_step(3600, 100) == 60
     assert bucket_step(86400, 120) == 900
     assert bucket_step(10**12, 100) == 365 * 86400
+    # A daemon writing every 45 s gets no bucket shorter, which would be empty between
+    # its rows.
+    assert bucket_step(60, 100, 45) == 60
+    assert bucket_step(3600, 100, 45) == 60
     # Buckets up to a day long start on whole steps of local time, longer ones at the
     # start.
     start = 1_000_000_007
@@ -608,8 +612,11 @@ async def test_plot_title_and_busy(tmp_path):
             # Answers within milliseconds never show the glyph.
             assert True not in shown and BUSY not in _title(plot)
             # The range, then the key; the highlighted row is in the table, and the
-            # peaks' stretch is the usual one.
-            assert _title(plot) == "all history · ━━ sent ━━ received"
+            # peaks' stretch is the usual one. Left of the line the points are the
+            # rollups' averages.
+            assert _title(plot) == (
+                "all history · ━━ sent ━━ received · averages before the line"
+            )
             # A slow answer shows it until the rows and the plot are both in.
             slow.set()
             app.action_refresh()
