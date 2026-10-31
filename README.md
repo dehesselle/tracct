@@ -7,7 +7,7 @@ interface in every network namespace and the flows the host forwards for others.
 are counted in the kernel with [BPF](https://ebpf.io/) and netlink and stored in SQLite, so
 a spike in traffic can be traced to its cause long after it happened.
 
-tracct also comes with a [Textual](https://textual.textualize.io/)-based TUI to watch traffic live and browse the collectd history.
+tracct also comes with a [Textual](https://textual.textualize.io/)-based TUI to watch traffic live and browse the collected history.
 
 ## Install
 
