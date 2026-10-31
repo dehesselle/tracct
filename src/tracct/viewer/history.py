@@ -38,6 +38,8 @@ from tracct.viewer.plot import PEAK_SECONDS, TrafficPlot
 from tracct.viewer.timerange import bucket_grid
 
 if TYPE_CHECKING:
+    from textual.widget import Widget
+
     from tracct.viewer.app import TracctApp
 
 #: Rows asked for per request; the table's title says when there are more.
@@ -138,12 +140,11 @@ class HistoryPane(FindablePane):
             self.focus_content()
             self.schedule_timeline()
 
-    def focus_content(self) -> None:
-        # Showing only the plot, focus it, so its keys pan and zoom.
+    def content_widget(self) -> Widget:
+        # Showing only the plot, it takes the focus, so its keys pan and zoom.
         if self.has_class("-plot-only"):
-            self.query_one(TrafficPlot).focus()
-        else:
-            super().focus_content()
+            return self.query_one(TrafficPlot)
+        return super().content_widget()
 
     @property
     def viewer(self) -> TracctApp:

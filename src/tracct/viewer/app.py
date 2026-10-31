@@ -17,12 +17,14 @@ from typing import ClassVar
 from tcoda.chords import ChordMixin
 from tcoda.dialogs import AboutDialog, SettingsDialog
 from tcoda.terminal_title import TerminalTitleMixin
-from tcoda.widgets import ChordViewer
+from tcoda.widgets import ChordViewer, TabbedContent, TabPane
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
-from textual.widgets import Footer, TabbedContent, TabPane
+from textual.widget import Widget
+from textual.widgets import Footer
+from textual.widgets import TabPane as TextualTabPane
 from textual.widgets.tabbed_content import ContentTabs
 
 from tracct.constants import VERSION
@@ -42,19 +44,23 @@ from tracct.viewer.timerange import TimeRange
 REFRESH_SECONDS = 10.0
 
 
+class ViewerTabs(TabbedContent):
+    """The tabs, switched by their first letter; the focus follows into the tab."""
+
+    def focus_target(self, pane: TextualTabPane) -> Widget | None:
+        # The tab's table, or its plot alone, rather than the first widget that takes
+        # the focus: in a history tab, that is the list of dimensions.
+        return pane.query_one(FindablePane).content_widget()
+
+
 class TracctApp(TerminalTitleMixin, ChordMixin, App):
     TITLE = "tracct"
     TERMINAL_TITLE = "tracct"
-    #: The tab bar takes no focus, so Textual's own would land in the first tab and
-    #: switch to it; on_mount focuses the tab asked for instead.
+    #: The tab bar takes no focus, so Textual's own would land on the first widget in
+    #: the tab, a history tab's dimensions; ViewerTabs focuses the table instead.
     AUTO_FOCUS = None
     CSS_PATH = "app.tcss"
     BINDINGS: ClassVar[list[Binding]] = [
-        # A tab's first letter, highlighted in its title.
-        *(
-            Binding(title[0].lower(), f"tab('{tab}')", show=False)
-            for tab, (title, _) in TABS.items()
-        ),
         # Chords start with a comma; the ChordViewer lists them when the next key is
         # slow to come.
         Binding("comma s", "settings", "Settings", show=False),
@@ -82,9 +88,9 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         self.client = HistoryClient(query_socket)
 
     def compose(self) -> ComposeResult:
-        with TabbedContent(initial=self.initial_tab):
+        with ViewerTabs(initial=self.initial_tab):
             for tab, (title, source) in TABS.items():
-                with TabPane(f"[$accent bold]{title[0]}[/]{title[1:]}", id=tab):
+                with TabPane(title, mnemonic=title[0], id=tab):
                     yield (
                         LivePane(self.events_socket)
                         if source is None
@@ -97,7 +103,9 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         # Tabs are switched by their letters or a click, so focus stays in the tab's
         # content.
         self.query_one(ContentTabs).can_focus = False
-        self.focus_pane()
+        # Now rather than after the first refresh, as ViewerTabs would, so the first key
+        # pressed already reaches the tab.
+        self.query_one(ViewerTabs).focus_active_pane()
         self.describe()
         self.set_interval(REFRESH_SECONDS, self.refresh_if_live)
 
@@ -143,16 +151,9 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         if self.time_range.ends_now():
             self.reload_active()
 
-    def focus_pane(self) -> None:
-        """Focus the shown tab's table, so its keys (filter, pause, ...) apply."""
-        pane = self.active_pane()
-        if pane is not None:
-            pane.focus_content()
-
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
     ) -> None:
-        self.focus_pane()
         self.reload_active()
 
     def range_changed(self) -> None:
@@ -172,9 +173,6 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         self.range_changed()
 
     # ── actions ──
-
-    def action_tab(self, tab: str) -> None:
-        self.query_one(TabbedContent).active = tab
 
     def action_span(self) -> None:
         """Pick the span from a list.

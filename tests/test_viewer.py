@@ -120,9 +120,12 @@ async def test_tab_keys(tmp_path):
         await _until(pilot, lambda: banner.display and banner.has_class("-error"))
         assert "live feed unavailable" in str(banner.query_one(".banner-text").render())
         assert not banner.query_one(".banner-hint").display
-        # P means Processes, even with the focus in the live tab.
+        assert app.focused is app.query_one("#live #summary", DataTable)
+        # P means Processes, even with the focus in the live tab, and the focus goes
+        # along to its table, not the dimensions.
         await pilot.press("p")
         assert tabs.active == "processes"
+        assert app.focused is app.query_one("#processes DataTable", DataTable)
         # The time range and units belong to the history tabs only.
         await _until(
             pilot,
@@ -134,6 +137,7 @@ async def test_tab_keys(tmp_path):
         for key, tab in (("i", "interfaces"), ("f", "forwarded"), ("l", "live")):
             await pilot.press(key)
             assert tabs.active == tab
+            assert app.focused is app.query(f"#{tab} DataTable").first()
         await _until(
             pilot,
             lambda: (

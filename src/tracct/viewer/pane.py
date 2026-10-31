@@ -17,6 +17,7 @@ from typing import ClassVar
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.widget import Widget
 from textual.widgets import DataTable, Input
 
 from tracct.viewer.banner import Banner
@@ -79,9 +80,13 @@ class FindablePane(Vertical):
         self.find = needle
         self.apply_find()
 
+    def content_widget(self) -> Widget:
+        """Return what takes the focus in the tab: its first table."""
+        return self.query(DataTable).first()
+
     def focus_content(self) -> None:
-        """Focus the tab's first table, so its keys apply."""
-        self.query(DataTable).first().focus()
+        """Focus the tab's content, so its keys apply."""
+        self.content_widget().focus()
 
     def action_find(self) -> None:
         find = self.find_input
