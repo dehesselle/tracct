@@ -945,15 +945,15 @@ wheels = [
 
 [[package]]
 name = "tcoda"
-version = "0.9.0"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "platformdirs" },
     { name = "textual" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/2c/3557e8d302282664c394144dae3428db0079f914313add00d733d535fe7a/tcoda-0.9.0.tar.gz", hash = "sha256:89157624536412b25bbb7b0c0494a957cfc72fdef971e2dd02acd97296e7b616", size = 171156, upload-time = "2026-10-28T13:42:15.14Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/e5/54680efbecc6f1e00c23e830e20a4835732b2e1352e57d6b4abe816d42e7/tcoda-0.10.0.tar.gz", hash = "sha256:4a478fc8afa7bcafd4bc02f7359b1d756f89adedd467ca6ffa6c1438e367fa34", size = 183723, upload-time = "2026-10-28T18:27:13.452Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/d3/fd9f3f0f07f865aa608e5a18e8fb1ed799288f2da71b700d1e56b942c96b/tcoda-0.9.0-py3-none-any.whl", hash = "sha256:43aee47b8c6efb9895a189d6e85c0ced7e52919f4c29c8691c04480314509dae", size = 116977, upload-time = "2026-10-28T13:42:13.501Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/8b/ed840868fade44b8effe7d85f6340eb2e214175ec5d0b16142647395ac38/tcoda-0.10.0-py3-none-any.whl", hash = "sha256:067b89f657b84da45ba6f2245ba418fa7b0e1c9539811cf715a223adafd80e55", size = 124982, upload-time = "2026-10-28T18:27:12.236Z" },
 ]
 
 [[package]]
@@ -1037,7 +1037,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "tcoda", marker = "extra == 'viewer'", specifier = ">=0.9,<0.10" },
+    { name = "tcoda", marker = "extra == 'viewer'", specifier = ">=0.10,<0.11" },
     { name = "textual", marker = "extra == 'viewer'", specifier = ">=8.2.8,<9" },
 ]
 provides-extras = ["viewer"]
@@ -1047,7 +1047,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "reuse", specifier = ">=6.2.0" },
-    { name = "tcoda", specifier = ">=0.9.0,<0.10" },
+    { name = "tcoda", specifier = ">=0.10.0,<0.11" },
     { name = "textual", specifier = ">=8.2.8,<9" },
     { name = "textual-dev", specifier = ">=1.8.0" },
 ]
