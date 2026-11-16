@@ -22,7 +22,8 @@ tracct [-h] [--version] {run,view,query-server,install,uninstall,status}
 paths; after a command it prints that command's options.
 
 `view` works for root and for members of the viewer group (`[viewer] group`, and the group
-of `tracct-query.socket`). Its footer shows the keys of the tab in view; `Ctrl+Q` quits.
+of `tracct-query.socket`). Its footer starts with `,`, the menu of chords, and `Ctrl+Q`,
+which quits, then shows the keys of the tab in view.
 
 ### The viewer
 

@@ -17,13 +17,12 @@ from typing import ClassVar
 from tcoda.chords import ChordMixin
 from tcoda.dialogs import AboutDialog, SettingsDialog
 from tcoda.terminal_title import TerminalTitleMixin
-from tcoda.widgets import ChordViewer, TabbedContent, TabPane
+from tcoda.widgets import ChordViewer, Footer, TabbedContent, TabPane
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Footer
 from textual.widgets import TabPane as TextualTabPane
 from textual.widgets.tabbed_content import ContentTabs
 
@@ -61,6 +60,10 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
     AUTO_FOCUS = None
     CSS_PATH = "app.tcss"
     BINDINGS: ClassVar[list[Binding]] = [
+        # Only the footer's entry for the chords below. ChordMixin takes the key before
+        # any binding sees it, so a press or a click on the entry starts a chord and
+        # this action never runs.
+        Binding("comma", "bell", "Menu"),
         # Chords start with a comma; the ChordViewer lists them when the next key is
         # slow to come.
         Binding("comma s", "settings", "Settings", show=False),
@@ -96,7 +99,10 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
                         if source is None
                         else HistoryPane(source)
                     )
-        yield Footer(show_command_palette=False)
+        # Pinned, the chord key holds the left corner whatever the tab. Textual declares
+        # Ctrl+Q show=False, and pinning it is what shows it: nothing else says how to
+        # quit.
+        yield Footer(pinned=("comma", "ctrl+q"))
         yield ChordViewer()
 
     def on_mount(self) -> None:

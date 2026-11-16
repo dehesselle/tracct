@@ -115,6 +115,12 @@ async def test_tab_keys(tmp_path):
             "q",
             "question_mark",
         } & set(app.screen.active_bindings)
+        # The chord key and Ctrl+Q hold the footer's left corner, in that order.
+        pinned = app.query_one("#footer-pinned")
+        await _until(
+            pilot,
+            lambda: [entry.key for entry in pinned.children] == ["comma", "ctrl+q"],
+        )
         # No daemon: the live tab's banner shows why, as an error.
         banner = app.query_one(LivePane).query_one(".banner")
         await _until(pilot, lambda: banner.display and banner.has_class("-error"))
