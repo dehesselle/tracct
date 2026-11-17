@@ -614,7 +614,7 @@ async def test_history_reads_rollup_periods_whole(tmp_path):
             assert table.border_subtitle == (
                 f"rollups before {format_time(P0 + 2 * H)}:"
                 f" whole periods {format_time(P0 + H)} – {format_time(P0 + 2 * H)},"
-                " no addresses, ephemeral ports as 0"
+                " no addresses, client ports as 0"
             )
             plot = processes.query_one(TrafficPlot)
             await _until(

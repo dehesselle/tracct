@@ -12,7 +12,7 @@ range; dimensions map to SQL here and values are bound, so no SQL comes from a c
 
 Each source has a raw table and a rollup. A range is read from the raw rows wherever
 they still exist and from the rollups before that (the split), so the detail of the raw
-rows (addresses, ephemeral ports) is there for all of the raw retention. A dimension the
+rows (addresses, client ports) is there for all of the raw retention. A dimension the
 rollups do not keep clips the range to the split; ports are coarsened in the raw rows
 the way the rollups keep them whenever a range reaches into the rollups, so a port
 groups the same on both sides.
@@ -122,14 +122,18 @@ def _lookup(
     )
 
 
-def _port(label: str, column: str, icmp: bool) -> Dimension:
-    # The rollups keep a port below the ephemeral range, and none for ICMP, whose rows
-    # carry the echo id.
+def _port(label: str, column: str, icmp: bool, remote: bool = False) -> Dimension:
+    # The rollups keep a port below the kernel's local port range, and none for ICMP,
+    # whose rows carry the echo id; a remote port only where the local one is inside the
+    # range, as a local port below it makes the remote one a client's (see writer.ROLLUPS).
     icmp_case = " AND t.protocol NOT IN (1, 58)" if icmp else ""
+    server_case = (
+        " AND NOT (t.lport > 0 AND t.lport < {ephemeral})" if remote else ""
+    )
     return Dimension(
         label,
         f"t.{column}",
-        coarse=f"CASE WHEN t.{column} < {{ephemeral}}{icmp_case} THEN t.{column} ELSE 0 END",
+        coarse=f"CASE WHEN t.{column} < {{ephemeral}}{icmp_case}{server_case} THEN t.{column} ELSE 0 END",
     )
 
 
@@ -291,7 +295,7 @@ SOURCES = {
             "peer": PEER,
             "protocol": PROTOCOL,
             "lport": _port("local port", "lport", icmp=True),
-            "rport": _port("remote port", "rport", icmp=True),
+            "rport": _port("remote port", "rport", icmp=True, remote=True),
             "laddr": _lookup(
                 "local address", "laddr_id", "addresses", "addr", raw_only=True
             ),

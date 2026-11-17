@@ -356,12 +356,31 @@ longer being there to take its spikes apart.
 
 History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
 spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
-who, which unit, which service port and which domain but drop addresses and ephemeral
+who, which unit, which service port and which domain but drop addresses and client
 ports, so they stay small for a year. Forwarded flows keep their source address, the peer
-behind an exit node or NAT, which is the "who" there. A port at or above the start of the
-kernel's ephemeral range (`net.ipv4.ip_local_port_range`) is kept as 0, so a server keeps its
-service port as `lport` and a client the server's port as `rport`; ICMP rows, whose ports
-carry the echo id, keep none.
+behind an exit node or NAT, which is the "who" there.
+
+Of a connection's two ports the rollups keep the service port. The server's port names the
+service (443 for a web server, 53 when a resolver asks upstream); the client's port is a
+throwaway picked by the client's system or its NAT router, so it can be any number and would
+give every connection a rollup row of its own. There is no universal range for the
+throwaway ports: IANA's dynamic ports are 49152–65535 (RFC 6335), RFC 6056 recommends
+choosing from 1024–65535, Linux uses `net.ipv4.ip_local_port_range` (32768–60999 by
+default). tracct knows only its own kernel's range, which tells one thing reliably: a local
+port below it was bound on purpose. So the local port decides which side is ours:
+
+- a local port below the range: ours is the server's side (or a client's bound to a fixed
+  port); the local port is kept and the remote one, the client's, kept as 0 whatever its
+  number;
+- a local port inside the range: ours is taken for the client's side; the local port is kept
+  as 0 and the remote one kept, unless it is inside the range too, the best guess for a
+  peer's random port.
+
+ICMP rows, whose ports carry the echo id, keep none. The rule is a guess where a service is
+bound inside the range, as `tailscaled` on 41641 and transmission on 51413 are with the
+Linux default: such a server is taken for a client, and its clients' ports below the range
+still keep its rows apart. Telling the sides apart for certain needs the socket's state
+(listening, or bound on purpose), which tracct does not record.
 
 A period is rolled up as soon as it closes, not when its raw rows leave `raw_retention_days`,
 so the newest `raw_retention_days` are kept twice, and the query server never reads the
@@ -442,7 +461,7 @@ timeline returns a period longer than its buckets as a span of its own, with its
 rate, rather than in the one bucket it starts in. A dimension the rollups do not keep
 (the addresses of connections, the destination address and source port of forwarded flows) narrows
 the range to the raw rows. A port reaching into the rollups
-is coarsened in the raw rows too, ephemeral ones to 0, so it groups the same on both sides.
+is coarsened in the raw rows too, client ports to 0, so it groups the same on both sides.
 
 `tracct view` (`viewer/`, built on Textual, installed with the `viewer` extra) shows a
 live tab from `events.sock` and a history tab per source with one time range shared

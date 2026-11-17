@@ -304,6 +304,22 @@ def test_ports_group_like_the_rollups_keep_them(tmp_path):
     assert rows == {443: (11, 22), 50003: (300, 30)}
 
 
+def test_a_servers_client_port_groups_as_0_like_the_rollups(tmp_path):
+    # A client behind NAT may come from a port below the range; on a server's row (local
+    # port below the range) it is still the client's port, and the rollups drop it.
+    db = _db(tmp_path)
+    con = sqlite3.connect(db)
+    con.execute(
+        f"INSERT INTO connections VALUES ({P0 + 3 * H + 30}, 7, 70, 1, 3, 2, 1, 1000, 2, 6, 80, 1234, 1, 4, 0, {VPN_ID}, 3, 2, 10)"
+    )
+    con.commit()
+    con.close()
+    _, rows = _aggregate(db, "rport")
+    assert rows == {443: (1111, 11022), 0: (5307, 600)}
+    _, rows = _aggregate(db, "rport", start=P0 + 2 * H)
+    assert rows == {443: (11, 22), 50003: (300, 30), 1234: (7, 70)}
+
+
 def test_raw_only_dimension_clips_to_the_raw_rows(tmp_path):
     db = _db(tmp_path)
     response, rows = _aggregate(db, "raddr")

@@ -130,7 +130,7 @@ def format_value(dimension: str, value: object) -> str:
     if dimension == "protocol" and isinstance(value, int):
         return PROTOCOLS.get(value, str(value))
     if dimension in ("lport", "rport", "dport") and value == 0:
-        return "0 (ephemeral or none)"
+        return "0 (client port or none)"
     return clean(value)
 
 

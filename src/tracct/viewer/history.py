@@ -470,7 +470,7 @@ class HistoryPane(FindablePane):
                 )
                 subtitle = (
                     f"rollups before {format_time(result.split)}:{whole}"
-                    " no addresses, ephemeral ports as 0"
+                    " no addresses, client ports as 0"
                 )
         table.border_title = title
         table.border_subtitle = subtitle

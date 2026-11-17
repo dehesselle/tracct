@@ -435,13 +435,15 @@ def test_roll_up_sums_closed_periods(tmp_path):
     hour = 3600
     now = int(time.time())
     first = now // hour * hour - 3 * hour
-    # A client row (ephemeral local port) twice in one period, a server row (ephemeral
-    # peer port), and a row in the current period.
+    # A client row (ephemeral local port) twice in one period, two server rows, one from
+    # an ephemeral peer port and one from a port below the range (a NAT router picks any),
+    # and a row in the current period.
     _insert_connections(
         con,
         (first + 10, 1),
         (first + 20, 1, 50001, 443),
         (first + hour + 5, 1, 443, 50002),
+        (first + hour + 6, 1, 443, 1234),
         (now, 1),
     )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
@@ -450,7 +452,7 @@ def test_roll_up_sums_closed_periods(tmp_path):
     ).fetchall()
     assert rows == [
         (first, 0, 443, 20, 40, 2, 2, hour),
-        (first + hour, 443, 0, 10, 20, 1, 1, hour),
+        (first + hour, 443, 0, 20, 40, 2, 2, hour),
     ]
     assert (
         con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[

@@ -62,17 +62,21 @@ RELEASE_FREE_FRACTION = 0.25
 RELEASE_CHUNK_PAGES = 2560
 
 #: Rows of a closed rollup period, summed; the parameters are the period, the first port
-#: of the ephemeral range (ports from there on are a peer's or our own random port, kept
-#: as 0 so a server's rollup does not grow with its clients), and the period's bounds,
-#: which also give its seconds (less than a period after a change of the period length).
-#: Columns are named, so no statement depends on the order a table declares them in.
+#: of the kernel's local port range, and the period's bounds, which also give its seconds
+#: (less than a period after a change of the period length). Of a connection's ports only
+#: the service port is kept, so a server's rollup does not grow with its clients: a local
+#: port below the range was bound on purpose, so ours is the server's side and the remote
+#: port, the client's, is dropped whatever its number (a NAT router picks any); a local
+#: port inside the range is our client's, kept as 0, and the remote one kept unless it is
+#: inside the range too. Columns are named, so no statement depends on the order a table
+#: declares them in.
 ROLLUPS = (
     # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     (
         "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, rows, seconds)"
         " SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
         " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
-        " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) THEN rport ELSE 0 END AS rp,"
+        " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) AND NOT (lport > 0 AND lport < :ephemeral) THEN rport ELSE 0 END AS rp,"
         " domain_id, netns_id, iface_id, peer, SUM(sent), SUM(received), SUM(events), COUNT(*), :end - :start"
         " FROM connections WHERE time >= :start AND time < :end"
         " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id, peer"
