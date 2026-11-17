@@ -363,6 +363,12 @@ kernel's ephemeral range (`net.ipv4.ip_local_port_range`) is kept as 0, so a ser
 service port as `lport` and a client the server's port as `rport`; ICMP rows, whose ports
 carry the echo id, keep none.
 
+A period is rolled up as soon as it closes, not when its raw rows leave `raw_retention_days`,
+so the newest `raw_retention_days` are kept twice, and the query server never reads the
+rollups of that span. This was not a deliberate choice. It is kept because the overlap costs
+little: on a production database with the default retention, about 4 % of the file. Rolling
+up at the purge instead would rework maintenance without a noticeable benefit.
+
 Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
 each period that has closed since the watermark in `meta`, then deletes rows past their
 retention in chunks of 10 000, with any due write in between. A raw row is only deleted once
