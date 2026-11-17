@@ -369,6 +369,27 @@ in it become one row, and the rollups follow from those rows. A program with man
 thus costs a few rows per window instead of one per peer, at the price of the detail no
 longer being there to take its spikes apart.
 
+Small connections are folded once they have ended, so that a service many clients knock on
+in vain (a relay turning strangers away, a web server scanned by bots) does not cost a row
+per attempt. A connection (as `opened` counts them: one tuple's rows with no gap longer than
+an hour) folds when all of its bytes stay under `[record] fold_below` (4 KiB; 0 folds none),
+it lasted at most an hour from its first row to its last, and it has been silent for an
+hour since. Its rows then merge, per window, with the other folded rows of the same process,
+parent, unit, user, family, protocol, service port (below), namespace, interface and peer:
+the addresses become the entry `(small connections)` (id -1 in `addresses`), the domain
+none, and bytes, events and `opened` are summed, so nothing is lost but who it was. A
+connection folds whole or not at all: a long session that is idle for a while keeps its
+detail in every window. Rows without a full tuple (stripped by `[[record.process]]`, ICMP,
+packet sockets) never fold. On a production database, folding at 4 KiB took 31 % of the rows
+with a tuple, for 88 MB of bytes (DNS queries, a relay's rejected clients, bots); sizes
+there are far apart, nearly nothing between 1 and 4 KiB, and from 4 KiB on it would start
+folding real exchanges (polling, short SSH sessions).
+
+Maintenance folds a period once every connection starting in it can be seen whole, when the
+rows reach two hours past its end (the longest a folding connection lasts, and the silence
+after it), and only then rolls it up, so the rollups are summed from the folded rows. The fold watermark in `meta` marks where the next pass starts; it only moves
+forward, so turning folding on folds what is still raw, period by period.
+
 History is kept twice: raw rows per write window for `raw_retention_days`, enough to take a
 spike apart, and rollups per `rollup_period_minutes` for `rollup_retention_days`, which keep
 who, which unit, which service port and which domain but drop addresses and client
@@ -397,14 +418,16 @@ Linux default: such a server is taken for a client, and its clients' ports below
 still keep its rows apart. Telling the sides apart for certain needs the socket's state
 (listening, or bound on purpose), which tracct does not record.
 
-A period is rolled up as soon as it closes, not when its raw rows leave `raw_retention_days`,
+A period is rolled up as soon as it closes (and is folded, while folding is on), not when its
+raw rows leave `raw_retention_days`,
 so the newest `raw_retention_days` are kept twice, and the query server never reads the
 rollups of that span. This was not a deliberate choice. It is kept because the overlap costs
 little: on a production database with the default retention, about 4 % of the file. Rolling
 up at the purge instead would rework maintenance without a noticeable benefit.
 
-Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It rolls up
-each period that has closed since the watermark in `meta`, then deletes rows past their
+Maintenance runs in the writer at start and every `maintenance_interval_minutes`. It folds
+the small connections of the periods it can (see above), rolls up each period that has
+closed (and is folded) since the watermark in `meta`, then deletes rows past their
 retention in chunks of 10 000, with any due write in between. A raw row is only deleted once
 its period is rolled up.
 

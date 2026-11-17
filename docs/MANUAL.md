@@ -276,7 +276,18 @@ kept longer than the rollups (`raw_retention_days = 0`, or a longer one than
 alone. A change
 of `rollup_period_minutes` applies to the periods from then on. Invalid `ignore_*` entries
 are dropped. A `[viewer] group` that does not exist is ignored. The `[record]` settings apply to
-forwarded flows too.
+forwarded flows too, except `fold_below`.
+
+`fold_below` folds the connections that moved fewer bytes than it in all, once they have
+been silent for an hour: a client a service turns away, a DNS query, a bot's request. In
+the history tabs their rows have the address `(small connections)` and no domain, and a
+client's port is 0; their bytes and connections are still counted under their process,
+unit and service port. Where a connection lasted longer than an hour, or moved more, all
+of it keeps its detail. Folding happens in maintenance, about two hours after a period
+ends, so the newest hours always show every connection. `fold_below = 0` folds nothing;
+setting it again later also folds what is still in the raw rows. A negative value or
+anything but a number is replaced by 4096 with a warning. [DESIGN.md](DESIGN.md#storage)
+has the exact rule.
 
 `[[record.process]]` rules record some processes with less detail, or more, than the rest.
 A program with many peers, such as a BitTorrent client, writes a row per peer and window;

@@ -43,6 +43,10 @@ ignore_ips = []
 # Rules that record some processes differently, see below; the first that matches
 # applies.
 process = []
+# Connections that moved fewer bytes than this in all (a rejected client, a DNS query)
+# are folded, once they have ended, into one row per window and process without their
+# addresses; their bytes and count stay. 0 folds none.
+fold_below = 4096
 
 # A rule as a drop-in would add it, here for a BitTorrent client whose many peers would
 # each be a row of their own:

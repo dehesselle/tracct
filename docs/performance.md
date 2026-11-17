@@ -114,6 +114,23 @@ Faults:
 - Under `MemoryMax=1G` the unit's memory sat at the cap from the database's page cache, with
   17 MB of the daemon's own; nothing was killed.
 
+### Folding on a production database
+
+A copy of a production database (16.8 days, 4.43 million raw rows, a Syncthing relay
+turning away about a million connections), converted to the current schema, with
+maintenance run as if four hours after it stopped. Folding had never run, so the first
+pass folded the whole history:
+
+- 403 periods in 59 s, one transaction each: 141 ms per period (median), 288 ms at most,
+  23 000 rows folded in the largest. A pass on a running daemon folds one period.
+- 1.35 million rows folded into 291 000: 24 % fewer raw rows, 31 % of those with a tuple.
+  The relay's rows went from 1.04 million to 155 000, its folded rows counting 1.02 million
+  connections and 14 MB; DNS queries, a web server's bots, NTP and polling made most of the
+  rest.
+- Every window kept its bytes, events and connections, and the rollups rebuilt from the
+  folded rows matched them. Three days of rollups shrank from 99 900 rows to 12 000, the
+  relay's from 86 500 to 466 (with the rollups' service port, which drops clients' ports).
+
 ## Indexes
 
 Measured 2026-10-29 on the same kind of VM, on a seeded database of 5.8 GB: 30 days at 1

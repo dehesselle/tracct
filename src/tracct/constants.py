@@ -70,8 +70,9 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: 0 for none (a raw row, a socket without a remote address), 1 for local (on this
 #: machine) and 2 for remote; an interface's `class` is 'physical' or 'virtual', '' for
 #: the unknown one. `opened` counts the connections a row's events started (see
-#: connections.py).
-DB_VERSION: typing.Final[int] = 10
+#: connections.py). Address id -1 stands for the addresses of folded connections (see
+#: writer.fold).
+DB_VERSION: typing.Final[int] = 11
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -199,10 +200,15 @@ TABLES: typing.Final[tuple[tuple[str, str], ...]] = (
     ("forwarded_rollup", SCHEMA_FORWARDED_ROLLUP),
     ("meta", SCHEMA_META),
 )
+#: The address of every folded connection, at an id interning never hands out (it counts
+#: up from 1); no real address reads like it.
+FOLDED_ADDRESS_ID: typing.Final[int] = -1
+FOLDED_ADDRESS: typing.Final[str] = "(small connections)"
 SENTINELS: typing.Final[tuple[str, ...]] = (
     "INSERT INTO executables(id, exe, name, cmdline) VALUES (0, '', '', '')",
     "INSERT INTO domains(id, domain) VALUES (0, '')",
     "INSERT INTO addresses(id, addr) VALUES (0, '')",
+    f"INSERT INTO addresses(id, addr) VALUES ({FOLDED_ADDRESS_ID}, '{FOLDED_ADDRESS}')",
     "INSERT INTO units(id, unit) VALUES (0, '')",
     "INSERT INTO netns(id, inode, name) VALUES (0, 0, '')",
     "INSERT INTO interfaces(id, netns_id, name, kind, class) VALUES (0, 0, '', '', '')",

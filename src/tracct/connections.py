@@ -97,7 +97,7 @@ class ConnectionTracker:
             "SELECT n.inode, c.protocol, la.addr, c.lport, ra.addr, c.rport, MAX(c.time) AS t"
             " FROM connections c JOIN netns n ON n.id = c.netns_id"
             " JOIN addresses la ON la.id = c.laddr_id JOIN addresses ra ON ra.id = c.raddr_id"
-            " WHERE c.time > ? AND c.family IN (?, ?) AND c.raddr_id != 0 AND c.lport > 0 AND c.rport > 0"
+            " WHERE c.time > ? AND c.family IN (?, ?) AND c.raddr_id > 0 AND c.lport > 0 AND c.rport > 0"
             " GROUP BY 1, 2, 3, 4, 5, 6 ORDER BY t",
             (now - self.gap, socket.AF_INET, socket.AF_INET6),
         ).fetchall()

@@ -50,9 +50,10 @@ def test_non_utf8_config_falls_back_to_defaults(tmp_path):
 def test_config_numeric_clamps(tmp_path):
     (tmp_path / "config.toml").write_text(
         "[monitoring]\nexec_ring_buffer_pages = 3\nconn_map_max_entries = 0\nrlimit_nofile = true\nst_dev_mask = 4294967296\n[database]\nraw_retention_days = -1\nrollup_retention_days = -1\nrollup_period_minutes = 0\n"
-        "write_limit_seconds = -1\nmaintenance_interval_minutes = 0\n"
+        "write_limit_seconds = -1\nmaintenance_interval_minutes = 0\n[record]\nfold_below = -1\n"
     )
     config = load_config(tmp_path / "config.toml")
+    assert config.record.fold_below == 4096
     assert (
         config.monitoring.exec_ring_buffer_pages == 256
     )  # non-power-of-two clamped to default
@@ -420,6 +421,8 @@ def _config(raw_days=7, rollup_days=365):
     config = Config()
     config.database.raw_retention_days = raw_days
     config.database.rollup_retention_days = rollup_days
+    # Folding has tests of its own; here the rollup follows the periods as they close.
+    config.record.fold_below = 0
     return config
 
 
@@ -522,7 +525,7 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     # One period rolled up, 5 raw rows and that period's rollup row deleted.
     assert writer.purge_database(
         con, _config(7, 8), lambda: calls.append(1) or False
-    ) == (1, 6)
+    ) == (1, 6, 0)
     # After the rolled-up period and after the two full chunks of raw rows.
     assert len(calls) == 3
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
@@ -531,7 +534,9 @@ def test_purge_database_in_chunks(tmp_path, monkeypatch):
     assert writer.delete_orphans(con, lambda: calls.append(1) or False) == 5
     assert len(calls) == len(writer.ORPHAN_DELETES)
     for table in ("executables", "domains", "addresses", "interfaces", "netns"):
+        # The folded connections' address stays, used or not.
         assert [r[0] for r in con.execute(f"SELECT id FROM {table} ORDER BY id")] == [
+            *([-1] if table == "addresses" else []),
             0,
             1,
         ]
@@ -627,18 +632,18 @@ def test_purge_database_keeps_what_is_not_rolled_up(tmp_path):
     )
     # The hook stops the rollup after the first period: only that period's raw row may
     # go.
-    assert writer.purge_database(con, _config(), lambda: True) == (1, 1)
+    assert writer.purge_database(con, _config(), lambda: True) == (1, 1, 0)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 2
     assert con.execute("SELECT count(*) FROM connections_rollup").fetchone()[0] == 1
     assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
     # The second period follows, and exe 2 lives on in the rollup once its raw rows are
     # gone.
-    assert writer.purge_database(con, _config(), lambda: False) == (1, 1)
+    assert writer.purge_database(con, _config(), lambda: False) == (1, 1, 0)
     assert con.execute("SELECT count(*) FROM connections").fetchone()[0] == 1
     # Only address 2 goes, rollups keep no addresses.
     assert writer.delete_orphans(con, lambda: False) == 1
     assert sorted(r[0] for r in con.execute("SELECT id FROM executables")) == [0, 1, 2]
-    assert sorted(r[0] for r in con.execute("SELECT id FROM addresses")) == [0, 1]
+    assert sorted(r[0] for r in con.execute("SELECT id FROM addresses")) == [-1, 0, 1]
     con.close()
 
 
@@ -756,6 +761,130 @@ def test_purge_database_fraction_of_a_day(tmp_path):
     config.database.rollup_period_minutes = 1
     assert writer.purge_database(con, config, lambda: False)[1] == 1
     assert [r[0] for r in con.execute("SELECT time FROM connections")] == [now - 300]
+    con.close()
+
+
+def _server_row(con, t, client, client_port, sent=0, received=12, opened=0):
+    """A row of the service on port 22067 of exe 1 with a client at address id client,
+    from client_port; the client's address also stands in for its domain."""
+    con.execute(
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 1, 1, 0, 0, 2, 6, 22067, ?, 1, ?, ?, 1, 1, 2, 10)",
+        (t, sent, received, opened, client_port, client, client),
+    )
+
+
+def _window_sums(con):
+    return con.execute(
+        "SELECT time, SUM(sent), SUM(received), SUM(events), SUM(opened) FROM connections GROUP BY time ORDER BY time"
+    ).fetchall()
+
+
+def _fold_db(tmp_path):
+    """Folding's cases, from a period ten hours back; the newest row nine hours later
+    lets every period up to two hours before it fold.
+    """
+    con = _purge_db(tmp_path)
+    con.executemany(
+        "INSERT INTO addresses VALUES (?, ?)",
+        [(i, f"192.0.2.{i}") for i in range(3, 10)],
+    )
+    con.executemany(
+        "INSERT INTO domains VALUES (?, ?)",
+        [(i, f"net.client{i}") for i in range(3, 10)],
+    )
+    base = (int(time.time()) // 3600 - 10) * 3600
+    # Two clients turned away in one window: one folded row, both counted.
+    _server_row(con, base + 100, 3, 1234, opened=1)
+    _server_row(con, base + 100, 4, 40000, opened=1)
+    # A client that moved more than the limit keeps its detail.
+    _server_row(con, base + 100, 5, 1235, sent=4000, received=100, opened=1)
+    # A tiny connection that lasts longer than an hour keeps it in every window.
+    for i in range(4):
+        _server_row(con, base + 200 + i * 1800, 6, 1236, opened=int(i == 0))
+    # A keepalive within the hour, small in all: folds whole.
+    for i in range(5):
+        _server_row(
+            con, base + 300 + i * 600, 7, 1237, received=100, opened=int(i == 0)
+        )
+    # A port used again after more than an hour's silence: two connections, both fold.
+    _server_row(con, base + 400, 8, 1238, opened=1)
+    _server_row(con, base + 400 + 7200, 8, 1238, opened=1)
+    # Still open, as far as the rows go: not folded yet.
+    _server_row(con, base + 9 * 3600 - 600, 9, 1239, opened=1)
+    con.execute(
+        "INSERT INTO interface_traffic VALUES (?, 1, 1, 1, 10)", (base + 9 * 3600,)
+    )
+    con.commit()
+    return con, base
+
+
+def test_fold_small_connections_whole_or_not_at_all(tmp_path):
+    from tracct import writer
+
+    con, base = _fold_db(tmp_path)
+    before = _window_sums(con)
+    config = _config(30, 365)
+    config.record.fold_below = 4096
+    periods, deleted, folded = writer.purge_database(con, config, lambda: False)
+    # Nothing is lost: every window keeps its bytes, events and connections.
+    assert _window_sums(con) == before
+    assert deleted == 0 and folded == 2 + 5 + 2
+    # What keeps its detail: the large one, the long one, the one still open.
+    assert sorted(
+        r[0]
+        for r in con.execute(
+            "SELECT DISTINCT raddr_id FROM connections WHERE raddr_id > 0"
+        )
+    ) == [5, 6, 9]
+    # Folded rows: no addresses, no domain, the service port only.
+    rows = con.execute(
+        "SELECT time, laddr_id, raddr_id, domain_id, lport, rport, received, opened FROM connections"
+        " WHERE raddr_id = -1 ORDER BY time"
+    ).fetchall()
+    assert rows == [
+        (base + 100, -1, -1, 0, 22067, 0, 24, 2),
+        (base + 300, -1, -1, 0, 22067, 0, 100, 1),
+        (base + 400, -1, -1, 0, 22067, 0, 12, 1),
+        (base + 900, -1, -1, 0, 22067, 0, 100, 0),
+        (base + 1500, -1, -1, 0, 22067, 0, 100, 0),
+        (base + 2100, -1, -1, 0, 22067, 0, 100, 0),
+        (base + 2700, -1, -1, 0, 22067, 0, 100, 0),
+        (base + 7600, -1, -1, 0, 22067, 0, 12, 1),
+    ]
+    # Folding got to two hours before the newest row, the rollups no further, and the
+    # periods rolled up are summed from the folded rows.
+    watermarks = dict(con.execute("SELECT key, value FROM meta"))
+    assert watermarks["fold_watermark"] == base + 7 * 3600
+    assert watermarks["rollup_watermark"] == base + 7 * 3600 and periods == 3
+    rolled = con.execute(
+        "SELECT SUM(sent), SUM(received), SUM(opened) FROM connections_rollup"
+    ).fetchone()
+    raw = con.execute(
+        "SELECT SUM(sent), SUM(received), SUM(opened) FROM connections WHERE time < ?",
+        (base + 7 * 3600,),
+    ).fetchone()
+    assert rolled == raw
+    # The next pass finds nothing new to fold, and the address of folded rows outlives
+    # the cleanup.
+    assert writer.purge_database(con, config, lambda: False)[2] == 0
+    writer.delete_orphans(con, lambda: False)
+    assert con.execute("SELECT addr FROM addresses WHERE id = -1").fetchone() == (
+        "(small connections)",
+    )
+    con.close()
+
+
+def test_fold_below_0_folds_nothing_and_rolls_up_as_before(tmp_path):
+    from tracct import writer
+
+    con, base = _fold_db(tmp_path)
+    rows = con.execute("SELECT * FROM connections ORDER BY rowid").fetchall()
+    assert writer.purge_database(con, _config(30, 365), lambda: False)[2] == 0
+    assert con.execute("SELECT * FROM connections ORDER BY rowid").fetchall() == rows
+    watermarks = dict(con.execute("SELECT key, value FROM meta"))
+    assert "fold_watermark" not in watermarks
+    # Up to the newest row's period, as without folding.
+    assert watermarks["rollup_watermark"] == base + 9 * 3600
     con.close()
 
 

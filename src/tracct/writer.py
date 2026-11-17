@@ -16,8 +16,9 @@ import time
 from collections.abc import Callable
 
 from tracct.config import Config
+from tracct.connections import GAP_SECONDS
 from tracct.conntrack import Flow, Trackers
-from tracct.constants import DB_PATH, RETRY_BUFFER_MAX
+from tracct.constants import DB_PATH, FOLDED_ADDRESS_ID, RETRY_BUFFER_MAX
 from tracct.messages import report
 from tracct.netinfo import NetInfo
 from tracct.reverse_dns import ReverseDns
@@ -31,6 +32,10 @@ from tracct.utils import (
 
 logger = logging.getLogger(__name__)
 
+#: Folding (see fold): a connection is one tuple's rows without a longer gap, the same
+#: as the reader counts them by, and one lasting longer never folds.
+FOLD_GAP_SECONDS = GAP_SECONDS
+FOLD_MAX_SECONDS = 3600
 #: Distinct connections one write window may hold; past it the window is written early.
 WINDOW_CONNECTIONS_MAX = 65536
 #: Rows the retention purge deletes per transaction; a write that is due goes between
@@ -70,13 +75,19 @@ RELEASE_CHUNK_PAGES = 2560
 #: port inside the range is our client's, kept as 0, and the remote one kept unless it is
 #: inside the range too. Columns are named, so no statement depends on the order a table
 #: declares them in.
+#: The two ports as the rollups and folded rows keep them, with :ephemeral bound. ICMP (1)
+#: and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
+SERVICE_LPORT = (
+    "CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END"
+)
+SERVICE_RPORT = (
+    "CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58)"
+    " AND NOT (lport > 0 AND lport < :ephemeral) THEN rport ELSE 0 END"
+)
 ROLLUPS = (
-    # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     (
         "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, opened, rows, seconds)"
-        " SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
-        " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
-        " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) AND NOT (lport > 0 AND lport < :ephemeral) THEN rport ELSE 0 END AS rp,"
+        f" SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol, {SERVICE_LPORT} AS lp, {SERVICE_RPORT} AS rp,"
         " domain_id, netns_id, iface_id, peer, SUM(sent), SUM(received), SUM(events), SUM(opened), COUNT(*), :end - :start"
         " FROM connections WHERE time >= :start AND time < :end"
         " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id, peer"
@@ -125,8 +136,9 @@ ORPHAN_DELETES = (
         "DELETE FROM domains WHERE id != 0 AND id NOT IN"
         " (SELECT domain_id FROM connections UNION SELECT domain_id FROM connections_rollup UNION SELECT domain_id FROM forwarded UNION SELECT domain_id FROM forwarded_rollup)"
     ),
+    # Spares the empty entry and the folded connections' (negative).
     (
-        "DELETE FROM addresses WHERE id != 0 AND id NOT IN"
+        "DELETE FROM addresses WHERE id > 0 AND id NOT IN"
         " (SELECT laddr_id FROM connections UNION SELECT raddr_id FROM connections UNION SELECT src_id FROM forwarded UNION SELECT dst_id FROM forwarded UNION SELECT src_id FROM forwarded_rollup)"
     ),
     (
@@ -510,15 +522,137 @@ def _chunked_delete(
             return deleted, True
 
 
+def _fold_period(
+    con: sqlite3.Connection,
+    start: int,
+    end: int,
+    below: int,
+    ephemeral: int,
+) -> int:
+    """Fold the small connections that start in [start, end); returns the rows folded.
+
+    A connection's rows are those of one tuple without a gap longer than
+    FOLD_GAP_SECONDS; the rows from a gap before start to a gap after what a connection
+    starting in the period may last are read, so each such connection is seen whole, and
+    a rows' gap at the edge decides correctly whether it starts or ends there.
+    """
+    con.execute("CREATE TEMP TABLE IF NOT EXISTS fold_ids(id INTEGER PRIMARY KEY)")
+    con.execute("DELETE FROM fold_ids")
+    con.execute(
+        "INSERT INTO fold_ids(id)"
+        " WITH r AS ("
+        "  SELECT rowid AS id, netns_id, protocol, laddr_id, lport, raddr_id, rport, time, sent + received AS bytes,"
+        "  CASE WHEN time - LAG(time) OVER w <= :gap THEN 0 ELSE 1 END AS starts"
+        "  FROM connections"
+        "  WHERE time >= :lo AND time < :hi AND family IN (2, 10) AND protocol NOT IN (1, 58)"
+        "  AND raddr_id > 0 AND lport > 0 AND rport > 0"
+        "  WINDOW w AS (PARTITION BY netns_id, protocol, laddr_id, lport, raddr_id, rport ORDER BY time, rowid)"
+        " ), c AS ("
+        "  SELECT id, time, bytes, netns_id, protocol, laddr_id, lport, raddr_id, rport,"
+        "  SUM(starts) OVER (PARTITION BY netns_id, protocol, laddr_id, lport, raddr_id, rport ORDER BY time, id ROWS UNBOUNDED PRECEDING) AS n"
+        "  FROM r"
+        " ), small AS ("
+        "  SELECT netns_id, protocol, laddr_id, lport, raddr_id, rport, n FROM c"
+        "  GROUP BY netns_id, protocol, laddr_id, lport, raddr_id, rport, n"
+        "  HAVING MIN(time) >= :start AND MIN(time) < :end AND MAX(time) - MIN(time) <= :longest AND SUM(bytes) < :below"
+        " )"
+        " SELECT c.id FROM c JOIN small USING (netns_id, protocol, laddr_id, lport, raddr_id, rport, n)",
+        {
+            "lo": start - FOLD_GAP_SECONDS,
+            "hi": end + FOLD_MAX_SECONDS + FOLD_GAP_SECONDS,
+            "start": start,
+            "end": end,
+            "gap": FOLD_GAP_SECONDS,
+            "longest": FOLD_MAX_SECONDS,
+            "below": below,
+        },
+    )
+    folded = con.execute("SELECT COUNT(*) FROM fold_ids").fetchone()[0]
+    if folded:
+        # Rows of one window share their time and seconds.
+        con.execute(
+            "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
+            f" SELECT time, SUM(sent), SUM(received), SUM(events), SUM(opened), exe_id, pexe_id, unit_id, uid, family, protocol, {SERVICE_LPORT} AS lp, {SERVICE_RPORT} AS rp,"
+            " :folded, :folded, 0, netns_id, iface_id, peer, MAX(seconds)"
+            " FROM connections WHERE rowid IN (SELECT id FROM fold_ids)"
+            " GROUP BY time, exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, netns_id, iface_id, peer",
+            {"ephemeral": ephemeral, "folded": FOLDED_ADDRESS_ID},
+        )
+        con.execute("DELETE FROM connections WHERE rowid IN (SELECT id FROM fold_ids)")
+    con.execute("DELETE FROM fold_ids")
+    return folded
+
+
+def fold(
+    con: sqlite3.Connection,
+    config: Config,
+    between_periods: Callable[[], bool],
+    ephemeral: int | None = None,
+) -> tuple[int, int, int | None]:
+    """Fold the small connections of every period whose connections can be seen whole
+    by now, period by period; the fold watermark in meta marks where the next starts.
+
+    A connection folds when all of its bytes stay under [record] fold_below, it lasts at
+    most FOLD_MAX_SECONDS and has been silent for FOLD_GAP_SECONDS: its rows merge, per
+    window, into rows without its addresses, domain and client port. Returns the periods
+    folded, the rows folded and the watermark, up to which the rollups may go (None while
+    there is nothing to fold).
+    """
+    below = config.record.fold_below
+    period = config.database.rollup_period_minutes * 60
+    ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
+    newest = newest_row(con)
+    if newest is None:
+        return 0, 0, None
+    # A connection starting in a period is whole once the rows reach past what it may
+    # last and a gap after; the rows, not the clock, as a clock running ahead must not
+    # fold what is still open.
+    done = (
+        (min(newest, int(time.time())) - FOLD_MAX_SECONDS - FOLD_GAP_SECONDS)
+        // period
+        * period
+    )
+    row = con.execute("SELECT value FROM meta WHERE key = 'fold_watermark'").fetchone()
+    if row is not None:
+        watermark = row[0]
+    else:
+        oldest = con.execute("SELECT MIN(time) FROM connections").fetchone()[0]
+        watermark = done if oldest is None else min(done, oldest // period * period)
+    periods = folded = 0
+    while watermark < done:
+        # Spans without connections are passed over (a first start, a long downtime).
+        oldest = con.execute(
+            "SELECT MIN(time) FROM connections WHERE time >= ?", (watermark,)
+        ).fetchone()[0]
+        if oldest is None or oldest >= done:
+            start = end = done
+        else:
+            start = max(watermark, oldest // period * period)
+            end = start // period * period + period
+        with con:
+            if start < end:
+                folded += _fold_period(con, start, end, below, ephemeral)
+                periods += 1
+            con.execute(
+                "INSERT INTO meta(key, value) VALUES ('fold_watermark', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (end,),
+            )
+        watermark = end
+        if watermark < done and between_periods():
+            break
+    return periods, folded, watermark
+
+
 def roll_up(
     con: sqlite3.Connection,
     period_minutes: int,
     between_periods: Callable[[], bool],
     ephemeral: int | None = None,
+    until: int | None = None,
 ) -> int:
     """Sum the raw rows of every period that has closed since the last one rolled up,
-    per period; the watermark in meta marks where the next starts. Returns the number of
-    periods summed.
+    per period, but not past until (where folding has got to); the watermark in meta
+    marks where the next starts. Returns the number of periods summed.
     """
     period = period_minutes * 60
     ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
@@ -530,6 +664,8 @@ def roll_up(
     newest = newest_row(con)
     if newest is not None:
         closed = min(closed, newest // period * period)
+    if until is not None:
+        closed = min(closed, until)
     row = con.execute(
         "SELECT value FROM meta WHERE key = 'rollup_watermark'"
     ).fetchone()
@@ -603,13 +739,19 @@ def retention_seconds(config: Config) -> tuple[int, int]:
 
 def purge_database(
     con: sqlite3.Connection, config: Config, between_chunks: Callable[[], bool]
-) -> tuple[int, int]:
-    """Roll up the closed periods, then delete the rows past their retention in chunks
-    (raw rows only once rolled up). between_chunks runs after each committed chunk or
-    period and ends the purge by returning True. Returns the numbers of periods rolled
-    up and rows deleted.
+) -> tuple[int, int, int]:
+    """Fold the small connections where they are whole, roll up the closed periods (no
+    further than folding got, while it is on), then delete the rows past their retention
+    in chunks (raw rows only once rolled up). between_chunks runs after each committed
+    chunk or period and ends the purge by returning True. Returns the numbers of periods
+    rolled up, rows deleted and rows folded.
     """
-    periods = roll_up(con, config.database.rollup_period_minutes, between_chunks)
+    folded, until = 0, None
+    if config.record.fold_below > 0:
+        _, folded, until = fold(con, config, between_chunks)
+    periods = roll_up(
+        con, config.database.rollup_period_minutes, between_chunks, until=until
+    )
     now = int(time.time())
     # A cutoff past the newest row means a future clock (booted before NTP), which would
     # wipe the db.
@@ -622,7 +764,7 @@ def purge_database(
             "retention-skipped",
             "skipping retention purge, the wall clock is ahead of the newest row by more than the retention (clock not synced, or the daemon was down that long); no rows deleted",
         )
-        return periods, 0
+        return periods, 0, folded
     watermark_row = con.execute(
         "SELECT value FROM meta WHERE key = 'rollup_watermark'"
     ).fetchone()
@@ -644,7 +786,7 @@ def purge_database(
         deleted += count
         if stopped:
             break
-    return periods, deleted
+    return periods, deleted, folded
 
 
 def delete_orphans(
@@ -1004,7 +1146,7 @@ def run_writer(
         released = 0
         con = sqlite3.connect(file_path)
         try:
-            periods, deleted = purge_database(con, config, between_chunks)
+            periods, deleted, folded = purge_database(con, config, between_chunks)
             deleted_since_orphans += deleted
             if (
                 deleted_since_orphans
@@ -1020,7 +1162,7 @@ def run_writer(
             con.close()
             # Orphan cleanup deletes ids the caches may hold.
             clear_id_caches()
-        if periods or deleted or orphans is not None or released:
+        if periods or deleted or folded or orphans is not None or released:
             cleanup = (
                 "" if orphans is None else f" and {orphans} unreferenced lookup entries"
             )
@@ -1032,7 +1174,7 @@ def run_writer(
             report(
                 logger,
                 "maintenance-done",
-                f"maintenance: rolled up {periods} period(s), deleted {deleted} row(s){cleanup}{release} in {time.monotonic() - started:.1f} s",
+                f"maintenance: folded {folded} row(s) of small connections, rolled up {periods} period(s), deleted {deleted} row(s){cleanup}{release} in {time.monotonic() - started:.1f} s",
             )
 
     # The first pass runs at startup.

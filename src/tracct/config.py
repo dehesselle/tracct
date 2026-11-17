@@ -69,6 +69,9 @@ class RecordConfig:
     ignore_ips: list[str] = dataclasses.field(default_factory=list)
     #: Tables as read, ProcessRules once load_config() has checked them.
     process: list[ProcessRule] = dataclasses.field(default_factory=list)
+    #: Connections that moved fewer bytes in all are folded into one row per window
+    #: without their addresses (see "Storage" in docs/DESIGN.md); 0 folds none.
+    fold_below: int = 4096
 
 
 @dataclasses.dataclass
@@ -312,6 +315,16 @@ def load_config(config_path: Path = CONFIG_PATH) -> Config:
         for port in config.record.ignore_ports
         if isinstance(port, int) and not isinstance(port, bool) and -1 <= port <= 65535
     ]
+    fold_below = config.record.fold_below
+    if (
+        not isinstance(fold_below, int)
+        or isinstance(fold_below, bool)
+        or fold_below < 0
+    ):
+        logger.warning(
+            f"config.record.fold_below must be a number of bytes, 0 or more, got {fold_below!r}, using 4096"
+        )
+        config.record.fold_below = 4096
     rules = []
     for number, rule in enumerate(config.record.process, 1):
         problem = _rule_problem(rule)
