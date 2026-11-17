@@ -58,7 +58,7 @@ def _db(tmp_path):
     # Time, sent, received, events, exe, pexe, unit, uid, family, protocol, lport, rport,
     # laddr, raddr, domain, netns_id, iface, peer (remote), seconds.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 2, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 2, 10)",
         [
             (
                 P0 + H + 100,
@@ -81,7 +81,7 @@ def _db(tmp_path):
     # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns_id,
     # iface, peer (remote), sent, received, events, rows, seconds.
     con.executemany(
-        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, 2, ?, ?, 1, 1, 3600)",
+        "INSERT INTO connections_rollup VALUES (?, ?, 2, ?, 1000, 2, 6, ?, ?, ?, ?, 1, 2, ?, ?, 1, 1, 1, 3600)",
         [
             (P0, 1, 0, 0, 443, 1, HOST_ID, 1000, 10000),
             (P0 + H, 1, 0, 0, 443, 1, HOST_ID, 100, 1000),
@@ -135,6 +135,14 @@ def _ask(db, op, write_window=10, rollup_period=H, **request):
     return response
 
 
+def _byte_parts(response):
+    """The parts without their counts of connections."""
+    return [
+        [label, a, b, filters]
+        for label, a, b, _connections, filters in response["parts"]
+    ]
+
+
 def _aggregate(db, group_by, start=P0, end=P0 + 4 * H, **request):
     response = _ask(
         db,
@@ -145,7 +153,7 @@ def _aggregate(db, group_by, start=P0, end=P0 + 4 * H, **request):
         end=end,
         **request,
     )
-    return response, {value: (a, b) for value, a, b in response["rows"]}
+    return response, {value: (a, b) for value, a, b, _connections in response["rows"]}
 
 
 def test_raw_rows_take_over_from_rollups(tmp_path):
@@ -159,12 +167,45 @@ def test_raw_rows_take_over_from_rollups(tmp_path):
         "/usr/sbin/nginx": (5000 + 300, 500 + 30),
     }
     assert [row[0] for row in response["rows"]] == ["/usr/bin/curl", "/usr/sbin/nginx"]
-    assert response["totals"] == [1111 + 5300, 11022 + 530]
+    assert response["totals"] == [1111 + 5300, 11022 + 530, 6]
     assert (
         response["groups"] == 2
         and not response["truncated"]
         and not response["clipped"]
     )
+
+
+def test_connections_are_counted_where_the_source_counts_them(tmp_path):
+    db = _db(tmp_path)
+    response = _ask(
+        db,
+        "aggregate",
+        source="connections",
+        group_by="exe",
+        start=P0 + 2 * H,
+        end=P0 + 4 * H,
+    )
+    assert response["rows"] == [
+        ["/usr/sbin/nginx", 300, 30, 1],
+        ["/usr/bin/curl", 11, 22, 2],
+    ]
+    assert response["totals"] == [311, 52, 3]
+    assert sum(part[3] for part in response["parts"]) == 3
+    # The rollups count them too, summed from the raw rows.
+    response = _ask(
+        db, "aggregate", source="connections", group_by="exe", start=P0, end=P0 + 2 * H
+    )
+    assert response["totals"][2] == 3
+    # Interface counters count none.
+    response = _ask(
+        db, "aggregate", source="interfaces", group_by="iface", start=P0, end=P0 + 4 * H
+    )
+    assert all(row[3] is None for row in response["rows"])
+    assert response["totals"][2] is None
+    assert all(part[3] is None for part in response["parts"])
+    described = _ask(db, "describe")["sources"]
+    assert described["connections"]["count"] == "connections"
+    assert described["interfaces"]["count"] is None
 
 
 def test_raw_rows_older_than_the_rollups_are_read(tmp_path):
@@ -310,7 +351,7 @@ def test_a_servers_client_port_groups_as_0_like_the_rollups(tmp_path):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     con.execute(
-        f"INSERT INTO connections VALUES ({P0 + 3 * H + 30}, 7, 70, 1, 3, 2, 1, 1000, 2, 6, 80, 1234, 1, 4, 0, {VPN_ID}, 3, 2, 10)"
+        f"INSERT INTO connections VALUES ({P0 + 3 * H + 30}, 7, 70, 1, 1, 3, 2, 1, 1000, 2, 6, 80, 1234, 1, 4, 0, {VPN_ID}, 3, 2, 10)"
     )
     con.commit()
     con.close()
@@ -374,7 +415,7 @@ def test_kernel_tunnels_and_the_tunnel_layer(tmp_path):
     # A socket on wg0 to a remote peer, a raw row on tailscale0, without one, and a raw
     # row of a process with no tun, also without one.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, ?, 2, 0, 1000, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 10)",
         [
             (P0 + 3 * H + 30, 7, 8, 1, 2, 6, 50004, 443, 1, 2, HOST_ID, 4, 2),
             (P0 + 3 * H + 40, 5, 6, 3, 17, 0, 0, 0, 0, 0, HOST_ID, 2, 0),
@@ -417,11 +458,11 @@ def test_peers_and_interface_classes(tmp_path):
     con = sqlite3.connect(db)
     # bash talking to a local database, raw and rolled up.
     con.execute(
-        "INSERT INTO connections VALUES (?, 3, 4, 1, 2, 2, 0, 1000, 2, 6, 50005, 5432, 1, 1, 0, ?, 1, 1, 10)",
+        "INSERT INTO connections VALUES (?, 3, 4, 1, 1, 2, 2, 0, 1000, 2, 6, 50005, 5432, 1, 1, 0, ?, 1, 1, 10)",
         (P0 + 3 * H + 50, HOST_ID),
     )
     con.execute(
-        "INSERT INTO connections_rollup VALUES (?, 2, 2, 0, 1000, 2, 6, 0, 5432, 0, ?, 1, 1, 30, 40, 1, 1, 3600)",
+        "INSERT INTO connections_rollup VALUES (?, 2, 2, 0, 1000, 2, 6, 0, 5432, 0, ?, 1, 1, 30, 40, 1, 1, 1, 3600)",
         (P0, HOST_ID),
     )
     con.commit()
@@ -446,7 +487,7 @@ def test_namespaces_keep_the_name_of_their_rows(tmp_path):
         "INSERT INTO interfaces VALUES (4, 3, 'tun0', 'tun', 'virtual'), (5, 4, 'tun0', 'tun', 'virtual')"
     )
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?, 2, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, 3, 2, 1, 1000, 2, 6, 80, 0, 1, 3, 0, ?, ?, 2, 10)",
         [(P0 + 3 * H + 30, 5, 6, 3, 4), (P0 + 3 * H + 40, 7, 8, 4, 5)],
     )
     con.commit()
@@ -469,7 +510,7 @@ def test_totals_per_layer_and_peer(tmp_path):
     # A connection to a local peer, a raw row outside a tun (a capture), a socket
     # without a peer, and a bridge's counters.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, 2, 2, 0, 1000, ?, 6, 0, 0, 0, 0, 0, ?, ?, ?, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, 2, 2, 0, 1000, ?, 6, 0, 0, 0, 0, 0, ?, ?, ?, 10)",
         [
             (P0 + 3 * H + 50, 3, 4, 2, HOST_ID, 1, 1),
             (P0 + 3 * H + 50, 1, 2, 17, HOST_ID, 0, 0),
@@ -487,7 +528,7 @@ def test_totals_per_layer_and_peer(tmp_path):
     # The sums over all rows never add up layers or peers, largest first, with the
     # filters that keep their rows.
     response, _ = _aggregate(db, "exe")
-    assert response["parts"] == [
+    assert _byte_parts(response) == [
         ["outer · remote", 6111, 11522, [["layer", "outer"], ["peer", "remote"]]],
         ["inner", 300, 30, [["layer", "inner"]]],
         ["outer · local", 3, 4, [["layer", "outer"], ["peer", "local"]]],
@@ -497,14 +538,14 @@ def test_totals_per_layer_and_peer(tmp_path):
     # The bridge is in no sum: virtual devices other than tunnels carry the same bytes
     # several times.
     response, _ = _aggregate(db, "iface", source="interfaces")
-    assert response["parts"] == [
+    assert _byte_parts(response) == [
         ["physical", 670, 6700, [["class", "physical"]]],
         ["inner", 4, 40, [["layer", "inner"]]],
     ]
     # Each sum is what its filters keep.
     for source, group_by in (("connections", "exe"), ("interfaces", "iface")):
         response, _ = _aggregate(db, group_by, source=source)
-        for label, a, b, filters in response["parts"]:
+        for label, a, b, _connections, filters in response["parts"]:
             _, rows = _aggregate(
                 db,
                 group_by,
@@ -517,12 +558,12 @@ def test_totals_per_layer_and_peer(tmp_path):
             ) == (a, b), label
     # Forwarded bytes have neither: one sum.
     response, _ = _aggregate(db, "src", source="forwarded")
-    assert response["parts"] == [[None, 2050, 105000, []]]
+    assert _byte_parts(response) == [[None, 2050, 105000, []]]
     # A filter narrows them as it does the rows.
     response, rows = _aggregate(db, "exe", filters=[["layer", "inner", False]])
-    assert response["parts"] == [["inner", 300, 30, [["layer", "inner"]]]] and rows == {
-        "/usr/sbin/nginx": (300, 30)
-    }
+    assert _byte_parts(response) == [
+        ["inner", 300, 30, [["layer", "inner"]]]
+    ] and rows == {"/usr/sbin/nginx": (300, 30)}
 
 
 def test_forwarded(tmp_path):
@@ -724,7 +765,7 @@ def test_slow_query_is_interrupted(tmp_path, monkeypatch):
     db = _db(tmp_path)
     con = sqlite3.connect(db)
     con.executemany(
-        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1, 2, 10)",
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 1, 2, 0, 1000, 2, 6, 50000, 443, 1, 2, 1, ?, 1, 2, 10)",
         [(P0 + 3 * H + i % 3000, HOST_ID) for i in range(20000)],
     )
     con.commit()

@@ -92,6 +92,10 @@ writer-queue-full = "warning"
 live-feed-queue-full = "warning"
 # A viewer fell too far behind and was disconnected.
 live-feed-subscribers-dropped = "warning"
+# More connections within an hour than the reader remembers; some count twice.
+connection-tracker-full = "warning"
+# At start, the last hour's connections could not be read; those still open count again.
+connection-history-unreadable = "warning"
 # A thread died; the daemon exits for systemd to restart it.
 thread-died = "error"
 # The BPF program is attached again after a suspend.

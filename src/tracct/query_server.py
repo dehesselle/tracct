@@ -127,9 +127,7 @@ def _port(label: str, column: str, icmp: bool, remote: bool = False) -> Dimensio
     # whose rows carry the echo id; a remote port only where the local one is inside the
     # range, as a local port below it makes the remote one a client's (see writer.ROLLUPS).
     icmp_case = " AND t.protocol NOT IN (1, 58)" if icmp else ""
-    server_case = (
-        " AND NOT (t.lport > 0 AND t.lport < {ephemeral})" if remote else ""
-    )
+    server_case = " AND NOT (t.lport > 0 AND t.lport < {ephemeral})" if remote else ""
     return Dimension(
         label,
         f"t.{column}",
@@ -270,6 +268,10 @@ class Source:
     #: The viewer's headings in the list of dimensions, by the dimension each comes
     #: before; only a long list has them.
     headings: dict[str, str] = dataclasses.field(default_factory=dict)
+    #: The column counting the connections the rows started, and what the viewer calls
+    #: it; None for a source without.
+    count: str | None = None
+    count_label: str | None = None
 
 
 SOURCES = {
@@ -313,6 +315,8 @@ SOURCES = {
             "netns": "network",
             "lport": "connection",
         },
+        count="opened",
+        count_label="connections",
     ),
     "interfaces": Source(
         "Interfaces",
@@ -527,20 +531,23 @@ class _Plan:
         leading: Callable[[], list] = list,
         sums: tuple[str, ...] = (),
     ) -> tuple[str, list]:
-        """The parts as one UNION ALL of (k, a, b), each summed per key(rollup), and a0,
-        b0, ... summed over the rows that meet each of sums; grouping by the key alone
-        keeps the order of its index.
+        """The parts as one UNION ALL of (k, a, b, c), each summed per key(rollup), c the
+        count of connections (NULL for a source without), and a0, b0, c0, ... summed over
+        the rows that meet each of sums; grouping by the key alone keeps the order of its
+        index.
         """
         a, b = self.source.values
+        count = f"t.{self.source.count}" if self.source.count else "NULL"
         extra = "".join(
-            f", SUM(CASE WHEN {condition} THEN t.{a} END) AS a{i}, SUM(CASE WHEN {condition} THEN t.{b} END) AS b{i}"
+            f", SUM(CASE WHEN {condition} THEN t.{a} END) AS a{i}, SUM(CASE WHEN {condition} THEN t.{b} END) AS b{i},"
+            f" SUM(CASE WHEN {condition} THEN {count} END) AS c{i}"
             for i, condition in enumerate(sums)
         )
         selects, params = [], []
         for rollup, start, end in self.parts:
             from_where, part_params = self.from_where(rollup, start, end)
             selects.append(
-                f"SELECT {key(rollup)} AS k, SUM(t.{a}) AS a, SUM(t.{b}) AS b{extra} {from_where} GROUP BY k"
+                f"SELECT {key(rollup)} AS k, SUM(t.{a}) AS a, SUM(t.{b}) AS b, SUM({count}) AS c{extra} {from_where} GROUP BY k"
             )
             params += leading() + part_params
         return " UNION ALL ".join(selects), params
@@ -556,9 +563,10 @@ class _Plan:
 
 
 def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dict:
-    """The byte sums per value of one dimension, largest first, and the source's sums
-    over all values, as parts: [label, out, in, filters], largest first. The total
-    over all parts is only right where it does not add up layers.
+    """The byte sums per value of one dimension, largest first, as [value, out, in,
+    connections], and the source's sums over all values, as parts: [label, out, in,
+    connections, filters], largest first. Connections is None for a source that does not
+    count them. The total over all parts is only right where it does not add up layers.
     """
     source = _source(request)
     group = source.dimensions.get(request.get("group_by") or source.default)
@@ -573,7 +581,7 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     result: dict = {
         **plan.info(),
         "rows": [],
-        "totals": [0, 0],
+        "totals": [0, 0, 0 if source.count else None],
         "parts": [],
         "groups": 0,
         "truncated": False,
@@ -598,24 +606,37 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     )
     union, params = plan.union(lambda rollup: plan.key(group, rollup), sums=conditions)
     sums = "".join(
-        f", SUM(SUM(u.a{i})) OVER (), SUM(SUM(u.b{i})) OVER ()"
+        f", SUM(SUM(u.a{i})) OVER (), SUM(SUM(u.b{i})) OVER (), SUM(SUM(u.c{i})) OVER ()"
         for i in range(len(conditions))
     )
     # Keys with the same value (one name, several executables) become one row.
     sql = (
-        f"SELECT {group.value_sql('u.k')} AS g, SUM(u.a), SUM(u.b), SUM(SUM(u.a)) OVER (), SUM(SUM(u.b)) OVER (), COUNT(*) OVER (){sums}"
+        f"SELECT {group.value_sql('u.k')} AS g, SUM(u.a), SUM(u.b), SUM(u.c), SUM(SUM(u.a)) OVER (), SUM(SUM(u.b)) OVER (),"
+        f" SUM(SUM(u.c)) OVER (), COUNT(*) OVER (){sums}"
         f" FROM ({union}) u GROUP BY g ORDER BY SUM(u.a) + SUM(u.b) DESC, g LIMIT ?"
     )
+    counted = source.count is not None
+
+    def count(n: int | None) -> int | None:
+        # A sum over no rows is NULL, which for a source that counts is 0.
+        return (n or 0) if counted else None
+
     size = 0
-    for value, a, b, total_a, total_b, groups, *per_value in con.execute(
+    for value, a, b, c, total_a, total_b, total_c, groups, *per_value in con.execute(
         sql, [*params, limit]
     ):
         if not result["groups"]:
             # The window sums are the same on every row; a value with no bytes is not
             # there.
-            result["totals"], result["groups"] = [total_a, total_b], groups
+            result["totals"] = [total_a, total_b, count(total_c)]
+            result["groups"] = groups
             parts = [
-                [total.label, per_value[2 * i] or 0, per_value[2 * i + 1] or 0]
+                [
+                    total.label,
+                    per_value[3 * i] or 0,
+                    per_value[3 * i + 1] or 0,
+                    count(per_value[3 * i + 2]),
+                ]
                 for i, total in enumerate(totals)
             ]
             if source.totals_rest is not None:
@@ -624,6 +645,9 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
                         source.totals_rest.label,
                         total_a - sum(part[1] for part in parts),
                         total_b - sum(part[2] for part in parts),
+                        count(total_c) - sum(part[3] for part in parts)
+                        if counted
+                        else None,
                     ]
                 )
             filters = [
@@ -641,7 +665,7 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
         if size > MAX_RESPONSE_BYTES // 2:
             result["truncated"] = True
             break
-        result["rows"].append([value, a, b])
+        result["rows"].append([value, a, b, count(c)])
     result["truncated"] = result["truncated"] or result["groups"] > len(result["rows"])
     return result
 
@@ -746,6 +770,7 @@ def describe(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
             "label": source.label,
             "kind": source.kind,
             "values": list(source.value_labels),
+            "count": source.count_label,
             "default": source.default,
             "dimensions": [
                 [key, dimension.label, dimension.rollup is None]

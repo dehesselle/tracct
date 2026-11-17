@@ -16,6 +16,7 @@ import typing
 
 from tracct import cli, writer
 from tracct.config import Config, ProcessRule
+from tracct.connections import ConnectionTracker
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
 from tracct.utils import DropOldestQueue
@@ -79,10 +80,86 @@ def test_window_leaves_events_alone():
     assert len(window) == 1
     rows, flows = window.take_rows()
     assert len(rows) == 1 and not flows and len(window) == 0
-    _written, send, recv, n_events, exe_key, _pexe_key, unit, *_ = rows[0]
-    assert (send, recv, n_events) == (101, 2001, 5)
+    _written, send, recv, n_events, opened, exe_key, _pexe_key, unit, *_ = rows[0]
+    # Unmarked events start no connection.
+    assert (send, recv, n_events, opened) == (101, 2001, 5, 0)
     assert exe_key == ("/usr/bin/curl", "curl", "curl https://example.com")
     assert unit == "session-1.scope"
+
+
+def test_tracker_marks_the_events_that_start_a_connection():
+    """A tuple's first event starts a connection, its next ones within the gap do not,
+    and one after a longer silence starts another; events without a tuple start none."""
+    tracker = ConnectionTracker(gap=3600)
+    first = [_event(), _event(), _event(rport=80), _event(family=17, raddr="", lport=0)]
+    tracker.mark(first, 1000.0)
+    assert [event["new"] for event in first] == [True, False, True, False]
+    later = [_event(), _event(rport=80)]
+    tracker.mark(later, 1000.0 + 3600)
+    assert [event["new"] for event in later] == [False, False]
+    # Silent for longer than the gap since its last event: a new connection, though the
+    # tuple is the same (a port used again).
+    again = [_event(), _event(rport=80)]
+    tracker.mark(again, 1000.0 + 3600 + 3601)
+    assert [event["new"] for event in again] == [True, True]
+
+
+def test_tracker_forgets_the_longest_silent_past_its_limit():
+    tracker = ConnectionTracker(gap=3600, limit=2)
+    events = [_event(lport=port) for port in (50000, 50001, 50002)]
+    for i, event in enumerate(events):
+        tracker.mark([event], 1000.0 + i)
+    assert len(tracker) == 2 and tracker.evicted == 1
+    # The one forgotten counts again; the others are still known.
+    again = [_event(lport=50000), _event(lport=50002)]
+    tracker.mark(again, 1010.0)
+    assert [event["new"] for event in again] == [True, False]
+    # Tuples silent for the gap are pruned, not evicted.
+    tracker.mark([_event(lport=50003)], 1010.0 + 3601)
+    assert len(tracker) == 1 and tracker.evicted == 2
+
+
+def test_tracker_loads_the_last_hour_from_the_database(tmp_path, monkeypatch):
+    """After a restart within the hour, the connections still open are not counted
+    again; older ones and rows without a tuple are not remembered."""
+    monkeypatch.setattr(cli, "DB_PATH", tmp_path / "tracct.db")
+    monkeypatch.setattr(cli, "STATE_DIR", tmp_path)
+    cli.init_database()
+    con = sqlite3.connect(tmp_path / "tracct.db")
+    con.execute("INSERT INTO netns VALUES (1, 4026531840, 'host')")
+    con.execute(
+        "INSERT INTO addresses VALUES (1, '10.0.0.2'), (2, '93.184.215.14'), (3, '192.0.2.1')"
+    )
+    now = 100000
+    # Time, sent, received, events, opened, exe, pexe, unit, uid, family, protocol,
+    # lport, rport, laddr, raddr, domain, netns, iface, peer, seconds.
+    con.executemany(
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 0, 0, 0, 0, 2, 6, ?, ?, 1, ?, 0, 1, 0, 2, 10)",
+        [
+            (now - 60, 50000, 443, 2),
+            (now - 7200, 50001, 443, 3),
+            (now - 60, 0, 0, 0),
+        ],
+    )
+    con.commit()
+    tracker = ConnectionTracker(gap=3600)
+    assert tracker.load(con, float(now)) == 1
+    events = [_event(), _event(lport=50001, raddr="192.0.2.1")]
+    tracker.mark(events, float(now))
+    assert [event["new"] for event in events] == [False, True]
+
+
+def test_window_counts_the_connections_its_events_started():
+    """A row's opened sums its events' marks, also where a rule merges connections."""
+    config = Config()
+    config.record.process = [ProcessRule(name="curl", addresses=False, ports=False)]
+    window = writer.WriteWindow(config)
+    events = [_event(), _event(rport=80), _event(lport=50001)]
+    ConnectionTracker().mark(events, 1000.0)
+    window.add(events)
+    window.add([_event()])
+    rows, _ = window.take_rows()
+    assert [row[1:5] for row in rows] == [(400, 8000, 16, 3)]
 
 
 def test_window_process_rules():
@@ -115,7 +192,7 @@ def test_window_process_rules():
         ]
     )
     rows, _ = window.take_rows()
-    by_exe = {row[4][0]: row for row in rows}
+    by_exe = {row[5][0]: row for row in rows}
     assert len(rows) == 3
     torrent_row = by_exe["/usr/bin/transmission-daemon"]
     *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _seconds = (
@@ -127,8 +204,8 @@ def test_window_process_rules():
         "/usr/bin/curl"
     ]
     assert (lport, rport, raddr, domain) == (50000, 443, "93.184.215.14", "com.example")
-    assert by_exe["/usr/bin/curl"][4] == ("/usr/bin/curl", "curl", "")
-    assert by_exe["/usr/bin/wget"][4:6] == (
+    assert by_exe["/usr/bin/curl"][5] == ("/usr/bin/curl", "curl", "")
+    assert by_exe["/usr/bin/wget"][5:7] == (
         ("/usr/bin/wget", "wget", "wget https://a.b"),
         ("/usr/bin/bash", "bash", "bash"),
     )
@@ -139,7 +216,7 @@ def test_window_process_rules():
     window = writer.WriteWindow(config)
     window.add([_event(), _event(exe="/usr/bin/wget", name="wget")])
     rows, _ = window.take_rows()
-    assert sorted((row[4][1], row[13]) for row in rows) == [
+    assert sorted((row[5][1], row[14]) for row in rows) == [
         ("curl", "93.184.215.14"),
         ("wget", ""),
     ]
@@ -277,7 +354,7 @@ def test_window_peers():
         )
         window.add(events)
         rows, _ = window.take_rows()
-        return sorted((row[13], row[-2], row[1]) for row in rows)
+        return sorted((row[14], row[-2], row[1]) for row in rows)
 
     assert peers(Config()) == [
         ("", writer.PEER_NONE, 100),

@@ -51,6 +51,11 @@ def bytes_cell(n: float | None, byte_unit: str = "auto") -> Text:
     return Text(format_bytes(n, byte_unit), justify="right")
 
 
+def count_cell(n: int | None) -> Text:
+    """A count with thousands separated, empty where there is none."""
+    return Text("" if n is None else f"{n:,}", justify="right")
+
+
 @functools.lru_cache(maxsize=1024)
 def user_name(uid: int) -> str:
     try:

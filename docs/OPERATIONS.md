@@ -164,6 +164,11 @@ The messages, warnings unless marked:
   the oldest batches were discarded
 - `live-feed-queue-full`: the same for viewers, which costs no data
 - `live-feed-subscribers-dropped`: a viewer fell more than 8 MiB behind
+- `connection-tracker-full`: more than 262 144 connections were active within an hour,
+  more than the reader remembers; the ones it forgot count again when they next move
+  bytes, so connection counts come out too high
+- `connection-history-unreadable`: at start the database could not be read for the
+  connections of the last hour, so those still open count as new once more
 - `live-feed-group`: `[viewer] group` is not among the unit's `SupplementaryGroups=`
 - `multi-call-inode`: once per hardlinked multi-call binary, such as uutils coreutils; its
   processes that are gone before they are resolved are recorded as `<multi-call:dev,ino>`

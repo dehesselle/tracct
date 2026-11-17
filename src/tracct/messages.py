@@ -38,6 +38,8 @@ DEFAULTS: typing.Final[dict[str, int]] = {
     "writer-queue-full": logging.WARNING,
     "live-feed-queue-full": logging.WARNING,
     "live-feed-subscribers-dropped": logging.WARNING,
+    "connection-tracker-full": logging.WARNING,
+    "connection-history-unreadable": logging.WARNING,
     "thread-died": logging.ERROR,
     "resumed-from-suspend": logging.INFO,
     "live-feed-group": logging.WARNING,

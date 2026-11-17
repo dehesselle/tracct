@@ -69,8 +69,9 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: start of what it covers, and `seconds` how long either is. A connection's `peer` is
 #: 0 for none (a raw row, a socket without a remote address), 1 for local (on this
 #: machine) and 2 for remote; an interface's `class` is 'physical' or 'virtual', '' for
-#: the unknown one.
-DB_VERSION: typing.Final[int] = 9
+#: the unknown one. `opened` counts the connections a row's events started (see
+#: connections.py).
+DB_VERSION: typing.Final[int] = 10
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -103,6 +104,7 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     sent INTEGER NOT NULL,
     received INTEGER NOT NULL,
     events INTEGER NOT NULL,
+    opened INTEGER NOT NULL,
     exe_id INTEGER NOT NULL REFERENCES executables(id),
     pexe_id INTEGER NOT NULL REFERENCES executables(id),
     unit_id INTEGER NOT NULL REFERENCES units(id),
@@ -135,6 +137,7 @@ SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     sent INTEGER NOT NULL,
     received INTEGER NOT NULL,
     events INTEGER NOT NULL,
+    opened INTEGER NOT NULL,
     rows INTEGER NOT NULL,
     seconds INTEGER NOT NULL"""
 SCHEMA_INTERFACE_TRAFFIC: typing.Final[str] = """

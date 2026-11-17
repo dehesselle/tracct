@@ -73,11 +73,11 @@ RELEASE_CHUNK_PAGES = 2560
 ROLLUPS = (
     # ICMP (1) and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
     (
-        "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, rows, seconds)"
+        "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, opened, rows, seconds)"
         " SELECT :period, exe_id, pexe_id, unit_id, uid, family, protocol,"
         " CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END AS lp,"
         " CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58) AND NOT (lport > 0 AND lport < :ephemeral) THEN rport ELSE 0 END AS rp,"
-        " domain_id, netns_id, iface_id, peer, SUM(sent), SUM(received), SUM(events), COUNT(*), :end - :start"
+        " domain_id, netns_id, iface_id, peer, SUM(sent), SUM(received), SUM(events), SUM(opened), COUNT(*), :end - :start"
         " FROM connections WHERE time >= :start AND time < :end"
         " GROUP BY exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, domain_id, netns_id, iface_id, peer"
     ),
@@ -93,8 +93,8 @@ ROLLUPS = (
     ),
 )
 INSERT_CONNECTIONS = (
-    "INSERT INTO connections(time, sent, received, events, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
-    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 INSERT_INTERFACE_TRAFFIC = "INSERT INTO interface_traffic(time, iface_id, sent, received, seconds) VALUES (?, ?, ?, ?, ?)"
 INSERT_FORWARDED = (
@@ -339,6 +339,8 @@ class WriteWindow:
                     proc["send"],
                     proc["recv"],
                     proc.get("pkts", 1),
+                    # Marked by the reader (connections.ConnectionTracker).
+                    int(bool(proc.get("new"))),
                 ]
                 if self.netinfo is not None:
                     self.netinfo.note(netns, proc["pid"])
@@ -349,6 +351,7 @@ class WriteWindow:
                 counters[0] += proc["send"]
                 counters[1] += proc["recv"]
                 counters[2] += proc.get("pkts", 1)
+                counters[3] += int(bool(proc.get("new")))
 
     def add_flows(self, flows: list[Flow]) -> None:
         record = self.config.record
@@ -408,7 +411,7 @@ class WriteWindow:
         names = names or {}
         written = int(time.time()) if written is None else written
         rows: dict[tuple, list[int]] = {}
-        for key, (send, recv, n_events) in self.connections.items():
+        for key, (send, recv, n_events, opened) in self.connections.items():
             *identity, laddr, raddr, domain, inode, tun, peer = key
             _exe, _pexe, _unit, _uid, family, *_ = identity
             if not domain:
@@ -429,11 +432,12 @@ class WriteWindow:
             # now.
             counters = rows.get(key)
             if counters is None:
-                rows[key] = [send, recv, n_events]
+                rows[key] = [send, recv, n_events, opened]
             else:
                 counters[0] += send
                 counters[1] += recv
                 counters[2] += n_events
+                counters[3] += opened
         flow_rows = []
         for (inode, protocol, src, sport, dst, dport), counters in self.flows.items():
             domain = self.domain_of(dst)
@@ -459,8 +463,8 @@ class WriteWindow:
         self.cmdlines = {}
         self.details = {}
         return [
-            (written, send, recv, n_events, *key, seconds)
-            for key, (send, recv, n_events) in rows.items()
+            (written, send, recv, n_events, opened, *key, seconds)
+            for key, (send, recv, n_events, opened) in rows.items()
         ], flow_rows
 
 
@@ -832,6 +836,7 @@ def run_writer(
                         sent,
                         received,
                         n_events,
+                        opened,
                         exe_key,
                         pexe_key,
                         unit,
@@ -854,6 +859,7 @@ def run_writer(
                                 sent,
                                 received,
                                 n_events,
+                                opened,
                                 executables.id(con, exe_key),
                                 executables.id(con, pexe_key),
                                 units.id(con, (unit,)),

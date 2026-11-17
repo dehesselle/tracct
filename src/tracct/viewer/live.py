@@ -33,6 +33,7 @@ from tracct.viewer.client import feed_closed, feed_unavailable
 from tracct.viewer.format import (
     bytes_cell,
     clean,
+    count_cell,
     format_clock,
     shorten_end,
     shorten_host,
@@ -149,6 +150,8 @@ class LiveEvent:
     raw: bool = False
     #: The remote port, or 0 for none.
     rport: int = 0
+    #: Whether the event starts a connection, as the daemon counts them.
+    new: bool = False
 
     @property
     def host(self) -> str:
@@ -172,6 +175,7 @@ class LiveEvent:
             raddr=event.get("raddr") or "",
             raw=event.get("family") == 17,
             rport=max(_int(event.get("rport")), 0),
+            new=bool(event.get("new")),
         )
 
     @property
@@ -195,6 +199,8 @@ class LiveTotal:
     sent: int = 0
     received: int = 0
     events: int = 0
+    #: The connections its events started.
+    connections: int = 0
     last_seen: float = 0.0
 
     @staticmethod
@@ -205,6 +211,7 @@ class LiveTotal:
         self.sent += event.sent
         self.received += event.received
         self.events += 1
+        self.connections += event.new
         self.last_seen = event.arrived
 
 
@@ -259,6 +266,11 @@ class LivePane(FindablePane):
             # Socket or raw bytes, never summed together.
             ("kind", "kind", None),
             ("events", _right("events"), lambda k: self.summary[k.value].events),
+            (
+                "connections",
+                _right("connections"),
+                lambda k: self.summary[k.value].connections,
+            ),
             ("sent", _right("sent"), lambda k: self.summary[k.value].sent),
             ("received", _right("received"), lambda k: self.summary[k.value].received),
         ):
@@ -386,6 +398,7 @@ class LivePane(FindablePane):
                     Text(shorten_end(clean(total.unit), width)),
                     Text("raw" if total.raw else "socket"),
                     Text(str(total.events), justify="right"),
+                    count_cell(total.connections),
                     bytes_cell(total.sent),
                     bytes_cell(total.received),
                 ),

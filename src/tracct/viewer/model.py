@@ -44,6 +44,8 @@ class SourceInfo:
     headings: dict[str, str] = dataclasses.field(default_factory=dict)
     #: The daemon's write window, the shortest bucket worth asking for; 0 if unknown.
     write_window: int = 0
+    #: What the source calls the connections its rows started, None if it counts none.
+    count_label: str | None = None
 
     @classmethod
     def parse(cls, raw: dict, write_window: int = 0) -> SourceInfo:
@@ -51,6 +53,7 @@ class SourceInfo:
         return cls(
             label=raw["label"],
             value_labels=(out_label, in_label),
+            count_label=raw.get("count"),
             default=raw["default"],
             dimensions=tuple(
                 Dimension(name, label, raw_only)
@@ -98,11 +101,13 @@ class Total:
 
 @dataclasses.dataclass(frozen=True)
 class Row:
-    """A row of a history table: a dimension's value, or a Total, and its bytes."""
+    """A row of a history table: a dimension's value, or a Total, its bytes, and the
+    connections it started where the source counts them."""
 
     value: object
     out_bytes: int
     in_bytes: int
+    count: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -131,14 +136,15 @@ class Aggregate:
     @classmethod
     def parse(cls, raw: dict) -> Aggregate:
         return cls(
-            rows=tuple(Row(value, a, b) for value, a, b in raw["rows"]),
+            rows=tuple(Row(value, a, b, n) for value, a, b, n in raw["rows"]),
             totals=tuple(
                 Row(
                     Total(name, tuple(Filter(d, v) for d, v in filters)),
                     a,
                     b,
+                    n,
                 )
-                for name, a, b, filters in raw["parts"]
+                for name, a, b, n, filters in raw["parts"]
             ),
             groups=raw["groups"],
             truncated=raw["truncated"],

@@ -35,7 +35,8 @@ another:
 - **Live**: connections as the daemon drains them, with totals per executable and unit
   since the tab started, so each instance of a template unit has its own. A process's raw
   bytes (TUN packets, AF_PACKET frames) are a row of the kind "raw", apart from its socket
-  bytes: for a VPN client the two are the same transfer twice. It keeps the newest 500
+  bytes: for a VPN client the two are the same transfer twice. Next to its events, a
+  summary row counts the connections they started (see below). It keeps the newest 500
   events and 100 summary rows; past that, the rows idle the longest are dropped, and the
   summary's title counts them along with the seconds since the tab started, and any events
   lost while the viewer stalled. The events table's title counts all events; a line above
@@ -81,6 +82,12 @@ forwarded traffic. The reasons are in
 on the largest row below them; a find hides them, as they sum up the rows it hides too. The
 table, the summary, counts the rows in its title while a find hides some or there are more
 than it shows (up to 1000).
+
+On Processes, and in the live summary, the column "connections" counts the connections a
+row's traffic started. tracct sees bytes per connection, not connections opening and
+closing, so a connection counts once when its first bytes move, and again only after an
+hour without any: a long session counts once, every retry of a client that keeps coming back
+counts. [DESIGN.md](DESIGN.md#storage) has the details.
 
 In a history tab, the chords under `,` `f` filter: `i` keeps only the highlighted row's value
 and `e` excludes it, `p` takes the last filter off and `c` all of them. A filter stays when

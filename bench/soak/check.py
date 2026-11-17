@@ -81,7 +81,12 @@ REFERENCES = (
 )
 #: Raw table, rollup, the sums compared, and whether the rollup counts its rows.
 CONSERVED = (
-    ("connections", "connections_rollup", ("sent", "received", "events"), True),
+    (
+        "connections",
+        "connections_rollup",
+        ("sent", "received", "events", "opened"),
+        True,
+    ),
     ("interface_traffic", "interface_traffic_rollup", ("sent", "received"), False),
     (
         "forwarded",

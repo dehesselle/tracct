@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import logging
 import signal
+import sqlite3
 import threading
 import time
 
 from tracct.config import Config
+from tracct.connections import ConnectionTracker
+from tracct.constants import DB_PATH
 from tracct.live_feed import MAX_PENDING_BYTES, LiveFeedPublisher
 from tracct.messages import report
 from tracct.monitor import run_monitor
 from tracct.types import BpfEvent
-from tracct.utils import DropOldestQueue, sd_notify
+from tracct.utils import DropOldestQueue, connect_db_readonly, sd_notify
 from tracct.writer import run_writer
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,23 @@ def run_feed(
             reported = live_feed.dropped
 
 
+def load_connections(tracker: ConnectionTracker) -> None:
+    """Seed the tracker from the rows of the last hour, so a short restart does not count
+    the connections still open again; without them, every tuple counts as new."""
+    try:
+        con = connect_db_readonly(DB_PATH)
+        try:
+            tracker.load(con, time.time())
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        report(
+            logger,
+            "connection-history-unreadable",
+            f"connection counts: could not read the last hour's connections ({e}); those still open count as new",
+        )
+
+
 def run_main_loop(config: Config) -> int:
     """Runs the daemon.
 
@@ -59,8 +79,12 @@ def run_main_loop(config: Config) -> int:
     live_feed.start()
     to_writer: DropOldestQueue[BpfEvent] = DropOldestQueue(WRITER_QUEUE_EVENTS)
     to_feed: DropOldestQueue[BpfEvent] = DropOldestQueue(FEED_QUEUE_EVENTS)
+    tracker = ConnectionTracker()
+    load_connections(tracker)
 
     def publish(batch: list[BpfEvent]) -> None:
+        # On the reader thread, before the writer and the feed get the same events.
+        tracker.mark(batch, time.time())
         to_writer.put(batch)
         # Serializing with no subscriber backs the reader up at high connection
         # cardinality.
@@ -123,6 +147,7 @@ def run_main_loop(config: Config) -> int:
     mono_last = time.monotonic()
     boot_last = time.clock_gettime(time.CLOCK_BOOTTIME)
     dropped_reported = {"writer": 0, "live feed": 0}
+    evicted_reported = 0
     while not shutdown_event.is_set():
         if not all(thread.is_alive() for thread in threads):
             dead = " ".join(thread.name for thread in threads if not thread.is_alive())
@@ -146,6 +171,14 @@ def run_main_loop(config: Config) -> int:
                     f"{name} queue full: dropped {hand_off.dropped - dropped_reported[name]} event(s) (total {hand_off.dropped}), it is not keeping up with the reader",
                 )
                 dropped_reported[name] = hand_off.dropped
+        evicted = tracker.evicted
+        if evicted > evicted_reported:
+            report(
+                logger,
+                "connection-tracker-full",
+                f"connection counts: forgot {evicted - evicted_reported} tuple(s) still active within the hour (total {evicted}), more than {tracker.limit} were; their next events count as new connections",
+            )
+            evicted_reported = evicted
         mono_now = time.monotonic()
         boot_now = time.clock_gettime(time.CLOCK_BOOTTIME)
         suspended_for = (boot_now - boot_last) - (mono_now - mono_last)

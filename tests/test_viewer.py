@@ -616,6 +616,16 @@ async def test_history_reads_rollup_periods_whole(tmp_path):
                 f" whole periods {format_time(P0 + H)} – {format_time(P0 + 2 * H)},"
                 " no addresses, client ports as 0"
             )
+            # Processes count the connections their rows started; the values come after
+            # the sums.
+            assert [column.key.value for column in table.ordered_columns] == [
+                "value",
+                "out",
+                "in",
+                "count",
+            ]
+            counts = [str(table.get_cell_at((i, 3))) for i in range(table.row_count)]
+            assert counts[-2:] == ["1", "1"]
             plot = processes.query_one(TrafficPlot)
             await _until(
                 pilot, lambda: plot.timeline is not None and plot.timeline.spans
@@ -1082,11 +1092,15 @@ async def test_live_summary_scroll(tmp_path, monkeypatch):
             assert summary.scroll_y == 10
             # More traffic for a row shown updates it in place: the summary stays
             # scrolled where it was, the cursor out of view included.
-            publisher.publish({"name": "x30", "exe": "/bin/x30", "send": 1})
+            publisher.publish(
+                {"name": "x30", "exe": "/bin/x30", "send": 1, "new": True}
+            )
             await _until(
                 pilot,
                 lambda: summary.get_cell("x30\0/bin/x30\0", "events").plain == "2",
             )
+            # The daemon marked it as starting a connection.
+            assert summary.get_cell("x30\0/bin/x30\0", "connections").plain == "1"
             await pilot.pause()
             assert summary.scroll_y == 10 and summary.row_count == 60
     finally:

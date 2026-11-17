@@ -407,7 +407,7 @@ def _insert_connections(con, *rows):
     # Each row (time, ref[, lport, rport]) refers to ref as exe, parent, both
     # addresses, domain, namespace and interface; its peer is remote.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 10)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 10)",
         [
             (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
             for row in rows
@@ -448,11 +448,11 @@ def test_roll_up_sums_closed_periods(tmp_path):
     )
     assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
     rows = con.execute(
-        "SELECT period, lport, rport, sent, received, events, rows, seconds FROM connections_rollup ORDER BY period"
+        "SELECT period, lport, rport, sent, received, events, opened, rows, seconds FROM connections_rollup ORDER BY period"
     ).fetchall()
     assert rows == [
-        (first, 0, 443, 20, 40, 2, 2, hour),
-        (first + hour, 443, 0, 20, 40, 2, 2, hour),
+        (first, 0, 443, 20, 40, 2, 2, 2, hour),
+        (first + hour, 443, 0, 20, 40, 2, 2, 2, hour),
     ]
     assert (
         con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[
@@ -695,7 +695,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     # went back.
     _insert_connections(con, (ahead + 10, 1), (now, 2))
     con.execute(
-        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 2, 10, 20, 1, 1, 3600",
+        "INSERT INTO connections_rollup SELECT ?, 1, 1, 0, 0, 2, 6, 0, 443, 1, 0, 0, 2, 10, 20, 1, 1, 1, 3600",
         (ahead,),
     )
     con.execute(

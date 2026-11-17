@@ -254,7 +254,8 @@ flowchart LR
 ```
 
 - **reader** attaches the BPF program, polls the ring buffers, drains the maps every
-  second and attributes each entry to an executable (`monitor.py`).
+  second and attributes each entry to an executable (`monitor.py`); before handing a
+  batch on, it marks the events that start a connection (`connections.py`).
 - **writer** sums the batches per connection as they arrive, filters them per `[record]`, and
   once per window reads the interfaces and forwarded flows and writes everything to SQLite;
   it also rolls up and purges (`writer.py`).
@@ -347,6 +348,20 @@ longer than one window; and the period's length for a rollup, less for the part 
 left after the period length changed. Bytes are `sent` and `received` from the host's side in `connections` and
 `interface_traffic`.
 
+A `connections` row's `opened` counts the connections its events started. tracct sees bytes
+per tuple (namespace, protocol, local and remote address and port), not connections opening
+and closing, so a connection is the activity of one tuple with no silence longer than an
+hour: an event whose tuple is new, or was silent that long, starts one, and a tuple used
+again after such a silence is another connection. The reader marks each event as it
+arrives (`connections.py`), before the batch goes to the writer and the live feed, so the
+history and the live tab count alike. It remembers the tuples of the last hour, at most
+262 144 (the longest silent are forgotten first, and count again, with a warning), and at
+start loads them from the rows written in the last hour, so a restart shorter than that does
+not count the connections still open again. Rows a `[[record.process]]` rule stripped of
+addresses or ports keep no tuple to load, so their connections still open count again after
+a restart; events without a tuple (packet sockets) start none. The rollups sum `opened` like
+the bytes.
+
 What a row keeps of its connection is decided when the window is summed: `[record]` can
 leave out addresses, ports and command lines, for every process or, by `[[record.process]]`
 rules, for some. A field left out is empty in the key, so the connections that differ only
@@ -428,7 +443,8 @@ Viewers need no capabilities. They read two sockets, both 0660 for root and the 
   stops; history stays readable while the daemon is down.
 
 The query server answers length-prefixed JSON requests (`query.py`): the byte sums of one
-source (connections, interfaces or forwarded flows) grouped by one dimension, narrowed by a
+source (connections, interfaces or forwarded flows), with the connections they started where
+the source counts them, grouped by one dimension, narrowed by a
 list of include and exclude filters and a time range, and the same sums per time bucket for a
 timeline. The sums over all values are the totals of
 [Layers, peers and interface classes](#layers-peers-and-interface-classes), never added up
@@ -523,7 +539,8 @@ to picosnitch's for the same reason.
    which `[record] reverse_dns = false` turns off.
 10. **Everything held in memory is bounded,** so months of uptime look like the first day:
     the hand-off queues by events, a write window by connections, the retry buffers by
-    rows, every cache by entries, the remembered namespaces by count, the conntrack view of
+    rows, every cache by entries, the remembered namespaces by count, the tuples the reader
+    counts connections by to 262 144, the conntrack view of
     each namespace by the kernel's own table size. A new buffer or cache comes with its
     bound.
 11. **Viewers never send SQL.** The query server maps whitelisted dimensions to SQL and

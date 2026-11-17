@@ -28,6 +28,7 @@ from textual.worker import get_current_worker
 from tracct.query import QueryError
 from tracct.viewer.format import (
     bytes_cell,
+    count_cell,
     format_time,
     format_value,
     value_cell,
@@ -399,12 +400,16 @@ class HistoryPane(FindablePane):
         table.add_column(self.info.dimension_label(self.group_by), key="value")
         table.add_column(Text(out_label, justify="right"), key="out")
         table.add_column(Text(in_label, justify="right"), key="in")
+        count_label = self.info.count_label
+        if count_label:
+            table.add_column(Text(count_label, justify="right"), key="count")
         table.add_rows(
             [
                 (
                     _value_cell(self.group_by, row.value),
                     bytes_cell(row.out_bytes, byte_unit),
                     bytes_cell(row.in_bytes, byte_unit),
+                    *((count_cell(row.count),) if count_label else ()),
                 )
                 for row in self.table_rows
             ]

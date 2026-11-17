@@ -38,3 +38,5 @@ class BpfEvent(typing.TypedDict):
     raddr: str
     domain: str
     netns: int
+    #: Set by the reader: the event starts a connection (connections.ConnectionTracker).
+    new: typing.NotRequired[bool]
