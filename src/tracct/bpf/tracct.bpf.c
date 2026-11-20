@@ -811,6 +811,29 @@ int BPF_PROG(mptcp_splice_read_ret, struct socket *sock, void *ppos, void *pipe,
     return trace_sendrecv(ctx, sk, 0, ret, 0);
 }
 
+// send via sendfile()/splice()/vmsplice() into a socket before 6.5: these reach
+// inet_sendpage (v4 and v6 streams alike), not inet_sendmsg. 6.5 removed ->sendpage and
+// sends them through sendmsg, where the sendmsg hooks count them; the symbol is gone
+// there and this program is not loaded. A protocol without its own sendpage (MPTCP)
+// falls back to sock_no_sendpage -> kernel_sendmsg -> inet_sendmsg, which already
+// counts the bytes, so only a set sk_prot->sendpage is counted here. That includes
+// kTLS, whose sendpage replaces TCP's. The vendored headers come from a kernel without
+// the field, so it is read through a flavour of struct proto.
+struct proto___sendpage {
+    void *sendpage;
+};
+
+SEC("fexit/inet_sendpage")
+int BPF_PROG(inet_sendpage_ret, struct socket *sock, void *page, int offset, size_t size, int flags, long ret) {
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    if (!sk)
+        return 0;
+    struct proto___sendpage *prot = (void *)BPF_CORE_READ(sk, __sk_common.skc_prot);
+    if (!prot || !bpf_core_field_exists(prot->sendpage) || !BPF_CORE_READ(prot, sendpage))
+        return 0;
+    return trace_sendrecv(ctx, sk, 0, ret, 1);
+}
+
 // recv via io_uring zero-copy (IORING_OP_RECV_ZC): io_zcrx_recv -> tcp_read_sock, bypassing
 // recvmsg and the splice hooks. tcp_read_sock is the exported 3-arg wrapper (sk is the low-level
 // sock); ret is bytes read. tcp_read_sock is also every proto_ops->read_sock: in-kernel readers

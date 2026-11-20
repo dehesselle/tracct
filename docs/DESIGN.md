@@ -27,10 +27,14 @@ traffic come from netlink.
 
 - **Socket byte counters.** fexit programs on `inet_sendmsg`, `inet_recvmsg`,
   `inet6_sendmsg`, `inet6_recvmsg` and `sock_common_recvmsg`, plus `tcp_splice_read` /
-  `mptcp_splice_read` (splice and sendfile receives), `tcp_read_sock` restricted to io_uring
-  zero-copy receives, and raw `packet_sendmsg` / `packet_recvmsg`, `tun_get_user` /
-  `tun_do_read` and AF_XDP copy-mode sends. Opt-in (`mmap_ring_rx`): AF_PACKET and AF_XDP
-  mmap-ring receives. Hooks whose kernel symbol is missing are skipped with a log line.
+  `mptcp_splice_read` (splice and sendfile receives), `inet_sendpage` (splice and
+  sendfile sends before Linux 6.5, which moved them to `inet_sendmsg`; counted only where
+  the protocol has a sendpage of its own, as the fallback ends in `inet_sendmsg`),
+  `tcp_read_sock` restricted to io_uring zero-copy receives, and raw `packet_sendmsg` /
+  `packet_recvmsg`, `tun_get_user` / `tun_do_read` and AF_XDP copy-mode sends. Opt-in
+  (`mmap_ring_rx`): AF_PACKET and AF_XDP mmap-ring receives. Hooks whose kernel symbol is
+  missing are skipped with a log line, except `inet_sendpage`, which no kernel from 6.5 on
+  has.
   Socket I/O of kernel threads (nfsd, the workers of the NFS and SMB clients, ksmbd) counts
   under the thread's comm, without an executable.
 - **In-kernel aggregation.** Bytes and packets are summed per connection, keyed by

@@ -400,6 +400,15 @@ def _initial_family_for(addr: str) -> int:
     return int(socket.AF_INET)
 
 
+def _kernel_version() -> tuple[int, int]:
+    """The running kernel's major and minor version, (0, 0) if unreadable."""
+    try:
+        major, minor = os.uname().release.split(".")[:2]
+        return int(major), int("".join(c for c in minor if c.isdigit()) or 0)
+    except ValueError:
+        return 0, 0
+
+
 def _read_netns_inode(pid: int) -> int:
     """Return the network namespace inode for a pid, or 0 if unreadable."""
     try:
@@ -671,6 +680,9 @@ def run_monitor(
                 "inet6_recvmsg_ret": "inet6_recvmsg",
                 "tcp_splice_read_ret": "tcp_splice_read",
                 "mptcp_splice_read_ret": "mptcp_splice_read",
+                # sendfile/splice sends before 6.5; the symbol is gone from 6.5 on,
+                # where sendmsg carries them.
+                "inet_sendpage_ret": "inet_sendpage",
                 # tcp_read_sock covers io_uring zero-copy recv (IORING_OP_RECV_ZC), but
                 # every proto_ops->read_sock reaches it too: kTLS copy-mode, strparser
                 # (kcm/espintcp), nvme-tcp etc., double counting or misattributing
@@ -710,6 +722,11 @@ def run_monitor(
                     if target not in syms
                 }
             )
+            # Every kernel from 6.5 on lacks inet_sendpage, so presuming it present
+            # without kallsyms would fail the whole load there; the version decides
+            # instead.
+            if syms is None and _kernel_version() >= (6, 5):
+                disabled_traces.add("inet_sendpage_ret")
             # Snapshot before the opt-in gate below, so a disabled hook is not reported
             # as a missing symbol.
             missing_symbol = set(disabled_traces)
@@ -841,6 +858,19 @@ def run_monitor(
                     logger,
                     "hook-failed",
                     f"BPF.attach_trace() failed for {prog}: {e}, spliced recv bytes will not be recorded",
+                )
+        # inet_sendpage: sendfile/splice sends before 6.5. Its absence is not reported:
+        # from 6.5 on the kernel has no such function and inet_sendmsg counts these
+        # sends, and every older kernel with IPv4 has it.
+        if "inet_sendpage_ret" not in disabled_traces:
+            try:
+                b.bpf_obj.attach_trace("inet_sendpage_ret")
+            except Exception as e:  # noqa: BLE001
+                # Best effort: whatever libbpf raises, the log says what goes uncounted.
+                report(
+                    logger,
+                    "hook-failed",
+                    f"BPF.attach_trace() failed for inet_sendpage_ret: {e}, sendfile and splice send bytes will not be recorded",
                 )
         # tcp_read_sock: recv via io_uring zero-copy (IORING_OP_RECV_ZC). Only enabled
         # when io_zcrx_recv_skb is present (see optional_trace_targets); its address

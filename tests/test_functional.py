@@ -450,6 +450,66 @@ assert got == total, got
         )
 
 
+class TestSendfileAccounting:
+    """Sends via sendfile() reach inet_sendpage before 6.5 and inet_sendmsg from 6.5 on.
+
+    Either way the recorded bytes must match what was sent exactly once (0 means the
+    sendpage hook is missing, ~2x means both hooks counted the same bytes).
+    """
+
+    def test_sendfile_send_bytes_exact(self, tracct_session):
+        total = 4 * 1024 * 1024
+        # A fixed server port below the ephemeral range, like the splice test's.
+        port = 24815
+        script = f"""
+import os, socket, tempfile, threading
+total, port = {total}, {port}
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", port))
+srv.listen(1)
+def drain():
+    c, _ = srv.accept()
+    while c.recv(65536):
+        pass
+    c.close()
+t = threading.Thread(target=drain)
+t.start()
+with tempfile.TemporaryFile() as f:
+    f.write(b"S" * total)
+    f.flush()
+    s = socket.create_connection(("127.0.0.1", port))
+    sent = 0
+    while sent < total:
+        sent += os.sendfile(s.fileno(), f.fileno(), sent, total - sent)
+    s.close()
+t.join()
+assert sent == total, sent
+"""
+        subprocess.run([PYTHON_EXE, "-c", script], check=True, timeout=60)
+
+        def sendfile_rows() -> list:
+            return query_db(
+                "SELECT c.sent, c.received FROM connections c JOIN addresses a ON c.raddr_id = a.id WHERE c.rport = ? AND a.addr = '127.0.0.1'",
+                (port,),
+            )
+
+        deadline = time.time() + (DB_WRITE_LIMIT + TRAFFIC_WAIT) * 3
+        rows = []
+        while time.time() < deadline:
+            time.sleep(2)
+            rows = sendfile_rows()
+            if sum(sent for sent, _ in rows) >= total:
+                break
+        assert rows, "sendfile connection was not recorded at all"
+        time.sleep(DB_WRITE_LIMIT + 2)
+        rows = sendfile_rows()
+        sent_total = sum(sent for sent, _ in rows)
+        assert sent_total == total, (
+            f"sendfile send bytes {sent_total} != {total} transferred (0 means the sendpage hook is missing, 2x means double counting), rows: {rows}"
+        )
+
+
 class TestDualStackServer:
     """A server listening on [::] sees IPv4 clients as ::ffff:a.b.c.d.
 
