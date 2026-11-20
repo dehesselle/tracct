@@ -364,9 +364,7 @@ def _server(tmp_path):
     db = _db(tmp_path)
     listener, _ = query_server.listening_socket(tmp_path / "query.sock")
     threading.Thread(
-        target=query_server.QueryServer(
-            db, ephemeral=32768, write_window=10, rollup_period=3600
-        ).serve,
+        target=query_server.QueryServer(db, write_window=10, rollup_period=3600).serve,
         args=(listener, None),
         daemon=True,
     ).start()

@@ -30,8 +30,8 @@ from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
 from tracct.utils import (
     DropOldestQueue,
-    ephemeral_port_start,
     quarantine_database,
+    service_port_sql,
     sqlite_error_means_corrupt,
 )
 
@@ -71,24 +71,16 @@ RELEASE_FREE_FRACTION = 0.25
 #: two.
 RELEASE_CHUNK_PAGES = 2560
 
-#: Rows of a closed rollup period, summed; the parameters are the period, the first port
-#: of the kernel's local port range, and the period's bounds, which also give its seconds
-#: (less than a period after a change of the period length). Of a connection's ports only
-#: the service port is kept, so a server's rollup does not grow with its clients: a local
-#: port below the range was bound on purpose, so ours is the server's side and the remote
-#: port, the client's, is dropped whatever its number (a NAT router picks any); a local
-#: port inside the range is our client's, kept as 0, and the remote one kept unless it is
-#: inside the range too. Columns are named, so no statement depends on the order a table
-#: declares them in.
-#: The two ports as the rollups and folded rows keep them, with :ephemeral bound. ICMP (1)
-#: and ICMPv6 (58) rows carry the echo id as a port, a new one per ping.
-SERVICE_LPORT = (
-    "CASE WHEN lport < :ephemeral AND protocol NOT IN (1, 58) THEN lport ELSE 0 END"
-)
-SERVICE_RPORT = (
-    "CASE WHEN rport < :ephemeral AND protocol NOT IN (1, 58)"
-    " AND NOT (lport > 0 AND lport < :ephemeral) THEN rport ELSE 0 END"
-)
+#: Rows of a closed rollup period, summed; the parameters are the period and its bounds,
+#: which also give its seconds (less than a period after a change of the period length).
+#: Of a connection's ports only the service port is kept, by the socket's role, so a
+#: server's rollup does not grow with its clients' ports, nor a client's with its own; a
+#: forwarded flow's destination port is the service's, as conntrack knows which side
+#: answered. Columns are named, so no statement depends on the order a table declares
+#: them in.
+#: The two ports as the rollups and folded rows keep them.
+SERVICE_LPORT = service_port_sql(remote=False)
+SERVICE_RPORT = service_port_sql(remote=True)
 ROLLUPS = (
     (
         "INSERT INTO connections_rollup(period, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, domain_id, netns_id, iface_id, peer, sent, received, events, opened, rows, seconds)"
@@ -103,9 +95,9 @@ ROLLUPS = (
     ),
     (
         "INSERT INTO forwarded_rollup(period, netns_id, protocol, src_id, dport, domain_id, orig_bytes, reply_bytes, orig_packets, reply_packets, rows, seconds)"
-        " SELECT :period, netns_id, protocol, src_id, CASE WHEN dport < :ephemeral THEN dport ELSE 0 END AS dp, domain_id,"
+        " SELECT :period, netns_id, protocol, src_id, dport, domain_id,"
         " SUM(orig_bytes), SUM(reply_bytes), SUM(orig_packets), SUM(reply_packets), COUNT(*), :end - :start"
-        " FROM forwarded WHERE time >= :start AND time < :end GROUP BY netns_id, protocol, src_id, dp, domain_id"
+        " FROM forwarded WHERE time >= :start AND time < :end GROUP BY netns_id, protocol, src_id, dport, domain_id"
     ),
 )
 INSERT_CONNECTIONS = (
@@ -539,7 +531,6 @@ def _fold_period(
     start: int,
     end: int,
     below: int,
-    ephemeral: int,
 ) -> int:
     """Fold the small connections that start in [start, end); returns the rows folded.
 
@@ -588,7 +579,7 @@ def _fold_period(
             " :folded, :folded, 0, netns_id, iface_id, peer, role, MAX(seconds)"
             " FROM connections WHERE rowid IN (SELECT id FROM fold_ids)"
             " GROUP BY time, exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, netns_id, iface_id, peer, role",
-            {"ephemeral": ephemeral, "folded": FOLDED_ADDRESS_ID},
+            {"folded": FOLDED_ADDRESS_ID},
         )
         con.execute("DELETE FROM connections WHERE rowid IN (SELECT id FROM fold_ids)")
     con.execute("DELETE FROM fold_ids")
@@ -599,7 +590,6 @@ def fold(
     con: sqlite3.Connection,
     config: Config,
     between_periods: Callable[[], bool],
-    ephemeral: int | None = None,
 ) -> tuple[int, int, int | None]:
     """Fold the small connections of every period whose connections can be seen whole
     by now, period by period; the fold watermark in meta marks where the next starts.
@@ -612,7 +602,6 @@ def fold(
     """
     below = config.record.fold_below
     period = config.database.rollup_period_minutes * 60
-    ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
     newest = newest_row(con)
     if newest is None:
         return 0, 0, None
@@ -643,7 +632,7 @@ def fold(
             end = start // period * period + period
         with con:
             if start < end:
-                folded += _fold_period(con, start, end, below, ephemeral)
+                folded += _fold_period(con, start, end, below)
                 periods += 1
             con.execute(
                 "INSERT INTO meta(key, value) VALUES ('fold_watermark', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -659,7 +648,6 @@ def roll_up(
     con: sqlite3.Connection,
     period_minutes: int,
     between_periods: Callable[[], bool],
-    ephemeral: int | None = None,
     until: int | None = None,
 ) -> int:
     """Sum the raw rows of every period that has closed since the last one rolled up,
@@ -667,7 +655,6 @@ def roll_up(
     marks where the next starts. Returns the number of periods summed.
     """
     period = period_minutes * 60
-    ephemeral = ephemeral_port_start() if ephemeral is None else ephemeral
     # Periods end on multiples of the period length; the current one is still open, and
     # so is the newest row's, so a clock running ahead cannot carry the watermark past
     # the data.
@@ -722,7 +709,6 @@ def roll_up(
                             # The start of what the rollup covers, so a partial period
                             # is not placed over the one before it.
                             "period": start,
-                            "ephemeral": ephemeral,
                             "start": start,
                             "end": end,
                         },

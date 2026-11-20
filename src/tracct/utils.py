@@ -15,15 +15,20 @@ import unicodedata
 import urllib.parse
 from pathlib import Path
 
+from tracct.constants import ROLE_ACCEPTED, ROLE_BOUND, ROLE_PICKED
+
 __all__ = [
     "DropOldestQueue",
     "connect_db_readonly",
-    "ephemeral_port_start",
     "quarantine_database",
     "sanitize_log_line",
     "sd_notify",
+    "service_port_sql",
     "sqlite_error_means_corrupt",
 ]
+
+#: The socket module has it only where Python was built against headers that do.
+IPPROTO_MPTCP = 262
 
 
 def sd_notify(message: str) -> None:
@@ -105,13 +110,29 @@ def connect_db_readonly(
     return con
 
 
-def ephemeral_port_start() -> int:
-    """The first port of the kernel's range for automatically chosen local ports."""
-    try:
-        with open("/proc/sys/net/ipv4/ip_local_port_range", "r") as f:
-            return int(f.read().split()[0])
-    except (OSError, ValueError, IndexError):
-        return 32768
+def service_port_sql(remote: bool, prefix: str = "") -> str:
+    """The local or remote port of a connections row as the rollups and folded rows keep
+    it, as SQL over its columns (each with prefix): only the port that names the
+    service, by the socket's role (see "Storage" in docs/DESIGN.md), else 0.
+
+    The service is ours where we accepted the connection, and where a UDP socket bound
+    its port on purpose; it is the peer's where our port was picked, and where a TCP
+    client bound a port of its own (MPTCP is TCP here). A role that is unknown keeps
+    neither port, as do ICMP rows, whose role always is.
+    """
+    p = prefix
+    stream = f"({socket.IPPROTO_TCP}, {IPPROTO_MPTCP})"
+    if remote:
+        return (
+            f"CASE WHEN {p}role = {ROLE_PICKED}"
+            f" OR ({p}role = {ROLE_BOUND} AND {p}protocol IN {stream})"
+            f" THEN {p}rport ELSE 0 END"
+        )
+    return (
+        f"CASE WHEN {p}role = {ROLE_ACCEPTED}"
+        f" OR ({p}role = {ROLE_BOUND} AND {p}protocol NOT IN {stream})"
+        f" THEN {p}lport ELSE 0 END"
+    )
 
 
 def sanitize_log_line(line: str) -> str:

@@ -123,8 +123,9 @@ values changed from their defaults. `,` `a` shows the about box. On the history 
 before.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
-forwarded flow's source, client ports as 0 (see "Storage" in
-[DESIGN.md](DESIGN.md#storage) for which port of a connection is the client's). A range that starts or ends inside a period
+forwarded flow's source, client ports as 0, and both ports as 0 where tracct could not tell
+which side of a connection it was on (see "Storage" in [DESIGN.md](DESIGN.md#storage) for
+how it tells). A range that starts or ends inside a period
 takes all of it, and the summary's bottom border then gives the range the sums cover.
 Entries of the group by list marked "raw only" narrow the range to the raw rows. The
 summary's bottom border says from when, or where the rollups begin.

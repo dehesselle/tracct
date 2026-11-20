@@ -17,7 +17,15 @@ import time
 import pytest
 
 from tracct import query_server
-from tracct.constants import DB_VERSION, INDEXES, SENTINELS, TABLES
+from tracct.constants import (
+    DB_VERSION,
+    INDEXES,
+    ROLE_ACCEPTED,
+    ROLE_BOUND,
+    ROLE_PICKED,
+    SENTINELS,
+    TABLES,
+)
 from tracct.query import QueryClient, QueryError, recv_message
 
 H = 3600
@@ -25,7 +33,6 @@ P0 = 100 * H
 HOST, VPN = 4026531840, 4026532500
 #: Their ids in the netns table.
 HOST_ID, VPN_ID = 1, 2
-EPHEMERAL = 32768
 
 
 def _db(tmp_path):
@@ -56,9 +63,10 @@ def _db(tmp_path):
         f"INSERT INTO netns VALUES ({HOST_ID}, {HOST}, 'host'), ({VPN_ID}, {VPN}, '')"
     )
     # Time, sent, received, events, exe, pexe, unit, uid, family, protocol, lport, rport,
-    # laddr, raddr, domain, netns_id, iface, peer (remote), seconds.
+    # laddr, raddr, domain, netns_id, iface, peer (remote), role, seconds. curl is a
+    # client, nginx a server.
     con.executemany(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 2, 0, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, 1, ?, 2, ?, 1000, 2, 6, ?, ?, 1, ?, ?, ?, ?, 2, ?, 10)",
         [
             (
                 P0 + H + 100,
@@ -72,10 +80,11 @@ def _db(tmp_path):
                 1,
                 HOST_ID,
                 1,
+                ROLE_PICKED,
             ),  # purged period: from the rollup
-            (P0 + 2 * H + 10, 1, 2, 1, 0, 50001, 443, 2, 1, HOST_ID, 1),
-            (P0 + 3 * H + 10, 10, 20, 1, 0, 50002, 443, 2, 1, HOST_ID, 1),
-            (P0 + 3 * H + 20, 300, 30, 3, 1, 80, 50003, 3, 0, VPN_ID, 3),
+            (P0 + 2 * H + 10, 1, 2, 1, 0, 50001, 443, 2, 1, HOST_ID, 1, ROLE_PICKED),
+            (P0 + 3 * H + 10, 10, 20, 1, 0, 50002, 443, 2, 1, HOST_ID, 1, ROLE_PICKED),
+            (P0 + 3 * H + 20, 300, 30, 3, 1, 80, 50003, 3, 0, VPN_ID, 3, ROLE_ACCEPTED),
         ],
     )
     # Period, exe, pexe, unit, uid, family, protocol, lport, rport, domain, netns_id,
@@ -127,7 +136,6 @@ def _db(tmp_path):
 def _ask(db, op, write_window=10, rollup_period=H, **request):
     response = query_server.QueryServer(
         db,
-        ephemeral=EPHEMERAL,
         write_window=write_window,
         rollup_period=rollup_period,
     ).answer({"op": op, **request})
@@ -337,7 +345,7 @@ def test_timeline_buckets_from_an_origin_before_the_start(tmp_path):
 
 def test_ports_group_like_the_rollups_keep_them(tmp_path):
     db = _db(tmp_path)
-    # Reaching into the rollups, ephemeral ports in raw rows become 0 as they are there.
+    # Reaching into the rollups, the client ports in raw rows become 0 as they are there.
     _, rows = _aggregate(db, "rport")
     assert rows == {443: (1111, 11022), 0: (5300, 530)}
     # Inside the raw rows they stay exact.
@@ -345,20 +353,35 @@ def test_ports_group_like_the_rollups_keep_them(tmp_path):
     assert rows == {443: (11, 22), 50003: (300, 30)}
 
 
-def test_a_servers_client_port_groups_as_0_like_the_rollups(tmp_path):
-    # A client behind NAT may come from a port below the range; on a server's row (local
-    # port below the range) it is still the client's port, and the rollups drop it.
+def test_ports_group_by_role_like_the_rollups(tmp_path):
+    # A server's client may come from any port (a NAT router picks any), and a client
+    # may bind a port of its own: the rollups drop either, whatever its number, and keep
+    # a server's port inside the ephemeral range.
     db = _db(tmp_path)
     con = sqlite3.connect(db)
-    con.execute(
-        f"INSERT INTO connections VALUES ({P0 + 3 * H + 30}, 7, 70, 1, 1, 3, 2, 1, 1000, 2, 6, 80, 1234, 1, 4, 0, {VPN_ID}, 3, 2, 0, 10)"
+    con.executemany(
+        f"INSERT INTO connections VALUES ({P0 + 3 * H + 30}, ?, 0, 1, 1, 3, 2, 1, 1000, 2, 6, ?, ?, 1, 4, 0, {VPN_ID}, 3, 2, ?, 10)",
+        [
+            (7, 80, 1234, ROLE_ACCEPTED),
+            (5, 41641, 50004, ROLE_ACCEPTED),
+            (3, 676, 2049, ROLE_BOUND),
+        ],
     )
     con.commit()
     con.close()
     _, rows = _aggregate(db, "rport")
-    assert rows == {443: (1111, 11022), 0: (5307, 600)}
+    assert rows == {443: (1111, 11022), 0: (5312, 530), 2049: (3, 0)}
+    _, rows = _aggregate(db, "lport")
+    assert rows == {0: (1114, 11022), 80: (5307, 530), 41641: (5, 0)}
+    # Inside the raw rows every port stays exact.
     _, rows = _aggregate(db, "rport", start=P0 + 2 * H)
-    assert rows == {443: (11, 22), 50003: (300, 30), 1234: (7, 70)}
+    assert rows == {
+        443: (11, 22),
+        50003: (300, 30),
+        1234: (7, 0),
+        50004: (5, 0),
+        2049: (3, 0),
+    }
 
 
 def test_raw_only_dimension_clips_to_the_raw_rows(tmp_path):

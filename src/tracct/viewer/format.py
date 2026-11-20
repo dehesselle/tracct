@@ -134,8 +134,8 @@ def format_value(dimension: str, value: object) -> str:
         return user_name(value)
     if dimension == "protocol" and isinstance(value, int):
         return PROTOCOLS.get(value, str(value))
-    if dimension in ("lport", "rport", "dport") and value == 0:
-        return "0 (client port or none)"
+    if dimension in ("lport", "rport") and value == 0:
+        return "0 (client port, unknown or none)"
     return clean(value)
 
 

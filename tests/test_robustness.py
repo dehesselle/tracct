@@ -27,6 +27,7 @@ import tracct
 from tracct import messages, utils
 from tracct.bpf_wrapper import ConnKey4, ConnKey6, ConnVal, DNSEvent, ExecEvent
 from tracct.config import Config, ProcessRule, ViewerConfig, load_config
+from tracct.constants import ROLE_ACCEPTED, ROLE_BOUND, ROLE_PICKED, ROLE_UNKNOWN
 
 
 def test_corrupt_config_falls_back_to_defaults(tmp_path):
@@ -405,13 +406,25 @@ def _purge_db(tmp_path):
 
 
 def _insert_connections(con, *rows):
-    # Each row (time, ref[, lport, rport]) refers to ref as exe, parent, both
-    # addresses, domain, namespace and interface; its peer is remote.
+    # Each row (time, ref[, lport, rport[, role[, protocol]]]) refers to ref as exe,
+    # parent, both addresses, domain, namespace and interface; its peer is remote. By
+    # default it is a TCP client's (role picked) to 443.
+    defaults = (50000, 443, ROLE_PICKED, 6)
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 0, 10)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, 1, ?, ?, 0, 0, 2, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, 10)",
         [
-            (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
-            for row in rows
+            (
+                time_,
+                ref,
+                ref,
+                protocol,
+                lport,
+                rport,
+                *[ref] * 5,
+                role,
+            )
+            for time_, ref, *rest in rows
+            for lport, rport, role, protocol in [(*rest, *defaults[len(rest) :])]
         ],
     )
     con.commit()
@@ -427,7 +440,8 @@ def _config(raw_days=7, rollup_days=365):
 
 
 def test_roll_up_sums_closed_periods(tmp_path):
-    """Each closed period becomes one rollup row per identity, without ephemeral ports.
+    """Each closed period becomes one rollup row per identity, with only its service
+    port.
 
     The open period and the newest row's period wait, and a second pass finds nothing
     new.
@@ -438,18 +452,17 @@ def test_roll_up_sums_closed_periods(tmp_path):
     hour = 3600
     now = int(time.time())
     first = now // hour * hour - 3 * hour
-    # A client row (ephemeral local port) twice in one period, two server rows, one from
-    # an ephemeral peer port and one from a port below the range (a NAT router picks any),
-    # and a row in the current period.
+    # A client's rows from two local ports in one period, two server rows from clients
+    # on any port (a NAT router picks any), and a row in the current period.
     _insert_connections(
         con,
         (first + 10, 1),
         (first + 20, 1, 50001, 443),
-        (first + hour + 5, 1, 443, 50002),
-        (first + hour + 6, 1, 443, 1234),
+        (first + hour + 5, 1, 443, 50002, ROLE_ACCEPTED),
+        (first + hour + 6, 1, 443, 1234, ROLE_ACCEPTED),
         (now, 1),
     )
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
+    assert writer.roll_up(con, 60, lambda: False) == 2
     rows = con.execute(
         "SELECT period, lport, rport, sent, received, events, opened, rows, seconds FROM connections_rollup ORDER BY period"
     ).fetchall()
@@ -463,7 +476,45 @@ def test_roll_up_sums_closed_periods(tmp_path):
         ]
         == now // hour * hour
     )
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    assert writer.roll_up(con, 60, lambda: False) == 0
+    con.close()
+
+
+def test_roll_up_keeps_the_service_port_by_role(tmp_path):
+    """The port kept is the one the socket's role says names the service, whatever its
+    number; a row whose role is unknown keeps neither."""
+    from tracct import writer
+
+    con = _purge_db(tmp_path)
+    hour = 3600
+    now = int(time.time())
+    first = now // hour * hour - 2 * hour
+    _insert_connections(
+        con,
+        # A server listening inside the ephemeral range (tailscaled).
+        (first + 1, 1, 41641, 50003, ROLE_ACCEPTED),
+        # A TCP client on a port it bound (the NFS client's reserved one).
+        (first + 2, 1, 676, 2049, ROLE_BOUND),
+        # A UDP server, and a UDP client asking a server.
+        (first + 3, 1, 53, 40000, ROLE_BOUND, 17),
+        (first + 4, 1, 40001, 53, ROLE_PICKED, 17),
+        # An MPTCP client on a port it bound, like TCP.
+        (first + 5, 1, 20000, 8080, ROLE_BOUND, 262),
+        # Neither side known.
+        (first + 6, 1, 50005, 443, ROLE_UNKNOWN),
+        (now, 1),
+    )
+    assert writer.roll_up(con, 60, lambda: False) == 1
+    assert con.execute(
+        "SELECT protocol, lport, rport FROM connections_rollup ORDER BY protocol, lport, rport"
+    ).fetchall() == [
+        (6, 0, 0),
+        (6, 0, 2049),
+        (6, 41641, 0),
+        (17, 0, 53),
+        (17, 53, 0),
+        (262, 0, 8080),
+    ]
     con.close()
 
 
@@ -480,7 +531,7 @@ def test_roll_up_keeps_peers_apart(tmp_path):
     _insert_connections(con, (first + 30, 1))
     con.execute("UPDATE connections SET peer = 1 WHERE time = ?", (first + 30,))
     con.commit()
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 1
+    assert writer.roll_up(con, 60, lambda: False) == 1
     rows = con.execute(
         "SELECT peer, sent, rows FROM connections_rollup ORDER BY peer"
     ).fetchall()
@@ -503,7 +554,7 @@ def test_roll_up_keeps_the_seconds_of_a_partial_period(tmp_path):
         "INSERT INTO meta(key, value) VALUES ('rollup_watermark', ?)", (first + 900,)
     )
     _insert_connections(con, (first + 1200, 1), (first + hour + 5, 1), (now, 1))
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 2
+    assert writer.roll_up(con, 60, lambda: False) == 2
     assert con.execute(
         "SELECT period, seconds FROM connections_rollup ORDER BY period"
     ).fetchall() == [(first + 900, hour - 900), (first + hour, hour)]
@@ -711,7 +762,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     monkeypatch.setattr(
         writer, "report", lambda logger, msgid, message: reports.append(msgid)
     )
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 0
+    assert writer.roll_up(con, 60, lambda: False) == 0
     assert reports == ["clock-went-back"]
     assert (
         con.execute("SELECT value FROM meta WHERE key = 'rollup_watermark'").fetchone()[
@@ -722,7 +773,7 @@ def test_roll_up_after_the_clock_went_back(tmp_path, monkeypatch):
     assert con.execute("SELECT count(*) FROM connections_rollup").fetchone()[0] == 0
     # An hour on, the period of the row written since is closed and rolled up.
     monkeypatch.setattr(writer.time, "time", lambda: now + hour)
-    assert writer.roll_up(con, 60, lambda: False, ephemeral=32768) == 1
+    assert writer.roll_up(con, 60, lambda: False) == 1
     assert con.execute("SELECT period, exe_id FROM connections_rollup").fetchall() == [
         (current, 2)
     ]
@@ -765,11 +816,12 @@ def test_purge_database_fraction_of_a_day(tmp_path):
 
 
 def _server_row(con, t, client, client_port, sent=0, received=12, opened=0):
-    """A row of the service on port 22067 of exe 1 with a client at address id client,
-    from client_port; the client's address also stands in for its domain."""
+    """A row of the service on port 22067 of exe 1 (the accepted side) with a client at
+    address id client, from client_port; the client's address also stands in for its
+    domain."""
     con.execute(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 1, 1, 0, 0, 2, 6, 22067, ?, 1, ?, ?, 1, 1, 2, 0, 10)",
-        (t, sent, received, opened, client_port, client, client),
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 1, 1, 0, 0, 2, 6, 22067, ?, 1, ?, ?, 1, 1, 2, ?, 10)",
+        (t, sent, received, opened, client_port, client, client, ROLE_ACCEPTED),
     )
 
 
@@ -836,7 +888,10 @@ def test_fold_small_connections_whole_or_not_at_all(tmp_path):
             "SELECT DISTINCT raddr_id FROM connections WHERE raddr_id > 0"
         )
     ) == [5, 6, 9]
-    # Folded rows: no addresses, no domain, the service port only.
+    # Folded rows: no addresses, no domain, the service port only, and their role.
+    assert {
+        r[0] for r in con.execute("SELECT role FROM connections WHERE raddr_id = -1")
+    } == {ROLE_ACCEPTED}
     rows = con.execute(
         "SELECT time, laddr_id, raddr_id, domain_id, lport, rport, received, opened FROM connections"
         " WHERE raddr_id = -1 ORDER BY time"

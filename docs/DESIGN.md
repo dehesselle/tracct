@@ -398,7 +398,7 @@ per attempt. A connection (as `opened` counts them: one tuple's rows with no gap
 an hour) folds when all of its bytes stay under `[record] fold_below` (4 KiB; 0 folds none),
 it lasted at most an hour from its first row to its last, and it has been silent for an
 hour since. Its rows then merge, per window, with the other folded rows of the same process,
-parent, unit, user, family, protocol, service port (below), namespace, interface and peer:
+parent, unit, user, family, protocol, service port (below), namespace, interface, peer and role:
 the addresses become the entry `(small connections)` (id -1 in `addresses`), the domain
 none, and bytes, events and `opened` are summed, so nothing is lost but who it was. A
 connection folds whole or not at all: a long session that is idle for a while keeps its
@@ -422,24 +422,22 @@ behind an exit node or NAT, which is the "who" there.
 Of a connection's two ports the rollups keep the service port. The server's port names the
 service (443 for a web server, 53 when a resolver asks upstream); the client's port is a
 throwaway picked by the client's system or its NAT router, so it can be any number and would
-give every connection a rollup row of its own. There is no universal range for the
-throwaway ports: IANA's dynamic ports are 49152–65535 (RFC 6335), RFC 6056 recommends
-choosing from 1024–65535, Linux uses `net.ipv4.ip_local_port_range` (32768–60999 by
-default). tracct knows only its own kernel's range, which tells one thing reliably: a local
-port below it was bound on purpose. So the local port decides which side is ours:
+give every connection a rollup row of its own. The number does not tell which is which:
+there is no universal range for throwaway ports, and services are bound inside the usual
+ones (`tailscaled` on 41641, transmission on 51413). The socket's role does (see "Data
+sources"), and decides:
 
-- a local port below the range: ours is the server's side (or a client's bound to a fixed
-  port); the local port is kept and the remote one, the client's, kept as 0 whatever its
-  number;
-- a local port inside the range: ours is taken for the client's side; the local port is kept
-  as 0 and the remote one kept, unless it is inside the range too, the best guess for a
-  peer's random port.
+| role | kept | why |
+| --- | --- | --- |
+| accepted | the local port | we are the server |
+| picked | the remote port | we are the client |
+| bound, TCP or MPTCP | the remote port | a client on a port it bound (the NFS client's reserved one, a different one per mount) |
+| bound, UDP | the local port | a server, or a peer on a fixed port (`ntpd` on 123) |
+| unknown | neither | |
 
-ICMP rows, whose ports carry the echo id, keep none. The rule is a guess where a service is
-bound inside the range, as `tailscaled` on 41641 and transmission on 51413 are with the
-Linux default: such a server is taken for a client, and its clients' ports below the range
-still keep its rows apart. Telling the sides apart for certain needs the socket's state
-(listening, or bound on purpose), which tracct does not record.
+The other port is kept as 0, whatever its number. ICMP rows, whose ports carry the echo id,
+have no role and keep none. A forwarded flow keeps its destination port: conntrack knows
+which side answered.
 
 A period is rolled up as soon as it closes (and is folded, while folding is on), not when its
 raw rows leave `raw_retention_days`,
@@ -521,9 +519,9 @@ alone are read. A rollup holds nothing finer than its period, so a range reachin
 rollups takes the periods it touches whole, and the answer gives the range it covers; a
 timeline returns a period longer than its buckets as a span of its own, with its average
 rate, rather than in the one bucket it starts in. A dimension the rollups do not keep
-(the addresses of connections, the destination address and source port of forwarded flows) narrows
-the range to the raw rows. A port reaching into the rollups
-is coarsened in the raw rows too, client ports to 0, so it groups the same on both sides.
+(the addresses of connections, the destination address and source port of forwarded flows)
+narrows the range to the raw rows. A connection's port reaching into the rollups is kept in
+the raw rows as the rollups keep it, by the row's role, so it groups the same on both sides.
 
 `tracct view` (`viewer/`, built on Textual, installed with the `viewer` extra) shows a
 live tab from `events.sock` and a history tab per source with one time range shared

@@ -40,7 +40,7 @@ from tracct.query import (
     recv_message,
     send_message,
 )
-from tracct.utils import ephemeral_port_start
+from tracct.utils import service_port_sql
 
 logger = logging.getLogger(__name__)
 
@@ -92,21 +92,16 @@ class Dimension:
     #: reads both.
     coarse: str = ""
 
-    def key_sql(self, rollup: bool, coarse: bool, ephemeral: int) -> str:
+    def key_sql(self, rollup: bool, coarse: bool) -> str:
         if rollup:
-            key = self.rollup or self.key
-        else:
-            key = (self.coarse if coarse else "") or self.key
-        return key.replace("{ephemeral}", str(ephemeral))
+            return self.rollup or self.key
+        return (self.coarse if coarse else "") or self.key
 
     def value_sql(self, k: str) -> str:
         return self.value.replace("{k}", k)
 
-    def match_sql(self, rollup: bool, coarse: bool, ephemeral: int) -> str:
-        return (
-            self.match
-            or f"{self.value_sql(self.key_sql(rollup, coarse, ephemeral))} IS ?"
-        )
+    def match_sql(self, rollup: bool, coarse: bool) -> str:
+        return self.match or f"{self.value_sql(self.key_sql(rollup, coarse))} IS ?"
 
 
 def _lookup(
@@ -122,17 +117,11 @@ def _lookup(
     )
 
 
-def _port(label: str, column: str, icmp: bool, remote: bool = False) -> Dimension:
-    # The rollups keep a port below the kernel's local port range, and none for ICMP,
-    # whose rows carry the echo id; a remote port only where the local one is inside the
-    # range, as a local port below it makes the remote one a client's (see writer.ROLLUPS).
-    icmp_case = " AND t.protocol NOT IN (1, 58)" if icmp else ""
-    server_case = " AND NOT (t.lport > 0 AND t.lport < {ephemeral})" if remote else ""
-    return Dimension(
-        label,
-        f"t.{column}",
-        coarse=f"CASE WHEN t.{column} < {{ephemeral}}{icmp_case}{server_case} THEN t.{column} ELSE 0 END",
-    )
+def _port(label: str, remote: bool) -> Dimension:
+    # The rollups keep only the port that names the service, by the socket's role (see
+    # utils.service_port_sql).
+    column = "rport" if remote else "lport"
+    return Dimension(label, f"t.{column}", coarse=service_port_sql(remote, "t."))
 
 
 #: A namespace by the name it had when the row was written, unnamed ones by inode; an
@@ -296,8 +285,8 @@ SOURCES = {
             "layer": LAYER,
             "peer": PEER,
             "protocol": PROTOCOL,
-            "lport": _port("local port", "lport", icmp=True),
-            "rport": _port("remote port", "rport", icmp=True, remote=True),
+            "lport": _port("local port", remote=False),
+            "rport": _port("remote port", remote=True),
             "laddr": _lookup(
                 "local address", "laddr_id", "addresses", "addr", raw_only=True
             ),
@@ -352,7 +341,8 @@ SOURCES = {
             "src": _lookup("source", "src_id", "addresses", "addr"),
             "dst": _lookup("destination", "dst_id", "addresses", "addr", raw_only=True),
             "domain": DOMAIN,
-            "dport": _port("destination port", "dport", icmp=False),
+            # The rollups keep it: the side that answered is known.
+            "dport": Dimension("destination port", "t.dport"),
             "sport": Dimension("source port", "t.sport", rollup=None),
             "protocol": PROTOCOL,
             "netns": NETNS,
@@ -370,8 +360,6 @@ class RequestError(Exception):
 class Settings:
     """What the answers depend on besides the database."""
 
-    #: The first ephemeral port, below which the rollups keep ports.
-    ephemeral: int
     #: The daemon's write window and rollup period, in seconds, the shortest stretch the
     #: peaks of a timeline are reckoned over.
     write_window: int
@@ -460,11 +448,9 @@ class _Plan:
         filters: list[tuple[Dimension, object, bool]],
         start: int,
         end: int,
-        ephemeral: int,
     ) -> None:
         self.source = source
         self.filters = filters
-        self.ephemeral = ephemeral
         self.split = split_point(con, source)
         #: What the rollups do not keep is only there in the raw rows.
         self.clipped = start < self.split and any(
@@ -508,7 +494,7 @@ class _Plan:
         return (row[0], row[1]) if row is not None and row[1] > t else None
 
     def key(self, dimension: Dimension, rollup: bool) -> str:
-        return dimension.key_sql(rollup, self.coarse, self.ephemeral)
+        return dimension.key_sql(rollup, self.coarse)
 
     def from_where(self, rollup: bool, start: int, end: int) -> tuple[str, list]:
         table, time_column = (
@@ -517,7 +503,7 @@ class _Plan:
         where = [f"t.{time_column} >= ?", f"t.{time_column} < ?"]
         params: list = [start, end]
         for dimension, value, exclude in self.filters:
-            match = dimension.match_sql(rollup, self.coarse, self.ephemeral)
+            match = dimension.match_sql(rollup, self.coarse)
             where.append(f"NOT ({match})" if exclude else f"({match})")
             params += [value] * match.count("?")
         return (
@@ -577,7 +563,7 @@ def aggregate(con: sqlite3.Connection, request: dict, settings: Settings) -> dic
     filters = _filters(request, source)
     start, end = _range(request)
     limit = _int(request, "limit", DEFAULT_ROWS, 1, MAX_ROWS)
-    plan = _Plan(con, source, [group], filters, start, end, settings.ephemeral)
+    plan = _Plan(con, source, [group], filters, start, end)
     result: dict = {
         **plan.info(),
         "rows": [],
@@ -697,7 +683,7 @@ def timeline(con: sqlite3.Connection, request: dict, settings: Settings) -> dict
         if request.get("peak") is not None
         else None
     )
-    plan = _Plan(con, source, [], filters, start, end, settings.ephemeral)
+    plan = _Plan(con, source, [], filters, start, end)
     result: dict = {**plan.info(), "step": step, "buckets": []}
     if peak is not None:
         # A write window's rows share one time, so a stretch shorter than the window
@@ -828,7 +814,6 @@ class QueryServer:
     def __init__(
         self,
         db_path: Path = DB_PATH,
-        ephemeral: int | None = None,
         write_window: int | None = None,
         rollup_period: int | None = None,
     ) -> None:
@@ -841,7 +826,6 @@ class QueryServer:
             else None
         )
         self.settings = Settings(
-            ephemeral_port_start() if ephemeral is None else ephemeral,
             database.write_limit_seconds if write_window is None else write_window,
             database.rollup_period_minutes * 60
             if rollup_period is None
