@@ -24,9 +24,9 @@ releasing and the benchmark.
 | `src/tracct/live_feed.py` | `events.sock` publisher and subscriber |
 | `src/tracct/query.py` | the query socket's message framing and client |
 | `src/tracct/query_server.py` | the query server: sources, dimensions, raw and rollup routing, socket activation |
-| `src/tracct/viewer/` | `view` (Textual): app and its CSS (`app.tcss`), the tabs' base with its find, live tab, history tabs, plot, the shared time range, pickers, the query client and connection messages, the query results as types, settings, the about box's text (`about.txt`) |
+| `src/tracct/viewer/` | `view` (Textual): app and its CSS (`app.tcss`), the tabs' base with its find, live tab, history tabs, plot, the shared time range, pickers, the query client and connection messages, the query results as types, settings, the about box's text (`about.txt`), the manual screen |
 | `src/tracct/files/` | what `tracct install` writes: daemon unit, query socket and service, sysusers file, base `config.toml`, conntrack module options |
-| `hatch_build.py` | build hook compiling the BPF object into the wheel |
+| `hatch_build.py` | build hook compiling the BPF object into the wheel and cutting the viewer's sections out of the manual |
 | `bench/` | accuracy and overhead benchmark against other tools |
 
 How the parts fit together is in [DESIGN.md](DESIGN.md).
@@ -51,6 +51,11 @@ uv pip install --reinstall-package tracct .  # a real build, compiling tracct.bp
 
 Editable installs skip the BPF build, as does `TRACCT_SKIP_BPF_BUILD=1`. The build
 reuses `src/tracct/bpf/tracct.bpf.o` while it is newer than the source.
+
+Every build, editable ones too, cuts the sections of `docs/MANUAL.md` listed in
+`MANUAL_SECTIONS` into `src/tracct/viewer/manual.md` (ignored by git), which `view` shows
+under `,` `?` `m`; a heading missing from the manual fails the build. After editing those
+sections, `uv sync --reinstall-package tracct` refreshes it.
 
 The version comes from git: hatch-vcs runs `git describe` against the `v*` tags and writes
 `src/tracct/version.py` (ignored by git), so a build needs a git checkout or an sdist. After

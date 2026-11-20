@@ -25,6 +25,9 @@ paths; after a command it prints that command's options.
 of `tracct-query.socket`). Its footer starts with `,`, the menu of chords, and `Ctrl+Q`,
 which quits, then shows the keys of the tab in view.
 
+<!-- The viewer shows "The viewer" and "Remote viewing" as its manual; the build cuts
+them out by their headings (MANUAL_SECTIONS in hatch_build.py). -->
+
 ### The viewer
 
 `tracct view` needs the `viewer` extra (`pip install 'tracct[viewer]'`). It has four
@@ -114,13 +117,14 @@ midnight to midnight), `/` finds text in the rows shown (on every tab; `c` clear
 refreshes. A range that ends now refreshes every 10 seconds. While a tab waits more than a
 moment for the query server, `↻` ends the plot's title.
 
-Commands of two keys start with `,`, and a pause after it lists what can follow. `,` `s`
-opens the viewer's settings, such as the live tab's limits and the width of its text
-columns. They are kept per user in
+Commands of several keys start with `,`, and a pause after any of their keys lists what
+can follow. `,` `s` opens the viewer's settings, such as the live tab's limits and the
+width of its text columns. They are kept per user in
 `~/.config/tracct/settings.json` (under `$XDG_CONFIG_HOME` if set), which holds only the
-values changed from their defaults. `,` `a` shows the about box. On the history tabs, `,`
-`b` picks the byte unit from a list, where `b` pressed again goes back to the unit
-before.
+values changed from their defaults. `,` `?` is help: `a` shows the about box, `m` this
+section and the next of the manual, with their headings in a sidebar; there, a link to
+another document copies its address to the clipboard. On the history tabs, `,` `b` picks
+the byte unit from a list, where `b` pressed again goes back to the unit before.
 
 Ranges older than the raw rows come from the rollups: whole periods, no addresses except a
 forwarded flow's source, client ports as 0, and both ports as 0 where tracct could not tell

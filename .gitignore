@@ -12,6 +12,9 @@ wheels/
 *.egg-info
 src/tracct/version.py
 
+# The viewer's sections of the manual, cut from docs/MANUAL.md by hatch_build.py
+src/tracct/viewer/manual.md
+
 # BPF build
 src/tracct/bpf/vmlinux.h
 src/tracct/bpf/*.bpf.o

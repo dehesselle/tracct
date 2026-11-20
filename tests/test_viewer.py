@@ -40,6 +40,14 @@ from tracct.viewer.format import (
 )
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import FeedState, LivePane, remote
+from tracct.viewer.manual import (
+    MISSING,
+    REPOSITORY,
+    ManualScreen,
+    ManualViewer,
+    link_url,
+    read_manual,
+)
 from tracct.viewer.model import Filter, Timeline
 from tracct.viewer.pickers import ByteUnitPicker, SpanPicker
 from tracct.viewer.plot import (
@@ -93,10 +101,50 @@ async def test_settings_chord(tmp_path):
 async def test_about_chord(tmp_path):
     app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.press("comma", "a")
+        await pilot.press("comma", "question_mark", "a")
         await _until(pilot, lambda: isinstance(app.screen, AboutDialog))
         await pilot.press("escape")
         await _until(pilot, lambda: not isinstance(app.screen, AboutDialog))
+
+
+def test_manual_links():
+    design = f"{REPOSITORY}/blob/v0.2.0/docs/DESIGN.md"
+    assert link_url("DESIGN.md#storage", "0.2.0") == f"{design}#storage"
+    assert link_url("DESIGN.md", "0.2.0") == design
+    # Anything but a release links to master.
+    assert link_url("OPERATIONS.md", "0.2.1.dev3+gabc1234") == (
+        f"{REPOSITORY}/blob/master/docs/OPERATIONS.md"
+    )
+    assert link_url("../src/tracct/files/config.toml", "0.2.0") == (
+        f"{REPOSITORY}/blob/v0.2.0/src/tracct/files/config.toml"
+    )
+    assert link_url("https://example.org/a#b") == "https://example.org/a#b"
+
+
+async def test_manual_chord(tmp_path):
+    if read_manual() == MISSING:
+        pytest.skip("no manual.md built into this installation")
+    app = TracctApp(tmp_path / "events.sock", tmp_path / "missing.sock", "live")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("comma", "question_mark", "m")
+        await _until(pilot, lambda: isinstance(app.screen, ManualScreen))
+        viewer = app.screen.query_one(ManualViewer)
+        await _until(pilot, lambda: app.focused is viewer.document)
+        # The build's cut: the two sections, promoted to the top level, and nothing
+        # after them. The sidebar gets the contents once the document is complete.
+        sidebar = viewer.table_of_contents
+        await _until(pilot, lambda: sidebar.table_of_contents)
+        headings = sidebar.table_of_contents
+        top = [title for level, title, _ in headings if level == 1]
+        assert top == ["The viewer", "Remote viewing"]
+        assert "Install" not in [title for _, title, _ in headings]
+        # A link within the manual stays in it; one out of it is copied, not opened.
+        await viewer.go("#remote-viewing")
+        assert app.clipboard == ""
+        await viewer.go("DESIGN.md#storage")
+        assert app.clipboard.endswith("/docs/DESIGN.md#storage")
+        await pilot.press("escape")
+        await _until(pilot, lambda: not isinstance(app.screen, ManualScreen))
 
 
 async def test_tab_keys(tmp_path):

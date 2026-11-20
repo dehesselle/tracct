@@ -33,6 +33,7 @@ from tracct.viewer.client import HistoryClient
 from tracct.viewer.format import BYTE_UNITS
 from tracct.viewer.history import HistoryPane
 from tracct.viewer.live import LivePane
+from tracct.viewer.manual import ManualScreen
 from tracct.viewer.model import SourceInfo
 from tracct.viewer.pane import FindablePane
 from tracct.viewer.pickers import UNZOOM, ByteUnitPicker, SpanPicker, Unzoom
@@ -67,8 +68,10 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
         # Chords start with a comma; the ChordViewer lists them when the next key is
         # slow to come.
         Binding("comma s", "settings", "Settings", show=False),
-        Binding("comma a", "about", "About", show=False),
+        Binding("comma ? a", "about", "About", show=False),
+        Binding("comma ? m", "manual", "Manual", show=False),
     ]
+    CHORD_GROUPS: ClassVar[dict[str, str]] = {"comma ?": "Help"}
 
     #: The range every history tab shows. It is changed in place, then announced with
     #: range_changed(); only the tab shown reloads, a hidden one when it is shown.
@@ -238,6 +241,9 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
                 Path(__file__).with_name("about.txt"), variables={"version": VERSION}
             )
         )
+
+    def action_manual(self) -> None:
+        self.push_screen(ManualScreen())
 
     def on_unmount(self) -> None:
         self.client.close()

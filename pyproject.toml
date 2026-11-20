@@ -59,6 +59,8 @@ raw-options = { scm = { git = { describe_command = "git describe --dirty --tags 
 include = [
     "/src/tracct/",
     "/hatch_build.py",
+    # the viewer's manual is cut from it when the wheel is built
+    "/docs/MANUAL.md",
     "/README.md",
     "/LICENSE",
     "/LICENSES/",

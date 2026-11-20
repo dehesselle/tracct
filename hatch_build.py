@@ -3,14 +3,68 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Hatchling build hook to compile BPF program during wheel build."""
+"""Hatchling build hook to compile BPF program during wheel build.
+
+It also cuts the viewer's sections out of docs/MANUAL.md into the package, for
+`tracct view` to show.
+"""
 
 import os
 import platform
+import re
 import subprocess
 import sys
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+#: The sections of docs/MANUAL.md the viewer shows, by their headings' titles.
+MANUAL_SECTIONS = ["The viewer", "Remote viewing"]
+
+_HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def extract_sections(text: str, titles: list[str]) -> str:
+    """Return the sections of a Markdown text with these headings, in this order.
+
+    A section runs from its heading to the next heading of the same or a higher
+    level. Headings are promoted so the highest of the sections taken becomes `#`.
+    Lines in fenced code blocks are never headings. Raises ValueError for a title
+    that no heading has.
+    """
+    lines = text.splitlines()
+    levels: dict[int, int] = {}  # line index of each heading: its level
+    names: dict[str, int] = {}  # title of each heading: its first line index
+    fence = None
+    for index, line in enumerate(lines):
+        if match := _FENCE.match(line):
+            marker = match.group(1)
+            if fence is None:
+                fence = marker
+            elif marker[0] == fence[0] and len(marker) >= len(fence):
+                fence = None
+            continue
+        if fence is None and (match := _HEADING.match(line)):
+            levels[index] = len(match.group(1))
+            names.setdefault(match.group(2), index)
+
+    sections = []
+    for title in titles:
+        if title not in names:
+            raise ValueError(f"no heading {title!r}")
+        start = names[title]
+        end = next(
+            (i for i in levels if i > start and levels[i] <= levels[start]),
+            len(lines),
+        )
+        sections.append(range(start, end))
+    shift = min(levels[section.start] for section in sections) - 1
+
+    parts = []
+    for section in sections:
+        part = [lines[i][shift:] if i in levels else lines[i] for i in section]
+        parts.append("\n".join(part).strip())
+    return "\n\n".join(parts) + "\n"
 
 
 class BPFBuildHook(BuildHookInterface):
@@ -19,6 +73,9 @@ class BPFBuildHook(BuildHookInterface):
     def initialize(self, version, build_data):
         if self.target_name != "wheel":
             return
+
+        # Editable installs too, so a checkout's viewer has it.
+        self._build_manual(version, build_data)
 
         # Skip BPF compilation for editable installs (used by `uv sync` /
         # dev workflows). The BPF object is only needed for runtime, not
@@ -139,3 +196,24 @@ class BPFBuildHook(BuildHookInterface):
             pass
 
         register(bpf_obj)
+
+    def _build_manual(self, version, build_data):
+        """Write the viewer's sections of the manual to src/tracct/viewer/manual.md."""
+        source = os.path.join(self.root, "docs", "MANUAL.md")
+        target = os.path.join(self.root, "src", "tracct", "viewer", "manual.md")
+        try:
+            with open(source, encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            self.app.abort(f"{source} is missing; the viewer's manual is cut from it")
+        try:
+            manual = extract_sections(text, MANUAL_SECTIONS)
+        except ValueError as e:
+            self.app.abort(f"{source}: {e}; see MANUAL_SECTIONS in hatch_build.py")
+        with open(target, "w", encoding="utf-8", newline="\n") as f:
+            f.write(manual)
+        if version != "editable":
+            # Ignored by git, so hatch would leave it out of the wheel.
+            build_data.setdefault("force_include", {})[target] = (
+                "tracct/viewer/manual.md"
+            )
