@@ -18,7 +18,12 @@ from collections.abc import Callable
 from tracct.config import Config
 from tracct.connections import GAP_SECONDS
 from tracct.conntrack import Flow, Trackers
-from tracct.constants import DB_PATH, FOLDED_ADDRESS_ID, RETRY_BUFFER_MAX
+from tracct.constants import (
+    DB_PATH,
+    FOLDED_ADDRESS_ID,
+    RETRY_BUFFER_MAX,
+    ROLE_UNKNOWN,
+)
 from tracct.messages import report
 from tracct.netinfo import NetInfo
 from tracct.reverse_dns import ReverseDns
@@ -104,8 +109,8 @@ ROLLUPS = (
     ),
 )
 INSERT_CONNECTIONS = (
-    "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
-    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, role, seconds)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 INSERT_INTERFACE_TRAFFIC = "INSERT INTO interface_traffic(time, iface_id, sent, received, seconds) VALUES (?, ?, ?, ?, ?)"
 INSERT_FORWARDED = (
@@ -345,6 +350,10 @@ class WriteWindow:
                 # rows apart only by it are merged there.
                 proc["raddr"],
             )
+            # Not part of the key: a tuple has one role, which only an event read
+            # after its port was gone lacks (and the reader fills that in where it
+            # can), so a known one wins.
+            role = proc.get("role", ROLE_UNKNOWN)
             counters = self.connections.get(key)
             if counters is None:
                 self.connections[key] = [
@@ -353,6 +362,7 @@ class WriteWindow:
                     proc.get("pkts", 1),
                     # Marked by the reader (connections.ConnectionTracker).
                     int(bool(proc.get("new"))),
+                    role,
                 ]
                 if self.netinfo is not None:
                     self.netinfo.note(netns, proc["pid"])
@@ -364,6 +374,7 @@ class WriteWindow:
                 counters[1] += proc["recv"]
                 counters[2] += proc.get("pkts", 1)
                 counters[3] += int(bool(proc.get("new")))
+                counters[4] = counters[4] or role
 
     def add_flows(self, flows: list[Flow]) -> None:
         record = self.config.record
@@ -423,7 +434,7 @@ class WriteWindow:
         names = names or {}
         written = int(time.time()) if written is None else written
         rows: dict[tuple, list[int]] = {}
-        for key, (send, recv, n_events, opened) in self.connections.items():
+        for key, (send, recv, n_events, opened, role) in self.connections.items():
             *identity, laddr, raddr, domain, inode, tun, peer = key
             _exe, _pexe, _unit, _uid, family, *_ = identity
             if not domain:
@@ -444,12 +455,13 @@ class WriteWindow:
             # now.
             counters = rows.get(key)
             if counters is None:
-                rows[key] = [send, recv, n_events, opened]
+                rows[key] = [send, recv, n_events, opened, role]
             else:
                 counters[0] += send
                 counters[1] += recv
                 counters[2] += n_events
                 counters[3] += opened
+                counters[4] = counters[4] or role
         flow_rows = []
         for (inode, protocol, src, sport, dst, dport), counters in self.flows.items():
             domain = self.domain_of(dst)
@@ -475,8 +487,8 @@ class WriteWindow:
         self.cmdlines = {}
         self.details = {}
         return [
-            (written, send, recv, n_events, opened, *key, seconds)
-            for key, (send, recv, n_events, opened) in rows.items()
+            (written, send, recv, n_events, opened, *key, role, seconds)
+            for key, (send, recv, n_events, opened, role) in rows.items()
         ], flow_rows
 
 
@@ -571,11 +583,11 @@ def _fold_period(
     if folded:
         # Rows of one window share their time and seconds.
         con.execute(
-            "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, seconds)"
+            "INSERT INTO connections(time, sent, received, events, opened, exe_id, pexe_id, unit_id, uid, family, protocol, lport, rport, laddr_id, raddr_id, domain_id, netns_id, iface_id, peer, role, seconds)"
             f" SELECT time, SUM(sent), SUM(received), SUM(events), SUM(opened), exe_id, pexe_id, unit_id, uid, family, protocol, {SERVICE_LPORT} AS lp, {SERVICE_RPORT} AS rp,"
-            " :folded, :folded, 0, netns_id, iface_id, peer, MAX(seconds)"
+            " :folded, :folded, 0, netns_id, iface_id, peer, role, MAX(seconds)"
             " FROM connections WHERE rowid IN (SELECT id FROM fold_ids)"
-            " GROUP BY time, exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, netns_id, iface_id, peer",
+            " GROUP BY time, exe_id, pexe_id, unit_id, uid, family, protocol, lp, rp, netns_id, iface_id, peer, role",
             {"ephemeral": ephemeral, "folded": FOLDED_ADDRESS_ID},
         )
         con.execute("DELETE FROM connections WHERE rowid IN (SELECT id FROM fold_ids)")
@@ -993,6 +1005,7 @@ def run_writer(
                         netns,
                         iface,
                         peer,
+                        role,
                         seconds,
                     ) in transaction:
                         conn_rows.append(
@@ -1016,6 +1029,7 @@ def run_writer(
                                 namespaces.id(con, netns),
                                 interface_id(con, iface),
                                 peer,
+                                role,
                                 seconds,
                             )
                         )

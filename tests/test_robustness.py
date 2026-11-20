@@ -408,7 +408,7 @@ def _insert_connections(con, *rows):
     # Each row (time, ref[, lport, rport]) refers to ref as exe, parent, both
     # addresses, domain, namespace and interface; its peer is remote.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 10, 20, 1, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 10)",
+        "INSERT INTO connections VALUES (?, 10, 20, 1, 1, ?, ?, 0, 0, 2, 6, ?, ?, ?, ?, ?, ?, ?, 2, 0, 10)",
         [
             (row[0], row[1], row[1], *(row[2:] or (50000, 443)), *[row[1]] * 5)
             for row in rows
@@ -768,7 +768,7 @@ def _server_row(con, t, client, client_port, sent=0, received=12, opened=0):
     """A row of the service on port 22067 of exe 1 with a client at address id client,
     from client_port; the client's address also stands in for its domain."""
     con.execute(
-        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 1, 1, 0, 0, 2, 6, 22067, ?, 1, ?, ?, 1, 1, 2, 10)",
+        "INSERT INTO connections VALUES (?, ?, ?, 1, ?, 1, 1, 0, 0, 2, 6, 22067, ?, 1, ?, ?, 1, 1, 2, 0, 10)",
         (t, sent, received, opened, client_port, client, client),
     )
 
@@ -1132,12 +1132,14 @@ def test_conn_structs_byte_synced_with_bpf():
         24,
         42,
     )
-    # Value is NOT packed: 3*char[16] then 7*u64 counters (8-byte aligned) then 6*u32.
+    # Value is NOT packed: 3*char[16] then 7*u64 counters (8-byte aligned) then 8*u32
+    # (role and its padding last).
     assert (
-        ctypes.sizeof(ConnVal) == 128
-    )  # 48 + 56 + 24, no internal or trailing padding
+        ctypes.sizeof(ConnVal) == 136
+    )  # 48 + 56 + 32, no internal or trailing padding
     assert (ConnVal.send_bytes.offset, ConnVal.recv_bytes.offset) == (72, 80)
     assert (ConnVal.send_pkts.offset, ConnVal.recv_pkts.offset) == (88, 96)
+    assert ConnVal.role.offset == 128
 
 
 def test_proc_reads_survive_non_utf8_comm():

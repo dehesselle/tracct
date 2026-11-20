@@ -17,6 +17,7 @@ import typing
 from tracct import cli, writer
 from tracct.config import Config, ProcessRule
 from tracct.connections import ConnectionTracker
+from tracct.constants import ROLE_ACCEPTED, ROLE_PICKED, ROLE_UNKNOWN
 from tracct.reverse_dns import ReverseDns
 from tracct.types import BpfEvent
 from tracct.utils import DropOldestQueue
@@ -87,6 +88,17 @@ def test_window_leaves_events_alone():
     assert unit == "session-1.scope"
 
 
+def test_window_keeps_the_known_role():
+    """A row's role is its tuple's; an event that lacks one (read after the socket lost
+    its port) does not blank it, whichever comes first."""
+    for roles in ((ROLE_UNKNOWN, ROLE_ACCEPTED), (ROLE_ACCEPTED, ROLE_UNKNOWN)):
+        window = writer.WriteWindow(Config())
+        window.add([_event(role=role) for role in roles])
+        window.add([_event()])
+        rows, _ = window.take_rows()
+        assert [row[-2] for row in rows] == [ROLE_ACCEPTED]
+
+
 def test_tracker_marks_the_events_that_start_a_connection():
     """A tuple's first event starts a connection, its next ones within the gap do not,
     and one after a longer silence starts another; events without a tuple start none."""
@@ -132,13 +144,13 @@ def test_tracker_loads_the_last_hour_from_the_database(tmp_path, monkeypatch):
     )
     now = 100000
     # Time, sent, received, events, opened, exe, pexe, unit, uid, family, protocol,
-    # lport, rport, laddr, raddr, domain, netns, iface, peer, seconds.
+    # lport, rport, laddr, raddr, domain, netns, iface, peer, role, seconds.
     con.executemany(
-        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 0, 0, 0, 0, 2, 6, ?, ?, 1, ?, 0, 1, 0, 2, 10)",
+        "INSERT INTO connections VALUES (?, 1, 1, 1, 1, 0, 0, 0, 0, 2, 6, ?, ?, 1, ?, 0, 1, 0, 2, ?, 10)",
         [
-            (now - 60, 50000, 443, 2),
-            (now - 7200, 50001, 443, 3),
-            (now - 60, 0, 0, 0),
+            (now - 60, 50000, 443, 2, ROLE_PICKED),
+            (now - 7200, 50001, 443, 3, ROLE_PICKED),
+            (now - 60, 0, 0, 0, ROLE_UNKNOWN),
         ],
     )
     con.commit()
@@ -147,6 +159,30 @@ def test_tracker_loads_the_last_hour_from_the_database(tmp_path, monkeypatch):
     events = [_event(), _event(lport=50001, raddr="192.0.2.1")]
     tracker.mark(events, float(now))
     assert [event["new"] for event in events] == [False, True]
+    # The role the remembered tuple had fills in where its socket no longer says.
+    assert [event.get("role") for event in events] == [ROLE_PICKED, None]
+
+
+def test_tracker_fills_in_the_role_a_tuple_had():
+    """An event read after its socket lost the port (an MPTCP handover) takes the role
+    its tuple had last; a known role is kept, and a tuple never seen with one stays
+    unknown."""
+    tracker = ConnectionTracker(gap=3600)
+    tracker.mark([_event(role=ROLE_ACCEPTED, lport=8080, rport=50000)], 1000.0)
+    events = [
+        _event(role=ROLE_UNKNOWN, lport=8080, rport=50000),
+        _event(role=ROLE_PICKED),
+        _event(role=ROLE_UNKNOWN, rport=80),
+    ]
+    tracker.mark(events, 1001.0)
+    assert [event["role"] for event in events] == [
+        ROLE_ACCEPTED,
+        ROLE_PICKED,
+        ROLE_UNKNOWN,
+    ]
+    # Forgotten with its tuple.
+    tracker.mark([_event(lport=50009)], 1001.0 + 3601)
+    assert not tracker.roles
 
 
 def test_window_counts_the_connections_its_events_started():
@@ -195,14 +231,14 @@ def test_window_process_rules():
     by_exe = {row[5][0]: row for row in rows}
     assert len(rows) == 3
     torrent_row = by_exe["/usr/bin/transmission-daemon"]
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _seconds = (
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _role, _seconds = (
         torrent_row
     )
     assert torrent_row[1:4] == (300, 6000, 12)
     assert (lport, rport, raddr, domain) == (0, 0, "", "")
-    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _seconds = by_exe[
-        "/usr/bin/curl"
-    ]
+    *_, lport, rport, _laddr, raddr, domain, _netns, _iface, _peer, _role, _seconds = (
+        by_exe["/usr/bin/curl"]
+    )
     assert (lport, rport, raddr, domain) == (50000, 443, "93.184.215.14", "com.example")
     assert by_exe["/usr/bin/curl"][5] == ("/usr/bin/curl", "curl", "")
     assert by_exe["/usr/bin/wget"][5:7] == (
@@ -248,7 +284,7 @@ def test_window_fills_domains_at_write():
     rows, _ = window.take_rows()
     assert [
         (send, recv, n_events, domain)
-        for _, send, recv, n_events, *_, domain, _, _, _, _ in rows
+        for _, send, recv, n_events, *_, domain, _, _, _, _, _ in rows
     ] == [(201, 4001, 9, "com.example")]
 
 
@@ -309,7 +345,7 @@ def test_window_interfaces_and_flows():
     rows, flows = window.take_rows({4026531840: "host"}, 10)
     host = (4026531840, "host")
     assert {row[-1] for row in rows} == {10}
-    assert sorted(row[-3] for row in rows) == [
+    assert sorted(row[-4] for row in rows) == [
         writer.NO_INTERFACE,
         (host, "eth0", "", "physical"),
         (host, "tailscale0", "tun", "virtual"),
@@ -354,7 +390,7 @@ def test_window_peers():
         )
         window.add(events)
         rows, _ = window.take_rows()
-        return sorted((row[14], row[-2], row[1]) for row in rows)
+        return sorted((row[14], row[-3], row[1]) for row in rows)
 
     assert peers(Config()) == [
         ("", writer.PEER_NONE, 100),

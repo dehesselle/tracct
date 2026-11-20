@@ -38,5 +38,8 @@ class BpfEvent(typing.TypedDict):
     raddr: str
     domain: str
     netns: int
+    #: How the socket's local port came to be (constants.ROLE_*); the reader fills an
+    #: unknown one from what it saw of the tuple before (connections.ConnectionTracker).
+    role: typing.NotRequired[int]
     #: Set by the reader: the event starts a connection (connections.ConnectionTracker).
     new: typing.NotRequired[bool]

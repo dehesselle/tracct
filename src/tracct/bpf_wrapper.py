@@ -336,6 +336,8 @@ class ConnVal(ctypes.Structure):
         ("dev", ctypes.c_uint32),
         ("pdev", ctypes.c_uint32),
         ("gpdev", ctypes.c_uint32),
+        ("role", ctypes.c_uint32),
+        ("_pad", ctypes.c_uint32),
     ]
 
 

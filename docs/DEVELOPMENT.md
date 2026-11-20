@@ -109,7 +109,9 @@ in `pyproject.toml`).
 
 - `test_functional.py` starts a real daemon under `/tmp/tracct` and checks what it
   records for `curl`, `wget` and generated traffic. It needs root and the built BPF object,
-  and is skipped otherwise.
+  and is skipped otherwise. `test_functional_roles.py` does the same for the role each
+  connection's socket is recorded with, in a module of its own so its daemon can start
+  after a connection is already open.
 - `test_netinfo.py` and `test_conntrack.py` test their parsers and deltas with fakes; their
   root tests create network namespaces and route traffic between them, through the host and
   through a router namespace, and are skipped without root and iproute2; the conntrack ones

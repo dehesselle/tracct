@@ -71,8 +71,14 @@ ST_DEV_MASK: typing.Final[int] = st_dev_mask
 #: machine) and 2 for remote; an interface's `class` is 'physical' or 'virtual', '' for
 #: the unknown one. `opened` counts the connections a row's events started (see
 #: connections.py). Address id -1 stands for the addresses of folded connections (see
-#: writer.fold).
-DB_VERSION: typing.Final[int] = 11
+#: writer.fold). A connection's `role` is how its socket's local port came to be
+#: (ROLE_*).
+DB_VERSION: typing.Final[int] = 12
+#: How a socket's local port came to be, read from the socket by the BPF program (see
+#: "Storage" in docs/DESIGN.md): unknown; picked by the kernel (connect() or an autobind:
+#: a client); inherited from a listener by accept() (a server); bound with an explicit
+#: port (a TCP client, a UDP server).
+ROLE_UNKNOWN, ROLE_PICKED, ROLE_ACCEPTED, ROLE_BOUND = 0, 1, 2, 3
 SCHEMA_EXECUTABLES: typing.Final[str] = """
     id INTEGER PRIMARY KEY,
     exe TEXT NOT NULL,
@@ -120,6 +126,7 @@ SCHEMA_CONNECTIONS: typing.Final[str] = """
     netns_id INTEGER NOT NULL REFERENCES netns(id),
     iface_id INTEGER NOT NULL REFERENCES interfaces(id),
     peer INTEGER NOT NULL,
+    role INTEGER NOT NULL,
     seconds INTEGER NOT NULL"""
 SCHEMA_CONNECTIONS_ROLLUP: typing.Final[str] = """
     period INTEGER NOT NULL,

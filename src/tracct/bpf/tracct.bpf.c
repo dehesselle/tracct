@@ -94,8 +94,10 @@ struct conn_key_packet_t {
 
 // conn_val_t is deliberately NOT packed: the 64-bit counters are updated with
 // atomic adds, which require natural 8-byte alignment. Field order (char
-// arrays, then u64s, then u32s) yields a 128-byte struct with no internal
+// arrays, then u64s, then u32s) yields a 136-byte struct with no internal
 // padding, so userspace can mirror it without packing either.
+// role says how the socket's local port came to be (ROLE_*, see socket_role), so
+// userspace knows which of the two ports names the service.
 struct conn_val_t {
     char comm[TASK_COMM_LEN];
     char pcomm[TASK_COMM_LEN];
@@ -113,6 +115,8 @@ struct conn_val_t {
     __u32 dev;
     __u32 pdev;
     __u32 gpdev;
+    __u32 role;
+    __u32 _pad;
 };
 
 // owner of an mmap-ring socket (opt-in mmap_ring_rx), recorded at setup for the softirq enqueue
@@ -483,6 +487,67 @@ static __always_inline int fill_conn_ancestry(struct conn_val_t *val, __u32 uid)
     return 0;
 }
 
+// How a socket's local port came to be, which tells which of its two ports names the
+// service (see "Storage" in docs/DESIGN.md). Read from the socket's state, so it works
+// for sockets that were open before tracct started.
+#define ROLE_UNKNOWN 0
+#define ROLE_PICKED 1    // chosen by the kernel: connect() or an autobind (a client)
+#define ROLE_ACCEPTED 2  // inherited from a listener by accept() (a server)
+#define ROLE_BOUND 3     // bind() with an explicit port
+#define SOCK_BINDPORT_LOCK 8
+#define SOCK_CONNECT_BIND 16  // set by connect()'s autobind, from Linux 6.18 on
+
+// The vendored headers declare struct mptcp_sock empty; first is its initial subflow.
+struct mptcp_sock___first {
+    struct sock *first;
+};
+
+// sk_userlocks is a 4-bit field before 6.18 and a byte from then on; the probed read
+// handles both, and a 4-bit one never has SOCK_CONNECT_BIND.
+static __always_inline __u32 read_userlocks(struct sock *sk)
+{
+    return BPF_CORE_READ_BITFIELD_PROBED(sk, sk_userlocks);
+}
+
+// A port connect() picks gets a bind bucket with fastreuse -1, and connect() never picks
+// a port whose bucket bind() or listen() made (fastreuse >= 0); an accepted socket shares
+// its listener's bucket, and never carries SOCK_BINDPORT_LOCK (sk_clone clears it).
+// Without a bucket (closed, reset) the port is gone and the role unknown. Misread: a
+// client that bound address and port 0 before connect() reads as accepted.
+static __always_inline __u32 tcp_role(struct sock *sk)
+{
+    __u32 locks = read_userlocks(sk);
+    if (locks & SOCK_CONNECT_BIND)
+        return ROLE_PICKED;
+    struct inet_bind_bucket *tb = BPF_CORE_READ((struct inet_connection_sock *)sk, icsk_bind_hash);
+    if (!tb)
+        return ROLE_UNKNOWN;
+    if (locks & SOCK_BINDPORT_LOCK)
+        return ROLE_BOUND;
+    if (BPF_CORE_READ(tb, fastreuse) == -1)
+        return ROLE_PICKED;
+    return ROLE_ACCEPTED;
+}
+
+// An MPTCP socket carries none of this itself; its first subflow does, until a handover
+// closes it (then unknown here; userspace keeps the role a tuple had). UDP has no
+// accept: a deliberately bound port is the service's, any other one the kernel picked.
+static __always_inline __u32 socket_role(struct sock *sk, __u16 protocol)
+{
+    if (protocol == IPPROTO_TCP)
+        return tcp_role(sk);
+    if (protocol == IPPROTO_MPTCP) {
+        struct mptcp_sock___first *msk = (void *)sk;
+        if (!bpf_core_field_exists(msk->first))
+            return ROLE_UNKNOWN;
+        struct sock *first = BPF_CORE_READ(msk, first);
+        return first ? tcp_role(first) : ROLE_UNKNOWN;
+    }
+    if (protocol == IPPROTO_UDP || protocol == IPPROTO_UDPLITE)
+        return (read_userlocks(sk) & SOCK_BINDPORT_LOCK) ? ROLE_BOUND : ROLE_PICKED;
+    return ROLE_UNKNOWN;
+}
+
 // Network bandwidth probes. Bytes are accumulated per connection in the
 // conn_stats4/6 maps (see the map definitions for the design rationale).
 // The expensive ancestry walk runs only when a connection is first seen;
@@ -532,6 +597,7 @@ static __always_inline int trace_sendrecv(void *ctx, struct sock *sk, struct msg
             struct conn_val_t newval = {};
             if (fill_conn_ancestry(&newval, uid) != 0)
                 return 0;
+            newval.role = socket_role(sk, protocol);
             bpf_map_update_elem(&conn_stats4, &key, &newval, BPF_NOEXIST);
             val = bpf_map_lookup_elem(&conn_stats4, &key);
             if (!val)
@@ -576,6 +642,7 @@ static __always_inline int trace_sendrecv(void *ctx, struct sock *sk, struct msg
             struct conn_val_t newval = {};
             if (fill_conn_ancestry(&newval, uid) != 0)
                 return 0;
+            newval.role = socket_role(sk, protocol);
             bpf_map_update_elem(&conn_stats6, &key, &newval, BPF_NOEXIST);
             val = bpf_map_lookup_elem(&conn_stats6, &key);
             if (!val)

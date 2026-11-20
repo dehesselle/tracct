@@ -45,6 +45,23 @@ traffic come from netlink.
   of a dual-stack IPv6 socket (`::ffff:a.b.c.d`) is recorded as IPv4, so a server listening
   on `[::]` has its IPv4 clients under their own addresses and its local address on its
   interface.
+- **Socket role.** When a connection's entry is created, the BPF program also records how
+  the socket's local port came to be, read from the socket's state, so it holds for
+  sockets that were open before tracct started:
+
+  | role | TCP (MPTCP: its first subflow) | UDP |
+  | --- | --- | --- |
+  | picked (1) | `connect()` chose the port: `SOCK_CONNECT_BIND` in `sk_userlocks` (Linux 6.18), or a bind bucket with `fastreuse` −1, which only `connect()` creates and only `connect()` shares | no explicit port |
+  | accepted (2) | `accept()` made the socket: it shares its listener's bucket (`fastreuse` ≥ 0) and never has `SOCK_BINDPORT_LOCK`, which the kernel clears on every accepted socket | — |
+  | bound (3) | `bind()` set the port (`SOCK_BINDPORT_LOCK`): a client, as accepted sockets never carry the flag | `bind()` set the port: a server, or a peer on a fixed port |
+  | unknown (0) | no bind bucket: the port is gone (after a reset) | — |
+
+  Every other protocol is unknown. The kernel never says it directly, and two cases read
+  wrong: a TCP client that binds an address with port 0 before `connect()` reads as
+  accepted, and before 6.18 a later `bind()` of a client's port on another address makes
+  its bucket look like a listener's. An MPTCP socket carries none of this itself; its first
+  subflow does, until a handover closes that subflow. The reader then fills in the role the
+  tuple had last (`connections.py`), as it does for any event whose socket no longer says.
 - **Exec events.** A kretprobe on `execve` sends each new process to a ring buffer. They are
   resolved while the process is young, which fills the caches its connections fall back on
   after it exits, and with `every_exe` they are logged as rows without traffic.
@@ -333,8 +350,10 @@ The tables come in three kinds:
   unnamed namespaces that shared an inode cannot be told apart.
 - **Raw tables**, a row per write window, one per kind of byte (principle 4):
   `connections` holds socket bytes per process and peer, with where the peer is (`peer`:
-  0 none, 1 local, 2 remote; kept by the rollup too), `interface_traffic` interface bytes
-  per interface, `forwarded` IP bytes per routed flow. In `forwarded`, `src` is the side that
+  0 none, 1 local, 2 remote; kept by the rollup too) and the socket's `role` (see "Data
+  sources"; it does not keep rows apart, as a tuple has one, and a known role wins over
+  an unknown one), `interface_traffic` interface bytes per interface, `forwarded` IP
+  bytes per routed flow. In `forwarded`, `src` is the side that
   opened the flow and `dst` the side that answered (after any destination NAT); `orig` counts
   src to dst, `reply` the other way.
 - **Rollups**, `connections_rollup`, `interface_traffic_rollup` and `forwarded_rollup`, a row

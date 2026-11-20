@@ -28,7 +28,7 @@ from tracct.bpf_wrapper import (
     kernel_symbol_addrs,
 )
 from tracct.config import Config
-from tracct.constants import ST_DEV_MASK
+from tracct.constants import ROLE_UNKNOWN, ST_DEV_MASK
 from tracct.messages import report
 from tracct.types import BpfEvent
 
@@ -654,6 +654,9 @@ def run_monitor(
                         "raddr": proc["raddr"],
                         "domain": _cache_get(domain_dict, proc["raddr"]),
                         "netns": _read_netns_inode(proc["pid"]),
+                        # /proc/net does not say how a port came to be; the first
+                        # drained event of the tuple does.
+                        "role": ROLE_UNKNOWN,
                     }
                 )
         except Exception:  # noqa: BLE001, S110
@@ -1030,6 +1033,7 @@ def run_monitor(
                             "raddr": raddr,
                             "domain": _cache_get(domain_dict, raddr),
                             "netns": int(key.netns),
+                            "role": int(val.role),
                         }
                     )
                     if len(outgoing) >= CONN_DRAIN_CHUNK:
