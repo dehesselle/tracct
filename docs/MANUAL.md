@@ -81,8 +81,13 @@ What left the machine through its network cards is `(all · physical)` on Interf
 Processes it is `(all · outer · remote)`, without headers, without a kernel tunnel's
 encrypted traffic (which has no socket), without injected frames (in `packet`) and without
 forwarded traffic. The reasons are in
-[DESIGN.md](DESIGN.md#layers-peers-and-interface-classes). The highlight starts
-on the largest row below them; a find hides them, as they sum up the rows it hides too. The
+[DESIGN.md](DESIGN.md#layers-peers-and-interface-classes).
+
+Below the sums, dimmed like them, comes the sum of the rows without a value of the
+dimension, named after it: `(no executable)` holds kernel threads, which have none (grouped
+by name, they show under their thread names), and processes that ended before tracct could
+tell their executable. Then come the values, largest first. The highlight starts on the
+largest; a find hides the sums, as they sum up the rows it hides too. The
 table, the summary, counts the rows in its title while a find hides some or there are more
 than it shows (up to 1000).
 

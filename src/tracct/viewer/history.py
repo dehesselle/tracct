@@ -31,6 +31,7 @@ from tracct.viewer.format import (
     count_cell,
     format_time,
     format_value,
+    is_missing,
     value_cell,
 )
 from tracct.viewer.model import ALL, Aggregate, Filter, Row, SourceInfo, Timeline, Total
@@ -52,7 +53,7 @@ TIMELINE_DELAY_SECONDS = 0.25
 BUSY_DELAY_SECONDS = 0.3
 
 
-def _value_cell(dimension: str, value: object) -> Text:
+def _value_cell(dimension: str, value: object, label: str) -> Text:
     """Return a cell of the value column; a row of sums dim like a missing value.
 
     So a row of sums is not taken for a value of the dimension.
@@ -60,7 +61,7 @@ def _value_cell(dimension: str, value: object) -> Text:
     return (
         Text(value.label(), style="dim")
         if isinstance(value, Total)
-        else value_cell(dimension, value)
+        else value_cell(dimension, value, label)
     )
 
 
@@ -112,7 +113,7 @@ class HistoryPane(FindablePane):
         self.filters: list[Filter] = []
         self.result: Aggregate | None = None
         #: The rows in the table: the sums over all values first, then the values the
-        #: find leaves.
+        #: find leaves, the sum of the rows without one first.
         self.table_rows: list[Row] = []
         self.error = ""
         self._timeline_timer = None
@@ -193,6 +194,11 @@ class HistoryPane(FindablePane):
         """The rows of values in the table, without the sums."""
         return [row for row in self.table_rows if not isinstance(row.value, Total)]
 
+    def value_text(self, dimension: str, value: object) -> str:
+        """Return a value as the table shows it, a missing one named after `dimension`."""
+        label = self.info.dimension_label(dimension) if self.info is not None else ""
+        return format_value(dimension, value, label)
+
     # ── requests ──
 
     def bounds(self) -> tuple[int, int]:
@@ -262,7 +268,7 @@ class HistoryPane(FindablePane):
             [plot_filter] = plot_filters
             row_label = (
                 f"{self.info.dimension_label(plot_filter.dimension)}"
-                f" = {format_value(plot_filter.dimension, plot_filter.value)}"
+                f" = {self.value_text(plot_filter.dimension, plot_filter.value)}"
             )
         self._load_timeline(
             start,
@@ -378,8 +384,12 @@ class HistoryPane(FindablePane):
         shown = [
             row
             for row in self.result.rows
-            if needle in format_value(self.group_by, row.value).lower()
+            if needle in self.value_text(self.group_by, row.value).lower()
         ]
+        # The rows without a value add up all of those, so they stay with the sums
+        # above, whatever their bytes; the server sends them in their place by size.
+        missing = [row for row in shown if is_missing(row.value)]
+        rest = [row for row in shown if not is_missing(row.value)]
         # The sums come from all rows, so a find, which hides some, hides them too;
         # grouped by a dimension they are made of (the layer, the peer), the rows are
         # the sums already.
@@ -393,11 +403,12 @@ class HistoryPane(FindablePane):
             )
             else []
         )
-        self.table_rows = totals + shown
+        self.table_rows = totals + missing + rest
         byte_unit = self.viewer.byte_unit
         out_label, in_label = self.info.value_labels
+        label = self.info.dimension_label(self.group_by)
         table.clear(columns=True)
-        table.add_column(self.info.dimension_label(self.group_by), key="value")
+        table.add_column(label, key="value")
         table.add_column(Text(out_label, justify="right"), key="out")
         table.add_column(Text(in_label, justify="right"), key="in")
         count_label = self.info.count_label
@@ -406,7 +417,7 @@ class HistoryPane(FindablePane):
         table.add_rows(
             [
                 (
-                    _value_cell(self.group_by, row.value),
+                    _value_cell(self.group_by, row.value, label),
                     bytes_cell(row.out_bytes, byte_unit),
                     bytes_cell(row.in_bytes, byte_unit),
                     *((count_cell(row.count),) if count_label else ()),
@@ -415,10 +426,11 @@ class HistoryPane(FindablePane):
             ]
         )
         # Keep the highlight on the same value across refreshes; a sum only if it was on
-        # one, as sums add up what is otherwise kept apart.
+        # one, as sums add up what is otherwise kept apart. The rows without a value
+        # are such a sum.
         index = next(
             (i for i, row in enumerate(self.table_rows) if row.value == previous),
-            len(totals) if shown else 0,
+            len(totals) + len(missing) if rest else len(totals) if missing else 0,
         )
         if self.table_rows:
             table.move_cursor(row=index)
@@ -438,7 +450,7 @@ class HistoryPane(FindablePane):
                 "filter: "
                 + " > ".join(
                     f"{'!' if f.exclude else ''}{self.info.dimension_label(f.dimension)}"
-                    f"={format_value(f.dimension, f.value)}"
+                    f"={self.value_text(f.dimension, f.value)}"
                     for f in self.filters
                 )
             )

@@ -126,10 +126,18 @@ def shorten_host(host: str, port: int, width: int) -> str:
     return "…" + _tail(host, width - 1 - len(suffix)) + suffix
 
 
-def format_value(dimension: str, value: object) -> str:
-    """Return a dimension's value as shown; a filter on it sends the value itself."""
-    if value is None or value == "":
-        return "(none)"
+def is_missing(value: object) -> bool:
+    """Whether a row has no value of the dimension: its rows sum all that have none."""
+    return value is None or value == ""
+
+
+def format_value(dimension: str, value: object, label: str = "") -> str:
+    """Return a dimension's value as shown; a filter on it sends the value itself.
+
+    A missing value is named after the dimension's label, where the caller has it.
+    """
+    if is_missing(value):
+        return f"(no {label})" if label else "(none)"
     if dimension == "uid" and isinstance(value, int):
         return user_name(value)
     if dimension == "protocol" and isinstance(value, int):
@@ -139,13 +147,13 @@ def format_value(dimension: str, value: object) -> str:
     return clean(value)
 
 
-def value_cell(dimension: str, value: object) -> Text:
+def value_cell(dimension: str, value: object, label: str = "") -> Text:
     """A cell that shows text as it is.
 
     A plain str in a DataTable would be read as markup.
     """
-    text = format_value(dimension, value)
-    return Text(text, style="dim" if value is None or value == "" else "")
+    text = format_value(dimension, value, label)
+    return Text(text, style="dim" if is_missing(value) else "")
 
 
 def format_clock(t: float) -> str:

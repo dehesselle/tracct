@@ -548,6 +548,25 @@ async def test_history_drill_down(tmp_path):
             processes.reload()
             await _until(pilot, lambda: _values(processes) == ["remote"])
             assert len(processes.table_rows) == 1
+            # The rows without a value add up all of those: they come right after the
+            # sums, named after the dimension, though com.example has more bytes.
+            processes.select_dimension("domain")
+            processes.reload()
+            await _until(
+                pilot,
+                lambda: (
+                    len(_values(processes)) == 2
+                    and _values(processes)[1] == "com.example"
+                ),
+            )
+            assert [str(table.get_row_at(i)[0]) for i in range(table.row_count)] == [
+                "(all · outer · remote)",
+                "(all · inner)",
+                "(no domain)",
+                "com.example",
+            ]
+            # The highlight starts on the largest value, not on a sum.
+            assert table.cursor_row == 3
             # Another dimension.
             processes.select_dimension("netns")
             processes.reload()
