@@ -1133,7 +1133,7 @@ async def test_live_summary_scroll(tmp_path, monkeypatch):
             )
             await _until(pilot, lambda: summary.row_count == 60)
             await _until(pilot, lambda: summary.max_scroll_y > 10)
-            summary.scroll_to(y=10, animate=False)
+            summary.scroll_to(y=10, animate=False, immediate=True)
             await pilot.pause()
             assert summary.scroll_y == 10
             # More traffic for a row shown updates it in place: the summary stays
