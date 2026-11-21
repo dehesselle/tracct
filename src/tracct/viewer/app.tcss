@@ -25,7 +25,7 @@ HistoryPane OptionList > .option-list--option-disabled {
     text-style: bold;
 }
 HistoryPane DataTable { height: 1fr; }
-/* Plot only (, p): the plot takes the whole tab. */
+/* Plot toggle (, p): the plot takes the whole tab. */
 HistoryPane.-plot-only OptionList, HistoryPane.-plot-only DataTable { display: none; }
 HistoryPane.-plot-only TrafficPlot { height: 1fr; }
 

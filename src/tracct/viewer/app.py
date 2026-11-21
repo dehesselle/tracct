@@ -225,7 +225,7 @@ class TracctApp(TerminalTitleMixin, ChordMixin, App):
             return
         self.last_byte_unit, self.byte_unit = self.byte_unit, byte_unit
 
-    def action_plot_only(self) -> None:
+    def action_toggle_plot_only(self) -> None:
         self.plot_only = not self.plot_only
 
     def action_refresh(self) -> None:

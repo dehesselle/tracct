@@ -93,7 +93,7 @@ class HistoryPane(FindablePane):
         Binding("comma f p", "pop_filter", "Pop last", show=False),
         Binding("comma f c", "clear_filters", "Clear", show=False),
         # Shared by the history tabs, as the range is.
-        Binding("comma p", "app.plot_only", "Plot only", show=False),
+        Binding("comma p", "app.toggle_plot_only", "Plot toggle", show=False),
         # Rarely changed; in the picker, b pressed again goes back to the unit before.
         Binding("comma b", "app.byte_unit", "Byte unit", show=False),
     ]
